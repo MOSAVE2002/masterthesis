@@ -126,11 +126,28 @@ class FJSPInstance:
 def generate_instances(instance = FJSPInstance):
     print("____Generate Instance_____")
     data_directory = 'data/'
-    os.makedirs(data_directory, exist_ok=True)
+    # data directory not exist
+
+    if not os.path.exists(data_directory):
+        os.makedirs(data_directory, exist_ok=True)
 
     for i in range(1, instance.instance_number + 1):  # instance_number  
         with open(f'{data_directory}/{instance.instance_name}.fjsp', 'wb') as fh:
             pickle.dump(instance, fh)
+
+# def create_samples(instance: FJSPInstance, num_samples: int = 10):
+#     samples = []
+#     for _ in range(num_samples):
+#         sample = {
+#             "instance_name": instance.instance_name,
+#             "num_jobs": instance.num_jobs,
+#             "num_machines": instance.num_machines,
+#             "jobs": instance.jobs
+#         }
+#         samples.append(sample)
+#     return samples
+
+
 
 # Example usage
 if __name__ == "__main__":

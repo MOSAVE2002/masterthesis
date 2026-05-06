@@ -1,0 +1,8 @@
+{
+ "instance_parameters":{
+    "num_jobs": 10,
+    "num_machines": 5,
+    "num_operations_per_job": 3
+    }
+
+}
