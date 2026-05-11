@@ -1,0 +1,1 @@
+#TODO Zielfunktionswert besser speichern, damit ich es besser ins Neuronale Netz geben kann

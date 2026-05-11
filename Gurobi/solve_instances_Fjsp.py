@@ -1,16 +1,16 @@
 """
 
 Usage:
-    uv run main.py instance_name=i6_b10_1 TimeLimit=30 Threads=1
+    uv run Gurobi/solve_instances_Fjsp.py instance_name=i3_k3_1 TimeLimit=30 Threads=1
 
 Arguments:
-    instance_name: Name of the VRP instance file (without .vrp extension)
+    instance_name: Name of the FJSP instance file (without .fjsp extension)
     TimeLimit: Maximum solver time in seconds (Gurobi parameter)
     Threads: Number of CPU threads to use (Gurobi parameter)
     Any other Gurobi parameter can be passed as key=value
 
 Example:
-    $ uv run main.py instance_name=i6_b10_1 TimeLimit=60 MIPGap=0.01
+    $ uv run Gurobi/solve_instances_Fjsp.py instance_name=i3_k3_1 TimeLimit=60 MIPGap=0.01
 """
 import sys
 from pathlib import Path
@@ -18,18 +18,15 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
+
 import pickle
-import os
 import gurobipy as gp
 from gurobipy import GRB
 from instance_generator import FJSPData
-from build_fjsp import build_fjsp, write_solution_file
+from Gurobi.build_fjsp import build_fjsp, write_solution_file
 
 
-#TODO Umbauen auf meinen Instanzgenerator
-
-
-def main(**kwargs):
+def solveModel(**kwargs):
     """
     Main function to solve a FJSP instance.
 
@@ -57,21 +54,22 @@ def main(**kwargs):
     # Validate required arguments
     if "instance_name" not in kwargs:
         print("Error: Please provide an instance name using the 'instance_name' keyword argument.")
-        print("Usage: uv run main.py instance_name=<name> [TimeLimit=<seconds>] [Threads=<n>]")
+        print("Usage: uv run Gurobi/solve_instances_Fjsp.py instance_name=<name> [TimeLimit=<seconds>] [Threads=<n>]")
         return
 
     instance_name = kwargs.get("instance_name")
 
-    # Load the VRP instance from a pickle file
-    path = f"../data/fsjp_instances/{instance_name}.fsjp"
+    # Load the FJSP instance from a pickle file
+    path = ROOT_DIR / "data" / "fjsp_instances" / f"{instance_name}.fjsp"
 
-    if not os.path.exists(path):
+    if not path.exists():
         print(f"Error: Instance file not found at '{path}'")
         print("Available instances:")
-        if os.path.exists("vrp_instances"):
-            for f in os.listdir("vrp_instances"):
-                if f.endswith(".vrp"):
-                    print(f"  - {f[:-4]}")
+        instances_dir = ROOT_DIR / "data" / "fjsp_instances"
+        if instances_dir.exists():
+            for f in instances_dir.iterdir():
+                if f.suffix == ".fjsp":
+                    print(f"  - {f.stem}")
         return
 
     with open(path, "rb") as f:
@@ -82,9 +80,11 @@ def main(**kwargs):
     print(f"  Number of Machines: {fjsp_instance.num_machines}")
 
     # Create the Gurobi model
-    model = gp.Model("VRP Model")
+    model = gp.Model("FJSP Model")
 
     # Apply Gurobi parameters from kwargs
+    # Es werden alle bekannten Parameter an Gurobi weitergegeben
+    #TODO will ich das wirklich so machen? muss ich wahrscheinlich -> Lars fragen
     for key, value in kwargs.items():
         if hasattr(model.Params, key):
             known_kwargs.add(key)
@@ -96,22 +96,28 @@ def main(**kwargs):
         if key not in known_kwargs:
             print(f"Warning: Unknown keyword argument '{key}' provided. It will be ignored.")
 
-    # Build the VRP model (add variables, objective, and constraints)
-    X, Y = build_fjsp(model, fjsp_instance)
+    #
+
+    # Build the FJSP model (add variables, objective, and constraints)
+    model, variables = build_fjsp(model, fjsp_instance)
 
     # Optimize the model
     print("\nStarting optimization...")
     model.optimize()
 
+    solution_dir = ROOT_DIR / "data" / "fjsp_solutions"
+    solution_dir.mkdir(parents=True, exist_ok=True)
+    solution_path = solution_dir / f"solution_{instance_name}.txt"
+
     # Check solution status and write output
     if model.Status == GRB.OPTIMAL:
         print(f"\nOptimal solution found! Objective value: {model.ObjVal:.2f}")
-        write_solution_file(model, X, Y, fjsp_instance, f"vrp_solutions/solution_{instance_name}.txt")
-        print(f"Solution written to: vrp_solutions/solution_{instance_name}.txt")
+        write_solution_file(model, variables, fjsp_instance, solution_path)
+        print(f"Solution written to: {solution_path}")
     elif model.Status == GRB.TIME_LIMIT and model.SolCount > 0:
         print(f"\nTime limit reached. Best solution found: {model.ObjVal:.2f}")
-        write_solution_file(model, X, Y, fjsp_instance, f"vrp_solutions/solution_{instance_name}.txt")
-        print(f"Solution written to: vrp_solutions/solution_{instance_name}.txt")
+        write_solution_file(model, variables, fjsp_instance, solution_path)
+        print(f"Solution written to: {solution_path}")
     elif model.Status == GRB.INFEASIBLE:
         print("\nError: Model is infeasible. No solution exists.")
     elif model.Status == GRB.UNBOUNDED:
@@ -119,23 +125,6 @@ def main(**kwargs):
     else:
         print(f"\nOptimization ended with status {model.Status}. No solution written.")
 
-
-if __name__ == "__main__":
-    #TODO was passiert hier????
-    # Parse command-line arguments in the form key=value
-    kwargs: dict[str, int | float | str] = {}
-    for arg in sys.argv[1:]:
-        if "=" not in arg:
-            continue
-
-        key, value = arg.split("=", 1)
-        # Try to convert to appropriate type (int, float, or keep as string)
-        for converter in (int, float):
-            try:
-                value = converter(value)
-                break
-            except ValueError:
-                continue
-        kwargs[key] = value
-
-    main(**kwargs)
+if __name__ == '__main__':
+    pass
+    #TODO Kwarg code von Timo habe ich hier gelöscht, vielleicht wieder in solve_ins einbauen?

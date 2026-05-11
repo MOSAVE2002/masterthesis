@@ -133,12 +133,12 @@ class FJSPData:
         if self.flag_save_file:
             if not os.path.exists(self.path):
                 os.makedirs(self.path)
-            document = open(self.path + '{0}j_{1}m_{2}.fjs'.format(self.num_jobs, self.num_machines, str.zfill(str(idx),3)),'w')
+            document = open(self.path + '{0}j_{1}m_{2}.fjsp'.format(self.num_jobs, self.num_machines, str.zfill(str(idx),3)),'w')
             for i in range(len(lines_doc)):
                 print(lines_doc[i], file=document)
             document.close()
-        def __repr__(self):
-            return f"FJSP({self.instance_name})"
+    def __repr__(self):
+        return f"FJSP({self.instance_name})"
 
 def generate_instances(nb_instances, num_jobs, num_machines, operations_per_job_min, operations_per_job_max, num_operations):
     """
@@ -150,7 +150,7 @@ def generate_instances(nb_instances, num_jobs, num_machines, operations_per_job_
     - a pickle file with the data for each generated instance
     """
     project_root = Path(__file__).resolve().parent
-    data_directory = project_root / "data" / "fsjp_instances"
+    data_directory = project_root / "data" / "fjsp_instances"
     if not data_directory.exists():
         data_directory.mkdir(parents=True, exist_ok=True)
 

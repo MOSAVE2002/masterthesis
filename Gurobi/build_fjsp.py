@@ -1,125 +1,6 @@
 import gurobipy as gp
 from gurobipy import GRB
 
-
-def parse_standard_fjsp_lines(lines, one_based_operations=True):
-    """
-    Parst das Standard-FJSP-Instanzformat.
-
-    Erwartetes Format:
-        Erste Zeile:
-            n_jobs n_machines avg_machines_per_operation
-
-        Jede weitere Zeile beschreibt einen Job:
-            n_operations
-            n_eligible_machines_op_1 machine processing_time ...
-            n_eligible_machines_op_2 machine processing_time ...
-            ...
-
-    Beispiel:
-        2 3 2.0
-        2 2 0 5 1 6 1 2 7
-        1 3 0 4 1 5 2 6
-
-    Rückgabe:
-        instance-Dictionary für build_fjsp().
-    """
-
-    lines = lines.strip().splitlines()
-
-    lines = [line.strip() for line in lines if line.strip()]
-
-    header = lines[0].split()
-    n_jobs = int(header[0])
-    n_machines = int(header[1])
-
-    machines = list(range(n_machines))
-
-    jobs = {}
-    eligible_machines = {}
-    processing_times = {}
-    predecessors = {}
-    job_end_operations = {}
-    real_operations = []
-
-    operation_id = 1 if one_based_operations else 0
-
-    if len(lines) - 1 != n_jobs:
-        raise ValueError(
-            f"Die Kopfzeile gibt {n_jobs} Jobs an, "
-            f"aber es wurden {len(lines) - 1} Job-Zeilen gefunden."
-        )
-
-    for job_idx in range(1, n_jobs + 1):
-        tokens = list(map(int, lines[job_idx].split()))
-
-        pos = 0
-        n_operations = tokens[pos]
-        pos += 1
-
-        job_operations = []
-
-        for op_pos in range(n_operations):
-            current_operation = operation_id
-            operation_id += 1
-
-            job_operations.append(current_operation)
-            real_operations.append(current_operation)
-
-            n_eligible = tokens[pos]
-            pos += 1
-
-            eligible = []
-
-            for _ in range(n_eligible):
-                machine = tokens[pos]
-                processing_time = tokens[pos + 1]
-                pos += 2
-
-                if machine < 0 or machine >= n_machines:
-                    raise ValueError(
-                        f"Ungültige Maschine {machine} in Job {job_idx}, "
-                        f"Operation {op_pos + 1}. Zulässig sind 0 bis {n_machines - 1}."
-                    )
-
-                eligible.append(machine)
-                processing_times[current_operation, machine] = processing_time
-
-            eligible_machines[current_operation] = eligible
-
-        if pos != len(tokens):
-            raise ValueError(
-                f"Job-Zeile {job_idx} wurde nicht vollständig geparst. "
-                f"Position {pos}, aber {len(tokens)} Tokens vorhanden."
-            )
-
-        jobs[job_idx] = job_operations
-
-        # Lineare Standardpräzedenz innerhalb eines Jobs:
-        # o_1 -> o_2 -> ... -> o_n
-        for idx, op in enumerate(job_operations):
-            if idx == 0:
-                predecessors[op] = []
-            else:
-                predecessors[op] = [job_operations[idx - 1]]
-
-        job_end_operations[job_idx] = job_operations[-1]
-
-    instance = {
-        "n_jobs": n_jobs,
-        "n_machines": n_machines,
-        "jobs": jobs,
-        "machines": machines,
-        "eligible_machines": eligible_machines,
-        "processing_times": processing_times,
-        "predecessors": predecessors,
-        "job_end_operations": job_end_operations,
-        "real_operations": real_operations,
-    }
-
-    return instance
-
-
 def build_fjsp(fjsp, instance):
     """
     Baut ein MIP-Modell für das Flexible Job Shop Scheduling Problem
@@ -128,26 +9,54 @@ def build_fjsp(fjsp, instance):
     X[i,j,k] = 1 bedeutet:
         Operation i wird vor Operation j auf Maschine k bearbeitet.
     """
+    
+    model = fjsp
 
-    if fjsp is None:
-        model = gp.Model("FJSP")
-    else:
-        model = fjsp
+    n_jobs = instance.num_jobs
+    n_machines = instance.num_machines
+    machines = list(range(n_machines))
 
-    jobs = list(instance["jobs"].keys())
-    machines = list(instance["machines"])
+    jobs = {} # set of all jobs
+    eligible_machines = {} # set of 
+    processing_times = {} 
+    predecessors = {}
+    job_end_operations = {}
+    real_operations = []
 
-    operations = sorted({
-        operation
-        for ops_of_job in instance["jobs"].values()
-        for operation in ops_of_job
-    })
+    operation_id = 1
 
-    eligible_machines = instance["eligible_machines"]
-    processing_times = instance["processing_times"]
-    predecessors = instance.get("predecessors", {i: [] for i in operations})
-    job_end_operations = instance["job_end_operations"]
-    real_operations = list(instance.get("real_operations", operations))
+    for job_index in range(n_jobs):
+        num_operations = instance.nums_operation[job_index]
+        job_operations = []
+
+        for local_operation_index in range(num_operations):
+            current_operation = operation_id
+            operation_id += 1
+
+            global_op_idx = instance.num_ope_bias[job_index] + local_operation_index
+            num_options = instance.nums_option[global_op_idx]
+            machine_offset = instance.num_machine_bias[global_op_idx]
+
+            eligible = []
+            for option_idx in range(num_options):
+                machine = instance.ope_machine[machine_offset + option_idx]
+                processing_time = instance.processing_time[machine_offset + option_idx]
+                eligible.append(machine)
+                processing_times[current_operation, machine] = processing_time
+
+            eligible_machines[current_operation] = eligible
+            job_operations.append(current_operation)
+            real_operations.append(current_operation)
+
+            if local_operation_index == 0:
+                predecessors[current_operation] = []
+            else:
+                predecessors[current_operation] = [job_operations[local_operation_index - 1]]
+
+        jobs[job_index + 1] = job_operations
+        job_end_operations[job_index + 1] = job_operations[-1]
+
+    
 
     # Big-M
     H = sum(
@@ -160,7 +69,7 @@ def build_fjsp(fjsp, instance):
     # -------------------------
 
     C = model.addVars(
-        operations,
+        real_operations,
         lb=0.0,
         vtype=GRB.CONTINUOUS,
         name="C"
@@ -216,7 +125,7 @@ def build_fjsp(fjsp, instance):
         )
 
     # Technologische Präzedenzrelationen
-    for i in operations:
+    for i in real_operations:
         for j in predecessors.get(i, []):
             processing_time_i = gp.quicksum(
                 Y[i, k] * processing_times[i, k]
@@ -244,6 +153,17 @@ def build_fjsp(fjsp, instance):
             name=f"nonoverlap_i_before_j[{i}_{j}_{k}]"
         )
 
+    # Completion lower bound
+    for i in real_operations:
+        processing_time_i = gp.quicksum(
+            Y[i, k] * processing_times[i, k]
+            for k in eligible_machines[i]
+        )
+        model.addConstr(
+            C[i] >= processing_time_i,
+            name=f"completion_lb[{i}]"
+        )
+
     # Makespan
     for u in jobs:
         end_operation = job_end_operations[u]
@@ -260,8 +180,10 @@ def build_fjsp(fjsp, instance):
         "Y": Y,
         "X": X,
         "H": H,
-        "operations": operations,
+        "operations": real_operations,
         "real_operations": real_operations,
+        "eligible_machines": eligible_machines,
+        "processing_times" : processing_times,
         "machines": machines,
         "jobs": jobs,
         "X_index": X_index,
@@ -289,21 +211,17 @@ def write_solution_file(model, variables, instance, filename="solution.txt"):
             file.write(f"Gurobi-Status: {model.Status}\n")
         return
 
+
     C = variables["C"]
     C_max = variables["C_max"]
     Y = variables["Y"]
-
     real_operations = variables["real_operations"]
+    eligible_machines = variables["eligible_machines"]
+    processing_times = variables["processing_times"]
     machines = variables["machines"]
-
-    eligible_machines = instance["eligible_machines"]
-    processing_times = instance["processing_times"]
-
     rows = []
 
     for i in real_operations:
-        assigned_machine = None
-        processing_time = None
 
         for k in eligible_machines[i]:
             if Y[i, k].X > 0.5:
