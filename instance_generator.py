@@ -133,7 +133,7 @@ class FJSPData:
         if self.flag_save_file:
             if not os.path.exists(self.path):
                 os.makedirs(self.path)
-            document = open(self.path + '{0}j_{1}m_{2}.fjsp'.format(self.num_jobs, self.num_machines, str.zfill(str(idx),3)),'w')
+            document = open(self.path + 'i{0}_j{1}_{2}.fjsp'.format(self.num_jobs, self.num_machines, str.zfill(str(idx),3)),'w')
             for i in range(len(lines_doc)):
                 print(lines_doc[i], file=document)
             document.close()
