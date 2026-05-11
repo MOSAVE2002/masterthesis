@@ -12,14 +12,19 @@ Arguments:
 Example:
     $ uv run main.py instance_name=i6_b10_1 TimeLimit=60 MIPGap=0.01
 """
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
 
 import pickle
-import sys
 import os
 import gurobipy as gp
 from gurobipy import GRB
 from instance_generator import FJSPData
-from build_fjsp import build_fjsp, write_solution
+from build_fjsp import build_fjsp, write_solution_file
+
 
 #TODO Umbauen auf meinen Instanzgenerator
 
@@ -58,7 +63,7 @@ def main(**kwargs):
     instance_name = kwargs.get("instance_name")
 
     # Load the VRP instance from a pickle file
-    path = f"vrp_instances/{instance_name}.vrp"
+    path = f"../data/fsjp_instances/{instance_name}.fsjp"
 
     if not os.path.exists(path):
         print(f"Error: Instance file not found at '{path}'")
@@ -101,11 +106,11 @@ def main(**kwargs):
     # Check solution status and write output
     if model.Status == GRB.OPTIMAL:
         print(f"\nOptimal solution found! Objective value: {model.ObjVal:.2f}")
-        write_solution(model, X, Y, fjsp_instance, f"vrp_solutions/solution_{instance_name}.txt")
+        write_solution_file(model, X, Y, fjsp_instance, f"vrp_solutions/solution_{instance_name}.txt")
         print(f"Solution written to: vrp_solutions/solution_{instance_name}.txt")
     elif model.Status == GRB.TIME_LIMIT and model.SolCount > 0:
         print(f"\nTime limit reached. Best solution found: {model.ObjVal:.2f}")
-        write_solution(model, X, Y, fjsp_instance, f"vrp_solutions/solution_{instance_name}.txt")
+        write_solution_file(model, X, Y, fjsp_instance, f"vrp_solutions/solution_{instance_name}.txt")
         print(f"Solution written to: vrp_solutions/solution_{instance_name}.txt")
     elif model.Status == GRB.INFEASIBLE:
         print("\nError: Model is infeasible. No solution exists.")

@@ -25,8 +25,7 @@ def parse_standard_fjsp_lines(lines, one_based_operations=True):
         instance-Dictionary für build_fjsp().
     """
 
-    if isinstance(lines, str):
-        lines = lines.strip().splitlines()
+    lines = lines.strip().splitlines()
 
     lines = [line.strip() for line in lines if line.strip()]
 

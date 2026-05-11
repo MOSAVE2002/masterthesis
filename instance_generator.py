@@ -2,12 +2,13 @@ import pickle
 import random
 import time 
 import os
+from pathlib import Path
 
 
 class FJSPData:
     def __init__(
         self,
-        nb_instances: int,
+        nb_instance: int,
         num_jobs: int,
         num_machines: int,
         operations_per_job_min: int,
@@ -24,7 +25,7 @@ class FJSPData:
         explanations of argumets
 
         """
-        self.nb_instances = nb_instances
+        self.nb_instance = nb_instance
 
         if num_operations is None:
             num_operations = []
@@ -54,7 +55,7 @@ class FJSPData:
 
          # Instance Name
          #TODO mit zfill() sieht besser aus, wenn ich nacher mti tausenden datein arbeite, sieht das übersichtlicher aus
-        self.instance_name = f"i{self.num_jobs}_k{self.num_machines}_{self.nb_instances}"
+        self.instance_name = f"i{self.num_jobs}_k{self.num_machines}_{self.nb_instance}"
 
 
         if not self.flag_same_operations:
@@ -89,7 +90,7 @@ class FJSPData:
         #TODO: Weitere Informationen sammeln, wie Upper und Lower Bound? -> Literatur für Sampling?
         lines_doc.append('{0}\t{1}\t{2}\n'.format(self.num_jobs, self.num_machines, self.nums_options / self.num_operations))
     
-        idx = self.nb_instances
+        idx = self.nb_instance
         for i in range(self.num_jobs):
             flag = 0
             flag_time = 0
@@ -132,7 +133,7 @@ class FJSPData:
         if self.flag_save_file:
             if not os.path.exists(self.path):
                 os.makedirs(self.path)
-            document = open(self.path + '{0}j_{1}m_{2}.fjs'.format(self.num_jobs, self.num_machines, str.zfill(str(idx),3)),'a')
+            document = open(self.path + '{0}j_{1}m_{2}.fjs'.format(self.num_jobs, self.num_machines, str.zfill(str(idx),3)),'w')
             for i in range(len(lines_doc)):
                 print(lines_doc[i], file=document)
             document.close()
@@ -148,23 +149,25 @@ def generate_instances(nb_instances, num_jobs, num_machines, operations_per_job_
     Returns:
     - a pickle file with the data for each generated instance
     """
-    data_directory = "data/fsjp_instances/"
-    if not os.path.exists(data_directory):
-        os.makedirs(data_directory)
+    project_root = Path(__file__).resolve().parent
+    data_directory = project_root / "data" / "fsjp_instances"
+    if not data_directory.exists():
+        data_directory.mkdir(parents=True, exist_ok=True)
 
     # generate the number of instances as defined in nb_instances
-    for instance_number in range(1, nb_instances + 1):
+    for instance_nb in range(1, nb_instances + 1):
         # generate an instance
-        instance = FJSPData(nb_instances=nb_instances,num_jobs=num_jobs, num_machines=num_machines, operations_per_job_min=operations_per_job_min, operations_per_job_max=operations_per_job_max, num_operations=None)
+        instance = FJSPData(nb_instance=instance_nb,num_jobs=num_jobs, num_machines=num_machines, operations_per_job_min=operations_per_job_min, operations_per_job_max=operations_per_job_max, num_operations=None)
 
         # save the generated instance to the created directory using pickle
-        pickle.dump(instance, open(f"{data_directory}/{instance.instance_name}.vrp", "wb"))
+        with open(data_directory / f"{instance.instance_name}.fjsp", "wb") as output_file:
+            pickle.dump(instance, output_file)
 
 
 if __name__ == "__main__":
-    generate_instances(nb_instances =1, num_jobs=10, num_machines=10, operations_per_job_min=5, operations_per_job_max=15, num_operations=None)
+    
+    generate_instances(nb_instances =5, num_jobs=3, num_machines=3, operations_per_job_min=1, operations_per_job_max=2, num_operations=None)
 
 
 
        
-
