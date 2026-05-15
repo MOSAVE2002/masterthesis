@@ -22,12 +22,14 @@ Components:
     - Adaptive TS iteration count: maxTSIter = ts_iter_base * (gen / max_gen)
 """
 
+import bisect
 from itertools import permutations
 import random
 import time
 from typing import Dict, List, Optional, Set, Tuple
 from pathlib import Path
 import pickle
+import sys
 
 # ---------------------------------------------------------------------------
 # Type alias
@@ -41,13 +43,16 @@ ProcessingTimes = List[List[List[Tuple[int, int]]]]
 # ---------------------------------------------------------------------------
 
 PARAMS: Dict = {
+    # Paper values (Li & Gao 2016, Table 2) are pop=400, gen=200, ts_iter_base=800,
+    # designed for a compiled C/Java implementation — 100-1000x faster than Python.
+    # These Python defaults balance quality and runtime (~1-2 min on 10-job instances).
     "pop_size":     400,
     "max_gen":      200,
-    "max_stagnant": 20,
-    "pr":           0.005,  # elitist reproduction probability
+    "max_stagnant": 100,
+    "pr":           0.005,   # elitist reproduction probability
     "pc":           0.8,    # crossover probability
     "pm":           0.1,    # mutation probability
-    "ts_iter_base": 800,    # maxTSIterSize = ts_iter_base * (gen / max_gen)
+    "ts_iter_base": 800,     # maxTSIterSize = ts_iter_base * (gen / max_gen)
     "tabu_len":     9,
 }
 
@@ -82,6 +87,14 @@ class Individual:
 def ms_index(job: int, op: int, pt: ProcessingTimes) -> int:
     """Position of operation (job, op) in the flat MS string."""
     return sum(len(pt[j]) for j in range(job)) + op
+
+
+def build_ms_offsets(pt: ProcessingTimes) -> List[int]:
+    """Prefix-sum array so ms_index(j, o) = ms_offsets[j] + o in O(1)."""
+    offsets = [0] * (len(pt) + 1)
+    for j, job_ops in enumerate(pt):
+        offsets[j + 1] = offsets[j] + len(job_ops)
+    return offsets
 
 
 def flatten_operations(pt: ProcessingTimes) -> List[Tuple[int, int]]:
@@ -145,6 +158,7 @@ def decode(ind: Individual, pt: ProcessingTimes) -> Tuple[int, List[Dict]]:
         (makespan, schedule)  where each schedule entry is a dict with keys:
         job, op, machine, start, end, duration.
     """
+    ms_off    = build_ms_offsets(pt)
     job_count = [0] * len(pt)
     job_ready = [0] * len(pt)
     machine_intervals: Dict[int, List[Tuple[int, int]]] = {}
@@ -155,7 +169,7 @@ def decode(ind: Individual, pt: ProcessingTimes) -> Tuple[int, List[Dict]]:
         if op >= len(pt[job]):
             continue
 
-        idx     = ms_index(job, op, pt)
+        idx     = ms_off[job] + op
         m_alt   = ind.ms[idx]
         machine, duration = pt[job][op][m_alt]
 
@@ -164,8 +178,7 @@ def decode(ind: Individual, pt: ProcessingTimes) -> Tuple[int, List[Dict]]:
         start     = _earliest_slot(asij, duration, intervals)
         end       = start + duration
 
-        intervals.append((start, end))
-        intervals.sort()
+        bisect.insort(intervals, (start, end))
 
         schedule.append({
             "job": job, "op": op, "machine": machine,
@@ -179,9 +192,61 @@ def decode(ind: Individual, pt: ProcessingTimes) -> Tuple[int, List[Dict]]:
     return makespan, schedule
 
 
-def evaluate(ind: Individual, pt: ProcessingTimes) -> int:
+def _decode_makespan(ind: Individual, pt: ProcessingTimes, ms_off: List[int]) -> int:
+    """Fast makespan-only decode; skips building the schedule list."""
+    n_jobs    = len(pt)
+    nops      = [len(job_ops) for job_ops in pt]
+    job_count = [0] * n_jobs
+    job_ready = [0] * n_jobs
+    mach_ivals: Dict[int, List[Tuple[int, int]]] = {}
+    makespan  = 0
+    ms        = ind.ms
+
+    for job in ind.os:
+        op = job_count[job]
+        if op >= nops[job]:
+            continue
+        machine, duration = pt[job][op][ms[ms_off[job] + op]]
+        asij = job_ready[job]
+
+        # Inline _earliest_slot to eliminate per-op function-call overhead
+        if machine in mach_ivals:
+            intervals = mach_ivals[machine]
+            if asij + duration <= intervals[0][0]:
+                start = asij
+            else:
+                start = None
+                n = len(intervals)
+                for i in range(n - 1):
+                    gs = intervals[i][1]
+                    ge = intervals[i + 1][0]
+                    c  = gs if gs > asij else asij
+                    if c + duration <= ge:
+                        start = c
+                        break
+                if start is None:
+                    last = intervals[-1][1]
+                    start = last if last > asij else asij
+        else:
+            mach_ivals[machine] = []
+            intervals = mach_ivals[machine]
+            start = asij
+
+        end = start + duration
+        bisect.insort(intervals, (start, end))
+        job_ready[job] = end
+        job_count[job] += 1
+        if end > makespan:
+            makespan = end
+
+    return makespan
+
+
+def evaluate(ind: Individual, pt: ProcessingTimes, ms_off: Optional[List[int]] = None) -> int:
     """Evaluate an individual and store its makespan as fitness."""
-    ind.fitness, _ = decode(ind, pt)
+    if ms_off is None:
+        ms_off = build_ms_offsets(pt)
+    ind.fitness = _decode_makespan(ind, pt, ms_off)
     return ind.fitness
 
 
@@ -310,13 +375,13 @@ def mutate_os(os: List[int]) -> List[int]:
     return mutate_os_swap(os) if random.random() < 0.5 else mutate_os_neighborhood(os)
 
 
-def mutate_ms(ms: List[int], pt: ProcessingTimes) -> List[int]:
+def mutate_ms(ms: List[int], pt: ProcessingTimes, flat_ops: Optional[List[Tuple[int, int]]] = None) -> List[int]:
     """
     MS mutation: select r = |ms|/2 positions, reassign each to a
     different available machine for that operation.
     """
     child = ms[:]
-    ops   = flatten_operations(pt)
+    ops   = flat_ops if flat_ops is not None else flatten_operations(pt)
     r     = max(1, len(child) // 2)
     for pos in random.sample(range(len(child)), r):
         job, op = ops[pos]
@@ -388,6 +453,376 @@ def _op_pos_in_os(os: List[int], job: int, op_idx: int) -> Optional[int]:
     return None
 
 
+def _machine_alt_index(pt: ProcessingTimes, job: int, op: int, machine: int) -> Optional[int]:
+    for i, (m, _dur) in enumerate(pt[job][op]):
+        if m == machine:
+            return i
+    return None
+
+
+def _build_sched_info(schedule: List[Dict], pt: ProcessingTimes) -> Dict:
+    ms_off = build_ms_offsets(pt)
+    n_ops = sum(len(job_ops) for job_ops in pt)
+    n_machines = max(e["machine"] for e in schedule) + 1 if schedule else 0
+
+    info = {
+        "start": [0] * n_ops,
+        "dur": [0] * n_ops,
+        "tail": [0] * n_ops,
+        "machine_of": [-1] * n_ops,
+        "sched_pos": [-1] * n_ops,
+        "job_pred": [-1] * n_ops,
+        "job_succ": [-1] * n_ops,
+        "mach_pred": [-1] * n_ops,
+        "mach_succ": [-1] * n_ops,
+        "order": [],
+        "machine_seq": [[] for _ in range(n_machines)],
+    }
+
+    for pos, e in enumerate(schedule):
+        idx = ms_off[e["job"]] + e["op"]
+        info["start"][idx] = e["start"]
+        info["dur"][idx] = e["duration"]
+        info["machine_of"][idx] = e["machine"]
+        info["sched_pos"][idx] = pos
+        info["order"].append(idx)
+        info["machine_seq"][e["machine"]].append(idx)
+        if e["op"] > 0:
+            pred = ms_off[e["job"]] + e["op"] - 1
+            info["job_pred"][idx] = pred
+            info["job_succ"][pred] = idx
+
+    for seq in info["machine_seq"]:
+        seq.sort(key=lambda idx: (info["start"][idx], idx))
+        for i, idx in enumerate(seq):
+            if i > 0:
+                info["mach_pred"][idx] = seq[i - 1]
+            if i + 1 < len(seq):
+                info["mach_succ"][idx] = seq[i + 1]
+
+    info["order"].sort(key=lambda idx: (info["start"][idx], idx))
+    for idx in reversed(info["order"]):
+        best = 0
+        js = info["job_succ"][idx]
+        ms = info["mach_succ"][idx]
+        if js >= 0:
+            best = max(best, info["dur"][js] + info["tail"][js])
+        if ms >= 0:
+            best = max(best, info["dur"][ms] + info["tail"][ms])
+        info["tail"][idx] = best
+
+    return info
+
+
+def _preferred_critical_path(
+    schedule: List[Dict],
+    pt: ProcessingTimes,
+    makespan: int,
+    critical: Set[Tuple[int, int]],
+    info: Dict,
+) -> List[Tuple[int, int]]:
+    ms_off = build_ms_offsets(pt)
+    flat_ops = flatten_operations(pt)
+
+    end_idx = None
+    for idx in info["order"]:
+        if info["start"][idx] + info["dur"][idx] + info["tail"][idx] == makespan:
+            end_idx = idx
+    if end_idx is None:
+        return []
+
+    cur = end_idx
+    while True:
+        jp = info["job_pred"][cur]
+        mp = info["mach_pred"][cur]
+        jp_crit = jp >= 0 and flat_ops[jp] in critical and info["start"][jp] + info["dur"][jp] == info["start"][cur]
+        mp_crit = mp >= 0 and flat_ops[mp] in critical and info["start"][mp] + info["dur"][mp] == info["start"][cur]
+        if jp_crit:
+            cur = jp
+        elif mp_crit:
+            cur = mp
+        else:
+            break
+
+    path: List[Tuple[int, int]] = []
+    while True:
+        path.append(flat_ops[cur])
+        js = info["job_succ"][cur]
+        ms = info["mach_succ"][cur]
+        js_crit = js >= 0 and flat_ops[js] in critical and info["start"][cur] + info["dur"][cur] == info["start"][js]
+        ms_crit = ms >= 0 and flat_ops[ms] in critical and info["start"][cur] + info["dur"][cur] == info["start"][ms]
+        if js_crit:
+            cur = js
+        elif ms_crit:
+            cur = ms
+        else:
+            break
+    return path
+
+
+def _compute_removed_times(pt: ProcessingTimes, info: Dict, v_idx: int) -> Tuple[List[int], List[int]]:
+    n_ops = sum(len(job_ops) for job_ops in pt)
+    s_minus = [0] * n_ops
+    t_minus = [0] * n_ops
+    mp = info["mach_pred"][v_idx]
+    ms = info["mach_succ"][v_idx]
+
+    for idx in info["order"]:
+        if idx == v_idx:
+            continue
+        finish = s_minus[idx] + info["dur"][idx]
+        js = info["job_succ"][idx]
+        if js >= 0:
+            s_minus[js] = max(s_minus[js], finish)
+        msucc = info["mach_succ"][idx]
+        if idx == mp:
+            msucc = ms
+        if msucc == v_idx:
+            msucc = -1
+        if msucc >= 0:
+            s_minus[msucc] = max(s_minus[msucc], finish)
+
+    for idx in reversed(info["order"]):
+        if idx == v_idx:
+            continue
+        best = 0
+        js = info["job_succ"][idx]
+        if js >= 0:
+            best = max(best, info["dur"][js] + t_minus[js])
+        msucc = info["mach_succ"][idx]
+        if idx == mp:
+            msucc = ms
+        if msucc == v_idx:
+            msucc = -1
+        if msucc >= 0:
+            best = max(best, info["dur"][msucc] + t_minus[msucc])
+        t_minus[idx] = best
+    return s_minus, t_minus
+
+
+def _lpath_score_same_machine(info: Dict, v_idx: int, insert_pos: int) -> float:
+    base_seq = info["machine_seq"][info["machine_of"][v_idx]]
+    current_pos = base_seq.index(v_idx)
+    seq = [idx for idx in base_seq if idx != v_idx]
+    new_seq = seq[:]
+    new_seq.insert(insert_pos, v_idx)
+
+    start = min(current_pos, insert_pos)
+    finish = max(current_pos, insert_pos)
+    Q = new_seq[start:finish + 1]
+    if not Q:
+        return float("inf")
+
+    def job_ready(idx: int) -> int:
+        jp = info["job_pred"][idx]
+        return info["start"][jp] + info["dur"][jp] if jp >= 0 else 0
+
+    def job_tail(idx: int) -> int:
+        js = info["job_succ"][idx]
+        return info["dur"][js] + info["tail"][js] if js >= 0 else 0
+
+    rprime = [0] * len(Q)
+    pm_out = new_seq[start - 1] if start > 0 else -1
+    rprime[0] = max(job_ready(Q[0]), info["start"][pm_out] + info["dur"][pm_out] if pm_out >= 0 else 0)
+    for i in range(1, len(Q)):
+        rprime[i] = max(job_ready(Q[i]), rprime[i - 1] + info["dur"][Q[i - 1]])
+
+    tprime = [0] * len(Q)
+    sm_out = new_seq[finish + 1] if finish + 1 < len(new_seq) else -1
+    tprime[-1] = max(job_tail(Q[-1]), info["dur"][sm_out] + info["tail"][sm_out] if sm_out >= 0 else 0)
+    for i in range(len(Q) - 2, -1, -1):
+        tprime[i] = max(job_tail(Q[i]), tprime[i + 1] + info["dur"][Q[i + 1]])
+
+    return max(rprime[i] + info["dur"][Q[i]] + tprime[i] for i in range(len(Q)))
+
+
+def _build_paper_move_for_machine(
+    pt: ProcessingTimes,
+    job: int,
+    op: int,
+    machine: int,
+    info: Dict,
+) -> Optional[Dict]:
+    ms_off = build_ms_offsets(pt)
+    idx = ms_off[job] + op
+    old_machine = info["machine_of"][idx]
+    new_alt = _machine_alt_index(pt, job, op, machine)
+    if new_alt is None:
+        return None
+
+    s_minus, t_minus = _compute_removed_times(pt, info, idx)
+    sv_minus = s_minus[ms_off[job] + op - 1] + info["dur"][ms_off[job] + op - 1] if op > 0 else 0
+    tv_minus = info["dur"][ms_off[job] + op + 1] + t_minus[ms_off[job] + op + 1] if op + 1 < len(pt[job]) else 0
+
+    base_seq = info["machine_seq"][machine]
+    seq = [x for x in base_seq if x != idx]
+    left, right = 0, len(seq)
+    common: List[int] = []
+    for i, x in enumerate(seq):
+        in_r = info["start"][x] + info["dur"][x] > sv_minus
+        in_l = info["dur"][x] + info["tail"][x] > tv_minus
+        if in_l and not in_r:
+            left = max(left, i + 1)
+        if in_r and not in_l:
+            right = min(right, i)
+        if in_l and in_r:
+            common.append(x)
+    if left > right:
+        return None
+
+    current_pos = info["machine_seq"][old_machine].index(idx) if machine == old_machine else -1
+    best_pos = None
+    best_score = float("inf")
+
+    def consider(pos: int, score: float) -> None:
+        nonlocal best_pos, best_score
+        if pos < left or pos > right:
+            return
+        if machine == old_machine and pos == current_pos:
+            return
+        if score < best_score:
+            best_score = score
+            best_pos = pos
+
+    if not common:
+        dur = pt[job][op][new_alt][1]
+        for pos in range(left, right + 1):
+            consider(pos, sv_minus + dur + tv_minus)
+    elif machine != old_machine:
+        dur = pt[job][op][new_alt][1]
+        for i in range(len(common) + 1):
+            if i == 0:
+                pos = seq.index(common[0])
+                consider(pos, dur + sv_minus + info["dur"][common[0]] + info["tail"][common[0]])
+            elif i < len(common):
+                pos = seq.index(common[i - 1]) + 1
+                consider(pos, dur + info["start"][common[i - 1]] + info["dur"][common[i - 1]] + info["dur"][common[i]] + info["tail"][common[i]])
+            else:
+                pos = seq.index(common[-1]) + 1
+                consider(pos, dur + info["start"][common[-1]] + info["dur"][common[-1]] + tv_minus)
+    else:
+        for pos in range(left, right + 1):
+            consider(pos, _lpath_score_same_machine(info, idx, pos))
+
+    if best_pos is None:
+        return None
+    return {
+        "job": job,
+        "op": op,
+        "flat_idx": idx,
+        "old_machine": old_machine,
+        "new_machine": machine,
+        "new_alt": new_alt,
+        "insert_pos": best_pos,
+        "score": best_score,
+    }
+
+
+def _reencode_from_machine_sequences(pt: ProcessingTimes, info: Dict, machine_seq: List[List[int]]) -> List[int]:
+    ms_off = build_ms_offsets(pt)
+    flat_ops = flatten_operations(pt)
+    n_ops = sum(len(job_ops) for job_ops in pt)
+    mach_pred = [-1] * n_ops
+    mach_succ = [-1] * n_ops
+    for seq in machine_seq:
+        for i, idx in enumerate(seq):
+            if i > 0:
+                mach_pred[idx] = seq[i - 1]
+            if i + 1 < len(seq):
+                mach_succ[idx] = seq[i + 1]
+
+    indeg = [0] * n_ops
+    for idx in range(n_ops):
+        job, op = flat_ops[idx]
+        if op > 0:
+            indeg[idx] += 1
+        if mach_pred[idx] >= 0:
+            indeg[idx] += 1
+
+    avail = [idx for idx in range(n_ops) if indeg[idx] == 0]
+    os_str: List[int] = []
+    while avail:
+        idx = min(avail, key=lambda x: (info["start"][x], info["sched_pos"][x]))
+        avail.remove(idx)
+        job, op = flat_ops[idx]
+        os_str.append(job)
+        if op + 1 < len(pt[job]):
+            js = ms_off[job] + op + 1
+            indeg[js] -= 1
+            if indeg[js] == 0:
+                avail.append(js)
+        if mach_succ[idx] >= 0:
+            ms = mach_succ[idx]
+            indeg[ms] -= 1
+            if indeg[ms] == 0:
+                avail.append(ms)
+    return os_str
+
+
+def _apply_paper_move(current: Individual, pt: ProcessingTimes, info: Dict, move: Dict) -> Individual:
+    child = current.copy()
+    ms_off = build_ms_offsets(pt)
+    child.ms[ms_off[move["job"]] + move["op"]] = move["new_alt"]
+    machine_seq = [seq[:] for seq in info["machine_seq"]]
+    machine_seq[move["old_machine"]].remove(move["flat_idx"])
+    machine_seq[move["new_machine"]].insert(move["insert_pos"], move["flat_idx"])
+    child.os = _reencode_from_machine_sequences(pt, info, machine_seq)
+    return child
+
+
+def _paper_tabu_search(
+    ind: Individual,
+    pt: ProcessingTimes,
+    max_iter: int,
+    ms_off: List[int],
+) -> Individual:
+    current = ind.copy()
+    evaluate(current, pt, ms_off)
+    best = current.copy()
+    tabu_until: Dict[Tuple[int, int], int] = {}
+
+    for it in range(1, max_iter + 1):
+        _, schedule = decode(current, pt)
+        critical = _find_critical_ops(schedule, current.fitness)
+        info = _build_sched_info(schedule, pt)
+        path = _preferred_critical_path(schedule, pt, current.fitness, critical, info)
+        if not path:
+            break
+
+        candidates: List[Dict] = []
+        for job, op in path:
+            for machine, _dur in pt[job][op]:
+                move = _build_paper_move_for_machine(pt, job, op, machine, info)
+                if move is not None:
+                    candidates.append(move)
+        if not candidates:
+            break
+
+        aspiration = [mv for mv in candidates if mv["score"] < best.fitness]
+        non_tabu = [mv for mv in candidates if tabu_until.get((mv["flat_idx"], mv["old_machine"]), 0) <= it]
+
+        if aspiration:
+            chosen = min(aspiration, key=lambda mv: mv["score"])
+        elif non_tabu:
+            top = sorted(non_tabu, key=lambda mv: mv["score"])[:2]
+            chosen = random.choice(top)
+        else:
+            chosen = min(
+                candidates,
+                key=lambda mv: (tabu_until.get((mv["flat_idx"], mv["old_machine"]), 0), mv["score"]),
+            )
+
+        current = _apply_paper_move(current, pt, info, chosen)
+        evaluate(current, pt, ms_off)
+        if current.fitness < best.fitness:
+            best = current.copy()
+
+        tabu_len = len(path) + len(pt[chosen["job"]][chosen["op"]])
+        tabu_until[(chosen["flat_idx"], chosen["old_machine"])] = it + tabu_len
+
+    return best
+
+
 # ---------------------------------------------------------------------------
 # Tabu Search
 # ---------------------------------------------------------------------------
@@ -397,6 +832,7 @@ def tabu_search(
     pt: ProcessingTimes,
     max_iter: int,
     tabu_len: int = PARAMS["tabu_len"],
+    ms_off: Optional[List[int]] = None,
 ) -> Individual:
     """
     Tabu Search with critical-path-based neighborhood.
@@ -406,76 +842,9 @@ def tabu_search(
     Aspiration criterion: accept a tabu move if it improves the best known solution.
     Termination: max_iter iterations.
     """
-    current = ind.copy()
-    evaluate(current, pt)
-    best      = current.copy()
-    tabu_list: List[tuple] = []
-
-    for _ in range(max_iter):
-        _, schedule = decode(current, pt)
-        critical    = _find_critical_ops(schedule, current.fitness)
-
-        neighbors: List[Tuple[Individual, tuple]] = []
-
-        # ---- N1: swap adjacent critical ops on the same machine ----
-        # Group critical ops by machine, sorted by start time
-        mach_crit: Dict[int, List[Tuple[int, int, int]]] = {}
-        for e in schedule:
-            if (e["job"], e["op"]) in critical:
-                mach_crit.setdefault(e["machine"], []).append(
-                    (e["start"], e["job"], e["op"])
-                )
-        for ops in mach_crit.values():
-            ops.sort()
-
-        for ops in mach_crit.values():
-            for i in range(len(ops) - 1):
-                _, j1, o1 = ops[i]
-                _, j2, o2 = ops[i + 1]
-                pos1 = _op_pos_in_os(current.os, j1, o1)
-                pos2 = _op_pos_in_os(current.os, j2, o2)
-                if pos1 is None or pos2 is None:
-                    continue
-                new_os       = current.os[:]
-                new_os[pos1], new_os[pos2] = new_os[pos2], new_os[pos1]
-                cand         = Individual(new_os, current.ms[:])
-                evaluate(cand, pt)
-                neighbors.append((cand, ("os", j1, o1, j2, o2)))
-
-        # ---- N2: try alternative machines for each critical op ----
-        for j, o in critical:
-            idx     = ms_index(j, o, pt)
-            cur_alt = current.ms[idx]
-            for alt in range(len(pt[j][o])):
-                if alt == cur_alt:
-                    continue
-                new_ms      = current.ms[:]
-                new_ms[idx] = alt
-                cand        = Individual(current.os[:], new_ms)
-                evaluate(cand, pt)
-                neighbors.append((cand, ("ms", j, o, cur_alt, alt)))
-
-        if not neighbors:
-            break
-
-        neighbors.sort(key=lambda x: x[0].fitness)
-
-        # Pick best non-tabu neighbor (or tabu if it meets aspiration)
-        chosen, chosen_move = neighbors[0]  # fallback if all tabu
-        for cand, move in neighbors:
-            if move not in tabu_list or cand.fitness < best.fitness:
-                chosen, chosen_move = cand, move
-                break
-
-        current = chosen
-        if current.fitness < best.fitness:
-            best = current.copy()
-
-        tabu_list.append(chosen_move)
-        if len(tabu_list) > tabu_len:
-            tabu_list.pop(0)
-
-    return best
+    if ms_off is None:
+        ms_off = build_ms_offsets(pt)
+    return _paper_tabu_search(ind, pt, max_iter=max_iter, ms_off=ms_off)
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +876,11 @@ def hybrid_ga_ts(
     Returns the best Individual found.
     """
     # ---------- Step 2: Initialisation ----------
+    flat_ops   = flatten_operations(pt)
+    ms_off     = build_ms_offsets(pt)
     population = [random_individual(pt) for _ in range(pop_size)]
     for ind in population:
-        evaluate(ind, pt)
+        evaluate(ind, pt, ms_off)
 
     best_ever     = min(population, key=lambda x: x.fitness).copy()
     stagnant_cnt  = 0
@@ -522,8 +893,6 @@ def hybrid_ga_ts(
                 print(f"[HA] Early stop at gen {gen}: "
                       f"no improvement for {max_stagnant} generations.")
             break
-
-        population.sort(key=lambda x: x.fitness)
 
         # ---------- Step 5.1: Generate new population ----------
         new_pop = elitist_selection(population, pr)
@@ -542,24 +911,24 @@ def hybrid_ga_ts(
             # Mutation
             if random.random() < pm:
                 c1.os = mutate_os(c1.os)
-                c1.ms = mutate_ms(c1.ms, pt)
+                c1.ms = mutate_ms(c1.ms, pt, flat_ops)
                 c1.fitness = None
             if random.random() < pm:
                 c2.os = mutate_os(c2.os)
-                c2.ms = mutate_ms(c2.ms, pt)
+                c2.ms = mutate_ms(c2.ms, pt, flat_ops)
                 c2.fitness = None
 
-            evaluate(c1, pt)
-            evaluate(c2, pt)
-
-            # ---------- Step 5.2: Local improvement via TS ----------
-            ts_iters = max(1, int(ts_iter_base * gen / max_gen))
-            c1 = tabu_search(c1, pt, max_iter=ts_iters, tabu_len=tabu_len)
-            c2 = tabu_search(c2, pt, max_iter=ts_iters, tabu_len=tabu_len)
-
+            evaluate(c1, pt, ms_off)
+            evaluate(c2, pt, ms_off)
             new_pop.extend([c1, c2])
 
         population = new_pop[:pop_size]
+
+        ts_iters = max(1, int(ts_iter_base * gen / max_gen))
+        population = [
+            tabu_search(ind, pt, max_iter=ts_iters, tabu_len=tabu_len, ms_off=ms_off)
+            for ind in population
+        ]
 
         # ---------- Step 3: Evaluate ----------
         gen_best = min(population, key=lambda x: x.fitness)
@@ -610,6 +979,30 @@ def fjsp_to_processing_times(fjsp_instance) -> ProcessingTimes:
     return pt
 
 
+def export_pt_to_text(pt: ProcessingTimes, path: str) -> None:
+    """
+    Write ProcessingTimes to the text format read by ha_solver (C++).
+
+    Format:
+        n_jobs  n_machines  avg_options
+        n_ops  n_opts  m t  m t ...    (one line per job; machines 0-indexed)
+    """
+    n_machines = max(m for job_ops in pt for alts in job_ops for m, _ in alts) + 1
+    total_opts = sum(len(alts) for job_ops in pt for alts in job_ops)
+    total_ops  = sum(len(job_ops) for job_ops in pt)
+    avg_opts   = total_opts / total_ops if total_ops else 1.0
+
+    with open(path, "w") as f:
+        f.write(f"{len(pt)} {n_machines} {avg_opts:.2f}\n")
+        for job_ops in pt:
+            parts = [str(len(job_ops))]
+            for alts in job_ops:
+                parts.append(str(len(alts)))
+                for m, t in alts:
+                    parts += [str(m), str(t)]
+            f.write(" ".join(parts) + "\n")
+
+
 def load_instance(instance_name: str) -> Tuple[ProcessingTimes, object]:
     """
     Load a FJSP instance by name from data/fjsp_instances/ and return
@@ -625,8 +1018,19 @@ def load_instance(instance_name: str) -> Tuple[ProcessingTimes, object]:
             f"Available: {available}"
         )
 
+    root_str = str(root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
+    class _CompatUnpickler(pickle.Unpickler):
+        def find_class(self, module: str, name: str):
+            if module == "instance_generator" and name == "FJSPData":
+                from instance_generator import FJSPData
+                return FJSPData
+            return super().find_class(module, name)
+
     with open(path, "rb") as f:
-        fjsp = pickle.load(f)
+        fjsp = _CompatUnpickler(f).load()
 
     print(f"Loaded: {fjsp.instance_name} "
           f"({fjsp.num_jobs} jobs, {fjsp.num_machines} machines, "

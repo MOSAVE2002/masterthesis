@@ -8,6 +8,16 @@
  "programm_settings":{
     "create_ins": True,
     "solve_ins": True,
-    }
+    },
+"params":{
+   "pop_size":     400,
+    "max_gen":      200,
+    "max_stagnant": 20,
+    "pr":           0.05,   # elitist reproduction probability
+    "pc":           0.8,    # crossover probability
+    "pm":           0.1,    # mutation probability
+    "ts_iter_base": 800,     # maxTSIterSize = ts_iter_base * (gen / max_gen)
+    "tabu_len":     9,
+}
 
 }

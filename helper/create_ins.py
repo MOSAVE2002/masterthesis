@@ -11,7 +11,7 @@ from instance_generator import generate_instances
 
 def main():
     batch_size = 10 # batch size, wie binde ich das ein, macht das überhaupt Sinn?
-    num_jobs = 20
+    num_jobs = 30
     num_machines = 10
     nb_instances = 1
     operation_per_job_min = int(num_machines * 0.8)
