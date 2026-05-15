@@ -16,6 +16,8 @@ def build_fjsp(fjsp, instance):
     n_machines = instance.num_machines
     machines = list(range(n_machines))
 
+    #TODO im Instanzgenerator schon vorbereiten? Dann spare ich mir das berechnen beim Modell erstellen, bei Algoritm das Gleiche
+
     jobs = {} # set of all jobs
     eligible_machines = {} # set of 
     processing_times = {} 

@@ -84,7 +84,7 @@ def solveModel(**kwargs):
 
     # Apply Gurobi parameters from kwargs
     # Es werden alle bekannten Parameter an Gurobi weitergegeben
-    #TODO will ich das wirklich so machen? muss ich wahrscheinlich -> Lars fragen
+    #TODO will ich das wirklich so machen? muss ich wahrscheinlich
     for key, value in kwargs.items():
         if hasattr(model.Params, key):
             known_kwargs.add(key)

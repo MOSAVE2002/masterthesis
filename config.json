@@ -1,8 +1,13 @@
+#TODO Am Ende möchte ich alles über die diese Datei steuern, funktioniert das auch mit **kwarg? ja klar
 {
  "instance_parameters":{
     "num_jobs": 10,
     "num_machines": 5,
     "num_operations_per_job": 3
+    },
+ "programm_settings":{
+    "create_ins": True,
+    "solve_ins": True,
     }
 
 }
