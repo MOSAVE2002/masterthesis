@@ -20,9 +20,6 @@ class FJSPData:
 
         """
         Initializes the FJSPInstanceGenerator with the specified parameters.
-        abbreviations:
-            ope: operation
-        explanations of argumets
 
         """
         self.nb_instance = nb_instance
@@ -87,7 +84,7 @@ class FJSPData:
         lines = []
         lines_doc = []
         lines.append(line0)
-        #TODO: Weitere Informationen sammeln, wie Upper und Lower Bound? -> Literatur für Sampling?
+       
         lines_doc.append('{0}\t{1}\t{2}\n'.format(self.num_jobs, self.num_machines, self.nums_options / self.num_operations))
     
         idx = self.nb_instance
@@ -149,7 +146,7 @@ def generate_instances(nb_instances, num_jobs, num_machines, operations_per_job_
     Returns:
     - a pickle file with the data for each generated instance
     """
-    project_root = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parents[1]
     data_directory = project_root / "data" / "fjsp_instances"
     if not data_directory.exists():
         data_directory.mkdir(parents=True, exist_ok=True)

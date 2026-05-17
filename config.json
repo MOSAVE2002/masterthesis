@@ -1,23 +1,24 @@
-#TODO Am Ende möchte ich alles über die diese Datei steuern, funktioniert das auch mit **kwarg? ja klar
 {
  "instance_parameters":{
-    "num_jobs": 10,
-    "num_machines": 5,
-    "num_operations_per_job": 3
+    "num_jobs": [5,10,15],
+    "num_machines": [5,10,15],
+    "num_operations_per_job": [3,5,10,15],
+    "nb_instances": 5
     },
  "programm_settings":{
-    "create_ins": True,
-    "solve_ins": True,
+    "create_ins": "True",
+    "solve_ins": "True",
+    "solver": ["gurobi", "ha_cpp"]
     },
 "params":{
    "pop_size":     400,
     "max_gen":      200,
     "max_stagnant": 20,
-    "pr":           0.05,   # elitist reproduction probability
-    "pc":           0.8,    # crossover probability
-    "pm":           0.1,    # mutation probability
-    "ts_iter_base": 800,     # maxTSIterSize = ts_iter_base * (gen / max_gen)
-    "tabu_len":     9,
+    "pr":           0.05,   
+    "pc":           0.8,    
+    "pm":           0.1,    
+    "ts_iter_base": 800,   
+    "tabu_len":     9
 }
 
 }

@@ -6,7 +6,7 @@ sys.path.append(str(ROOT_DIR))
 import json
 import sys
 from pathlib import Path
-from instance_generator import generate_instances
+from generator.instance_generator import generate_instances
 
 
 def main():

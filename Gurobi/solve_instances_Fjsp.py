@@ -22,7 +22,7 @@ sys.path.append(str(ROOT_DIR))
 import pickle
 import gurobipy as gp
 from gurobipy import GRB
-from instance_generator import FJSPData
+from generator.instance_generator import FJSPData
 from Gurobi.build_fjsp import build_fjsp, write_solution_file
 
 

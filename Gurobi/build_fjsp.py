@@ -58,8 +58,6 @@ def build_fjsp(fjsp, instance):
         jobs[job_index + 1] = job_operations
         job_end_operations[job_index + 1] = job_operations[-1]
 
-    
-
     # Big-M
     H = sum(
         max(processing_times[i, k] for k in eligible_machines[i])

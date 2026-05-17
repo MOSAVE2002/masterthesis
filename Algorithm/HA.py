@@ -1025,7 +1025,7 @@ def load_instance(instance_name: str) -> Tuple[ProcessingTimes, object]:
     class _CompatUnpickler(pickle.Unpickler):
         def find_class(self, module: str, name: str):
             if module == "instance_generator" and name == "FJSPData":
-                from instance_generator import FJSPData
+                from generator.instance_generator import FJSPData
                 return FJSPData
             return super().find_class(module, name)
 

@@ -6,7 +6,9 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
-from instance_generator import FJSPData
+from generator.instance_generator import FJSPData
+
+# This file is used to safe literature instances as pickle data
 
 
 def parse_text_instance(path: Path) -> tuple[int, int, list[list[list[tuple[int, int]]]], list[str]]:
