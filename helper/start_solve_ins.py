@@ -1,18 +1,19 @@
-import os
-import subprocess
-import random
 import sys
-import tempfile
-import time
+import pickle
+import json
+import csv
+import hashlib
+import random
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
-from Gurobi.solve_instances_fjsp import solveModel
-from Algorithm.HA import load_instance, hybrid_ga_ts, export_pt_to_text, PARAMS
+import gurobipy as gp
+from gurobipy import GRB
 
-HA_CPP_BINARY = ROOT_DIR / "Algorithm" / "ha_solver"
+from generator.instance_generator import FJSPData
+from Gurobi.build_fjsp import build_fjsp, write_solution_file
 
 
 def _as_bool(value) -> bool:
@@ -23,102 +24,251 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
+def _sample_seed(instance_name: str, sample_idx: int, base_seed) -> int:
+    seed_source = f"{instance_name}:{sample_idx}:{base_seed}" # zeichenkette
+    digest = hashlib.sha256(seed_source.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") # Aus den ersten 8 Bytes des hashs wird eine Ganzzahl erzeugt
+
+
+def _generate_random_fixed_y(instance, instance_name: str, sample_idx: int, base_seed):
+    rng = random.Random(_sample_seed(instance_name, sample_idx, base_seed))
+    return rng, {
+        operation: rng.choice(instance.eligible_machines[operation])
+        for operation in instance.real_operations
+    }
+
+
+def _apply_fixed_y_values(model, variables, instance, fixed_y_assignment, rng, fix_ratio = None):
+    
+
+    if fix_ratio is None:
+        fix_ratio = rng.uniform(0.5, 0.8)
+   
+
+    Y = variables["Y"]
+    ops = list(fixed_y_assignment.keys())
+    k = round(len(ops) * fix_ratio)
+    to_fix = set(rng.sample(ops, k))
+
+    for operation, chosen_machine in fixed_y_assignment.items():
+
+        if chosen_machine not in instance.eligible_machines[operation]:
+            raise ValueError(
+                f"Machine {chosen_machine} is not eligible for operation {operation}."
+            )
+
+        if operation not in to_fix:
+            continue
+
+        for machine in instance.eligible_machines[operation]:
+            fixed_value = 1.0 if machine == chosen_machine else 0.0
+            Y[operation, machine].lb = fixed_value
+            Y[operation, machine].ub = fixed_value
+
+    model.update()
+
+
+def _write_fixed_y_assignment(instance_name: str, sample_idx: int, base_seed, fixed_y_assignment):
+    output_dir = ROOT_DIR / "data" / "fixed_y_assignments"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{instance_name}__yfix_{sample_idx:03d}.json"
+
+    payload = {
+        "instance_name": instance_name,
+        "sample_idx": sample_idx,
+        "base_seed": base_seed,
+        "assignment": [
+            {"operation": operation, "machine": fixed_y_assignment[operation]}
+            for operation in sorted(fixed_y_assignment)
+        ],
+    }
+
+    with open(output_path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2)
+
+    return output_path
+
+
+def _append_fixed_y_result_csv(
+    instance,
+    instance_name: str,
+    sample_idx: int,
+    fixed_y_assignment,
+    model,
+):
+    output_dir = ROOT_DIR / "data" / "fixed_y_results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{instance_name}.csv"
+
+    operations = sorted(instance.real_operations)
+    fieldnames = [
+        "sample_idx",
+        "makespan",
+    ] + [f"y_op_{operation}" for operation in operations]
+
+    row = {
+        "sample_idx": sample_idx,
+        "makespan": int(model.ObjVal) if model.SolCount > 0 else "",
+    }
+
+    for operation in operations:
+        row[f"y_op_{operation}"] = fixed_y_assignment[operation]
+
+    file_exists = output_path.exists()
+    with open(output_path, "a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+    return output_path
+
+
+def solveModel(**kwargs):
+    """Load a pickled FJSP instance, solve it with Gurobi, and write a solution file."""
+    known_kwargs = {"instance_name"}
+
+    if "instance_name" not in kwargs:
+        print("Error: Please provide an instance name using the 'instance_name' keyword argument.")
+        print("Usage: solve_instances_with_solver(instance_name=<name>, solver='gurobi', TimeLimit=<seconds>)")
+        return
+
+    instance_name = kwargs.get("instance_name")
+    create_fixed_y = _as_bool(kwargs.pop("create_fixed_y", False))
+    sample_idx = int(kwargs.pop("sample_idx", 0))
+    random_seed = kwargs.pop("random_seed", 0)
+    save_assignments = _as_bool(kwargs.pop("save_assignments", False))
+    path = ROOT_DIR / "data" / "fjsp_instances" / f"{instance_name}.fjsp"
+
+    if not path.exists():
+        print(f"Error: Instance file not found at '{path}'")
+        print("Available instances:")
+        instances_dir = ROOT_DIR / "data" / "fjsp_instances"
+        if instances_dir.exists():
+            for file in instances_dir.iterdir():
+                if file.suffix == ".fjsp":
+                    print(f"  - {file.stem}")
+        else:
+            print("Dir does not exist")
+        return
+
+    with open(path, "rb") as file:
+        fjsp_instance: FJSPData = pickle.load(file)
+
+    print(f"Loaded instance: {fjsp_instance.instance_name}")
+    print(f"Number of Jobs: {fjsp_instance.num_jobs}")
+    print(f"Number of Machines: {fjsp_instance.num_machines}")
+
+    model = gp.Model("FJSP Model")
+
+    for key, value in kwargs.items():
+        if hasattr(model.Params, key):
+            known_kwargs.add(key)
+            setattr(model.Params, key, value)
+            print(f"  Set Gurobi parameter {key} = {value}")
+
+    for key in kwargs.keys():
+        if key not in known_kwargs:
+            print(f"Warning: Unknown keyword argument '{key}' provided. It will be ignored.")
+
+    model, variables = build_fjsp(model, fjsp_instance)
+
+    fixed_y_assignment = None
+    if create_fixed_y:
+        rng, fixed_y_assignment = _generate_random_fixed_y(
+            fjsp_instance,
+            instance_name=instance_name,
+            sample_idx=sample_idx,
+            base_seed=random_seed,
+        )
+        _apply_fixed_y_values(model, variables, fjsp_instance, fixed_y_assignment, rng)
+        print(
+            "  Using fixed random Y assignment "
+            f"(sample {sample_idx + 1}, base seed {random_seed})"
+        )
+
+        if save_assignments:
+            assignment_path = _write_fixed_y_assignment(
+                instance_name=instance_name,
+                sample_idx=sample_idx,
+                base_seed=random_seed,
+                fixed_y_assignment=fixed_y_assignment,
+            )
+            print(f"  Saved fixed Y assignment to: {assignment_path}")
+
+    print("\nStarting optimization...")
+    model.optimize()
+
+    solution_dir = ROOT_DIR / "data" / "fjsp_solutions"
+    solution_dir.mkdir(parents=True, exist_ok=True)
+    solution_suffix = ""
+    if create_fixed_y:
+        solution_suffix = f"__yfix_{sample_idx:03d}"
+    solution_path = solution_dir / f"solution_{instance_name}{solution_suffix}.txt"
+
+    if create_fixed_y:
+        pass
+    else:
+        if model.Status == GRB.OPTIMAL:
+            print(f"\nOptimal solution found! Objective value: {model.ObjVal:.2f}")
+            write_solution_file(model, variables, fjsp_instance, solution_path)
+            print(f"Solution written to: {solution_path}")
+        elif model.Status == GRB.TIME_LIMIT and model.SolCount > 0:
+            print(f"\nTime limit reached. Best solution found: {model.ObjVal:.2f}")
+            write_solution_file(model, variables, fjsp_instance, solution_path)
+            print(f"Solution written to: {solution_path}")
+        elif model.Status == GRB.INFEASIBLE:
+            print("\nError: Model is infeasible. No solution exists.")
+        elif model.Status == GRB.UNBOUNDED:
+            print("\nError: Model is unbounded.")
+        else:
+            print(f"\nOptimization ended with status {model.Status}. No solution written.")
+
+    if create_fixed_y and fixed_y_assignment is not None:
+        csv_path = _append_fixed_y_result_csv(
+            instance=fjsp_instance,
+            instance_name=instance_name,
+            sample_idx=sample_idx,
+            fixed_y_assignment=fixed_y_assignment,
+            model=model,
+        )
+        print(f"Fixed-Y result appended to: {csv_path}")
+    model.dispose()
+
 def solve_instances_with_solver(**kwargs):
     solver_kwargs = dict(kwargs)
 
-    instance_name = solver_kwargs.pop("instance_name", "lao7")
+    instance_name = solver_kwargs.pop("instance_name", None)
     num_jobs      = solver_kwargs.pop("num_jobs",     20)
     num_machines  = solver_kwargs.pop("num_machines", 10)
     instance_nb   = solver_kwargs.pop("instance_nb",  1)
-    solver        = solver_kwargs.pop("solver", "ha_cpp").lower()
+    solver        = solver_kwargs.pop("solver", "").lower()
+    create_fixed_y = _as_bool(solver_kwargs.pop("create_fixed_y", False))
+    amount_of_samples_per_instance = int(
+        solver_kwargs.pop("amount_of_samples_per_instance", 1)
+    )
+    random_seed = solver_kwargs.pop("random_seed", 0)
+    save_assignments = _as_bool(
+        solver_kwargs.pop("save_assignments", False)
+    )
 
     if instance_name is None:
         instance_name = f"i{num_jobs}_k{num_machines}_{instance_nb}"
 
     if solver == "gurobi":
-        solveModel(instance_name=instance_name, **solver_kwargs)
+        if create_fixed_y:
+            for sample_idx in range(amount_of_samples_per_instance):
+                solveModel(
+                    instance_name=instance_name,
+                    create_fixed_y=True,
+                    sample_idx=sample_idx,
+                    random_seed=random_seed,
+                    save_assignments=save_assignments,
+                    **solver_kwargs,
+                )
+        else:
+            solveModel(instance_name=instance_name, **solver_kwargs)
 
-    elif solver == "ha_cpp":
-        if not HA_CPP_BINARY.exists():
-            print(f"Error: C++ binary not found at {HA_CPP_BINARY}")
-            print("Run:  cd Algorithm && make")
-            return
-
-        pop_size     = solver_kwargs.pop("pop_size", None)
-        max_gen      = solver_kwargs.pop("max_gen", None)
-        max_stagnant = solver_kwargs.pop("max_stagnant", PARAMS["max_stagnant"])
-        ts_iter_base = solver_kwargs.pop("ts_iter_base", None)
-        seed         = solver_kwargs.pop("seed", None)
-        paper_mode   = _as_bool(solver_kwargs.pop("paper_mode", False))
-        fast_small   = _as_bool(solver_kwargs.pop("fast_small", False)) # not important
-
-        for key in solver_kwargs:
-            print(f"Warning: Unknown argument '{key}' ignored for solver.")
-
-        pt, _ = load_instance(instance_name)
-
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as f:
-            tmp_path = f.name
-        try:
-            export_pt_to_text(pt, tmp_path)
-
-            cmd = [
-                str(HA_CPP_BINARY), tmp_path,
-            ]
-            if pop_size is not None:
-                cmd += ["--pop-size", str(int(pop_size))]
-            if max_gen is not None:
-                cmd += ["--max-gen", str(int(max_gen))]
-            if max_stagnant is not None:
-                cmd += ["--stagnant", str(int(max_stagnant))]
-            if ts_iter_base is not None:
-                cmd += ["--ts-base", str(int(ts_iter_base))]
-            if seed is not None:
-                cmd += ["--seed", str(seed)]
-            if paper_mode:
-                cmd += ["--paper-mode"]
-            if fast_small:
-                cmd += ["--fast-small"]
-
-            t0     = time.time()
-            result = subprocess.run(cmd, capture_output=False, text=True)
-            elapsed = time.time() - t0
-
-            if result.returncode != 0:
-                print(f"Error: ha_solver exited with code {result.returncode}")
-            else:
-                print(f"\n=== HA_CPP Result ===")
-                print(f"Instance : {instance_name}")
-                print(f"Time     : {elapsed:.2f} s")
-        finally:
-            os.unlink(tmp_path)
-
-    # elif solver == "ha":
-    #     seed = solver_kwargs.pop("seed", None)
-    #     if seed is not None:
-    #         random.seed(seed)
-
-    #     ha_kwargs = {
-    #         "pop_size":     int(solver_kwargs.pop("pop_size",     PARAMS["pop_size"])),
-    #         "max_gen":      int(solver_kwargs.pop("max_gen",      PARAMS["max_gen"])),
-    #         "max_stagnant": int(solver_kwargs.pop("max_stagnant", PARAMS["max_stagnant"])),
-    #         "pc":           float(solver_kwargs.pop("pc",         PARAMS["pc"])),
-    #         "pm":           float(solver_kwargs.pop("pm",         PARAMS["pm"])),
-    #         "pr":           float(solver_kwargs.pop("pr",         PARAMS["pr"])),
-    #         "tabu_len":     int(solver_kwargs.pop("tabu_len",     PARAMS["tabu_len"])),
-    #         "ts_iter_base": int(solver_kwargs.pop("ts_iter_base", PARAMS["ts_iter_base"])),
-    #     }
-    #     _warn_unknown_args(solver_kwargs, "HA")
-
-    #     pt, _ = load_instance(instance_name)
-    #     t0    = time.time()
-    #     best  = hybrid_ga_ts(pt, **ha_kwargs)
-    #     elapsed = time.time() - t0
-
-    #     print(f"\n=== HA Result ===")
-    #     print(f"Instance : {instance_name}")
-    #     print(f"Makespan : {best.fitness}")
-    #     print(f"Time     : {elapsed:.2f} s")
-
+    
     else:
-        print(f"Error: Unknown solver '{solver}'. Use 'gurobi', 'ha', or 'ha_cpp'.")
+        print(f"Error: Unknown solver '{solver}'. Use 'gurobi'")

@@ -127,6 +127,7 @@ def build_fjsp_from_operations(
     default_name = f"i{num_jobs}_k{num_machines}_{nb_instance}"
     instance.instance_name = output_name or default_name
     instance.lines = [line + "\n" for line in source_lines] + ["\n"]
+    instance._build_operation_metadata()
 
     return instance
 

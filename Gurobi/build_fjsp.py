@@ -12,56 +12,16 @@ def build_fjsp(fjsp, instance):
     
     model = fjsp
 
-    n_jobs = instance.num_jobs
     n_machines = instance.num_machines
     machines = list(range(n_machines))
+  
 
-    #TODO im Instanzgenerator schon vorbereiten? Dann spare ich mir das berechnen beim Modell erstellen, bei Algoritm das Gleiche
-
-    jobs = {} # set of all jobs
-    eligible_machines = {} # set of 
-    processing_times = {} 
-    predecessors = {}
-    job_end_operations = {}
-    real_operations = []
-
-    operation_id = 1
-
-    for job_index in range(n_jobs):
-        num_operations = instance.nums_operation[job_index]
-        job_operations = []
-
-        for local_operation_index in range(num_operations):
-            current_operation = operation_id
-            operation_id += 1
-
-            global_op_idx = instance.num_ope_bias[job_index] + local_operation_index
-            num_options = instance.nums_option[global_op_idx]
-            machine_offset = instance.num_machine_bias[global_op_idx]
-
-            eligible = []
-            for option_idx in range(num_options):
-                machine = instance.ope_machine[machine_offset + option_idx]
-                processing_time = instance.processing_time[machine_offset + option_idx]
-                eligible.append(machine)
-                processing_times[current_operation, machine] = processing_time
-
-            eligible_machines[current_operation] = eligible
-            job_operations.append(current_operation)
-            real_operations.append(current_operation)
-
-            if local_operation_index == 0:
-                predecessors[current_operation] = []
-            else:
-                predecessors[current_operation] = [job_operations[local_operation_index - 1]]
-
-        jobs[job_index + 1] = job_operations
-        job_end_operations[job_index + 1] = job_operations[-1]
+    # Randomgenerator, fixe Zuordnung
 
     # Big-M
     H = sum(
-        max(processing_times[i, k] for k in eligible_machines[i])
-        for i in real_operations
+        max(instance.processing_times[i, k] for k in instance.eligible_machines[i])
+        for i in instance.real_operations
     )
 
     # -------------------------
@@ -69,7 +29,7 @@ def build_fjsp(fjsp, instance):
     # -------------------------
 
     C = model.addVars(
-        real_operations,
+        instance.real_operations,
         lb=0.0,
         vtype=GRB.CONTINUOUS,
         name="C"
@@ -83,8 +43,8 @@ def build_fjsp(fjsp, instance):
 
     Y_index = [
         (i, k)
-        for i in real_operations
-        for k in eligible_machines[i]
+        for i in instance.real_operations
+        for k in instance.eligible_machines[i]
     ]
 
     Y = model.addVars(
@@ -95,9 +55,9 @@ def build_fjsp(fjsp, instance):
 
     X_index = []
 
-    for idx_i, i in enumerate(real_operations):
-        for j in real_operations[idx_i + 1:]:
-            common_machines = set(eligible_machines[i]) & set(eligible_machines[j])
+    for idx_i, i in enumerate(instance.real_operations):
+        for j in instance.real_operations[idx_i + 1:]:
+            common_machines = set(instance.eligible_machines[i]) & set(instance.eligible_machines[j])
             for k in common_machines:
                 X_index.append((i, j, k))
 
@@ -118,18 +78,18 @@ def build_fjsp(fjsp, instance):
     # -------------------------
 
     # Jede Operation wird genau einer zulässigen Maschine zugewiesen
-    for i in real_operations:
+    for i in instance.real_operations:
         model.addConstr(
-            gp.quicksum(Y[i, k] for k in eligible_machines[i]) == 1,
+            gp.quicksum(Y[i, k] for k in instance.eligible_machines[i]) == 1,
             name=f"assignment[{i}]"
         )
 
     # Technologische Präzedenzrelationen
-    for i in real_operations:
-        for j in predecessors.get(i, []):
+    for i in instance.real_operations:
+        for j in instance.predecessors.get(i, []):
             processing_time_i = gp.quicksum(
-                Y[i, k] * processing_times[i, k]
-                for k in eligible_machines[i]
+                Y[i, k] * instance.processing_times[i, k]
+                for k in instance.eligible_machines[i]
             )
 
             model.addConstr(
@@ -141,23 +101,23 @@ def build_fjsp(fjsp, instance):
     for i, j, k in X_index:
         # Fall X[i,j,k] = 0: j liegt vor i
         model.addConstr(
-            C[i] >= C[j] + processing_times[i, k]
+            C[i] >= C[j] + instance.processing_times[i, k]
             - H * (2 + X[i, j, k] - Y[i, k] - Y[j, k]),
             name=f"nonoverlap_j_before_i[{j}_{i}_{k}]"
         )
 
         # Fall X[i,j,k] = 1: i liegt vor j
         model.addConstr(
-            C[j] >= C[i] + processing_times[j, k]
+            C[j] >= C[i] + instance.processing_times[j, k]
             - H * (3 - X[i, j, k] - Y[i, k] - Y[j, k]),
             name=f"nonoverlap_i_before_j[{i}_{j}_{k}]"
         )
 
     # Completion lower bound
-    for i in real_operations:
+    for i in instance.real_operations:
         processing_time_i = gp.quicksum(
-            Y[i, k] * processing_times[i, k]
-            for k in eligible_machines[i]
+            Y[i, k] * instance.processing_times[i, k]
+            for k in instance.eligible_machines[i]
         )
         model.addConstr(
             C[i] >= processing_time_i,
@@ -165,8 +125,8 @@ def build_fjsp(fjsp, instance):
         )
 
     # Makespan
-    for u in jobs:
-        end_operation = job_end_operations[u]
+    for u in instance.jobs:
+        end_operation = instance.job_end_operations[u]
         model.addConstr(
             C_max >= C[end_operation],
             name=f"makespan[{u}]"
@@ -180,12 +140,12 @@ def build_fjsp(fjsp, instance):
         "Y": Y,
         "X": X,
         "H": H,
-        "operations": real_operations,
-        "real_operations": real_operations,
-        "eligible_machines": eligible_machines,
-        "processing_times" : processing_times,
+        "operations": instance.real_operations,
+        "real_operations": instance.real_operations,
+        "eligible_machines": instance.eligible_machines,
+        "processing_times" : instance.processing_times,
         "machines": machines,
-        "jobs": jobs,
+        "jobs": instance.jobs,
         "X_index": X_index,
         "Y_index": Y_index,
     }
@@ -254,41 +214,41 @@ def write_solution_file(model, variables, instance, filename="solution.txt"):
         file.write(f"Zielfunktionswert: {model.ObjVal:.4f}\n")
         file.write(f"Big-M H: {variables['H']}\n\n")
 
-        file.write("Operationen sortiert nach Maschine und Startzeit:\n")
-        file.write("-" * 70 + "\n")
-        file.write(
-            f"{'Operation':>10} | {'Maschine':>8} | {'Start':>10} | "
-            f"{'Ende':>10} | {'Dauer':>10}\n"
-        )
-        file.write("-" * 70 + "\n")
+        # file.write("Operationen sortiert nach Maschine und Startzeit:\n")
+        # file.write("-" * 70 + "\n")
+        # file.write(
+        #     f"{'Operation':>10} | {'Maschine':>8} | {'Start':>10} | "
+        #     f"{'Ende':>10} | {'Dauer':>10}\n"
+        # )
+        # file.write("-" * 70 + "\n")
 
-        for row in rows:
-            file.write(
-                f"{row['operation']:>10} | "
-                f"{row['machine']:>8} | "
-                f"{row['start']:>10.4f} | "
-                f"{row['completion']:>10.4f} | "
-                f"{row['processing_time']:>10.4f}\n"
-            )
+        # for row in rows:
+        #     file.write(
+        #         f"{row['operation']:>10} | "
+        #         f"{row['machine']:>8} | "
+        #         f"{row['start']:>10.4f} | "
+        #         f"{row['completion']:>10.4f} | "
+        #         f"{row['processing_time']:>10.4f}\n"
+        #     )
 
-        file.write("\nMaschinenpläne:\n")
-        file.write("=" * 70 + "\n")
+        # file.write("\nMaschinenpläne:\n")
+        # file.write("=" * 70 + "\n")
 
-        for k in machines:
-            machine_rows = [row for row in rows if row["machine"] == k]
+        # for k in machines:
+        #     machine_rows = [row for row in rows if row["machine"] == k]
 
-            file.write(f"\nMaschine {k}:\n")
+        #     file.write(f"\nMaschine {k}:\n")
 
-            if not machine_rows:
-                file.write("  Keine Operationen zugewiesen.\n")
-                continue
+        #     if not machine_rows:
+        #         file.write("  Keine Operationen zugewiesen.\n")
+        #         continue
 
-            for row in machine_rows:
-                file.write(
-                    f"  Operation {row['operation']}: "
-                    f"[{row['start']:.4f}, {row['completion']:.4f}] "
-                    f"Dauer={row['processing_time']:.4f}\n"
-                )
+        #     for row in machine_rows:
+        #         file.write(
+        #             f"  Operation {row['operation']}: "
+        #             f"[{row['start']:.4f}, {row['completion']:.4f}] "
+        #             f"Dauer={row['processing_time']:.4f}\n"
+        #         )
 
 
 if __name__ == '__main__':

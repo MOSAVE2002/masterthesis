@@ -6,6 +6,52 @@ from pathlib import Path
 
 
 class FJSPData:
+    def _build_operation_metadata(self):
+        """
+        
+        Build derived scheduling structures from the flat instance encoding.
+        
+        """
+        self.jobs = {}
+        self.eligible_machines = {}
+        self.processing_times = {}
+        self.predecessors = {}
+        self.job_end_operations = {}
+        self.real_operations = []
+
+        operation_id = 1
+
+        for job_index in range(self.num_jobs):
+            num_operations = self.nums_operation[job_index]
+            job_operations = []
+
+            for local_operation_index in range(num_operations):
+                current_operation = operation_id
+                operation_id += 1
+
+                global_op_idx = self.num_ope_bias[job_index] + local_operation_index
+                num_options = self.nums_option[global_op_idx]
+                machine_offset = self.num_machine_bias[global_op_idx]
+
+                eligible = []
+                for option_idx in range(num_options):
+                    machine = self.ope_machine[machine_offset + option_idx]
+                    processing_time = self.processing_time[machine_offset + option_idx]
+                    eligible.append(machine)
+                    self.processing_times[current_operation, machine] = processing_time
+
+                self.eligible_machines[current_operation] = eligible
+                job_operations.append(current_operation)
+                self.real_operations.append(current_operation)
+
+                if local_operation_index == 0:
+                    self.predecessors[current_operation] = []
+                else:
+                    self.predecessors[current_operation] = [job_operations[local_operation_index - 1]]
+
+            self.jobs[job_index + 1] = job_operations
+            self.job_end_operations[job_index + 1] = job_operations[-1]
+
     def __init__(
         self,
         nb_instance: int,
@@ -22,6 +68,7 @@ class FJSPData:
         Initializes the FJSPInstanceGenerator with the specified parameters.
 
         """
+        
         self.nb_instance = nb_instance
 
         if num_operations is None:
@@ -125,7 +172,8 @@ class FJSPData:
         lines.append('\n')
 
         self.lines = lines
-
+        self._build_operation_metadata()
+        
         # Text file zum einfacheren Lesen lassen
         if self.flag_save_file:
             if not os.path.exists(self.path):
