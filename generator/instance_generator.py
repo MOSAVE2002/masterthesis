@@ -93,6 +93,7 @@ class FJSPData:
         self.machine_per_ope_max = num_machines
         
         # Processing time parameters
+        #TODO Operation time sollte einstellbar sein -> gute Values finden
         self.processing_time_per_ope_min = 1
         self.processing_time_per_ope_max = 10
         self.proctime_deviation = 0.2
