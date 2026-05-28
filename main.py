@@ -29,8 +29,9 @@ def main():
     program_cfg = config.get("programm_settings", {})
     solvers = program_cfg.get("solver", [])
 
-    # Get Gurobi parameters
+    # Get solver parameters
     gurobi_cfg = config.get("gurobi_params", {})
+    scip_cfg = config.get("scip_params", {})
     random_fixed_cfg = config.get("random_fixed_y", {})
     fixed_y_cfg = {}
    
@@ -53,8 +54,6 @@ def main():
             ),
         }
 
-    solver_params = {**gurobi_cfg, **fixed_y_cfg}
-
     if _as_bool(program_cfg.get("create_ins", False)):
         for num_jobs in num_jobs_list:
             for num_machines in num_machines_list:
@@ -72,10 +71,15 @@ def main():
         if instance_names:
             for instance_name in instance_names:
                 for solver in solvers:
+                    solver_specific_params = (
+                        gurobi_cfg if solver.lower() == "gurobi" else scip_cfg
+                    )
+                    fixed_y_params = fixed_y_cfg if solver.lower() == "gurobi" else {}
                     solve_instances_with_solver(
                         instance_name=instance_name,
                         solver=solver,
-                        **solver_params,
+                        **solver_specific_params,
+                        **fixed_y_params,
                     )
         
         else:
@@ -84,10 +88,15 @@ def main():
                     for instance_nb in range(1, nb_instances + 1):
                         instance_name = f"i{num_jobs}_k{num_machines}_{instance_nb}"
                         for solver in solvers:
+                            solver_specific_params = (
+                                gurobi_cfg if solver.lower() == "gurobi" else scip_cfg
+                            )
+                            fixed_y_params = fixed_y_cfg if solver.lower() == "gurobi" else {}
                             solve_instances_with_solver(
                                 instance_name=instance_name,
                                 solver=solver,
-                                **solver_params,
+                                **solver_specific_params,
+                                **fixed_y_params,
                             )
 
 def _as_bool(value):

@@ -9,11 +9,17 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
+
 import gurobipy as gp
 from gurobipy import GRB
 
+from pyscipopt import Model as SCIPModel
+
 from generator.instance_generator import FJSPData
-from Gurobi.build_fjsp import build_fjsp, write_solution_file
+from Gurobi.build_fjsp import build_fjsp as build_fjsp_gurobi
+from Gurobi.build_fjsp import write_solution_file as write_solution_file_gurobi
+from SCIP.build_fjsp import build_fjsp as build_fjsp_scip
+from SCIP.build_fjsp import write_solution_file as write_solution_file_scip
 
 
 def _as_bool(value) -> bool:
@@ -38,7 +44,7 @@ def _generate_random_fixed_y(instance, instance_name: str, sample_idx: int, base
     }
 
 
-def _apply_fixed_y_values(model, variables, instance, fixed_y_assignment, rng, fix_ratio = None):
+def _apply_fixed_y_values(model, variables, instance, fixed_y_assignment, rng, fix_ratio=None):
     
 
     if fix_ratio is None:
@@ -62,10 +68,16 @@ def _apply_fixed_y_values(model, variables, instance, fixed_y_assignment, rng, f
 
         for machine in instance.eligible_machines[operation]:
             fixed_value = 1.0 if machine == chosen_machine else 0.0
-            Y[operation, machine].lb = fixed_value
-            Y[operation, machine].ub = fixed_value
+            variable = Y[operation, machine]
+            if hasattr(variable, "lb") and hasattr(variable, "ub"):
+                variable.lb = fixed_value
+                variable.ub = fixed_value
+            else:
+                model.chgVarLb(variable, fixed_value)
+                model.chgVarUb(variable, fixed_value)
 
-    model.update()
+    if hasattr(model, "update"):
+        model.update()
 
 
 def _write_fixed_y_assignment(instance_name: str, sample_idx: int, base_seed, fixed_y_assignment):
@@ -94,7 +106,8 @@ def _append_fixed_y_result_csv(
     instance_name: str,
     sample_idx: int,
     fixed_y_assignment,
-    model,
+    objective_value,
+    has_solution,
 ):
     output_dir = ROOT_DIR / "data" / "fixed_y_results"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -108,7 +121,7 @@ def _append_fixed_y_result_csv(
 
     row = {
         "sample_idx": sample_idx,
-        "makespan": int(model.ObjVal) if model.SolCount > 0 else "",
+        "makespan": int(objective_value) if has_solution else "",
     }
 
     for operation in operations:
@@ -124,54 +137,35 @@ def _append_fixed_y_result_csv(
     return output_path
 
 
-def solveModel(**kwargs):
-    """Load a pickled FJSP instance, solve it with Gurobi, and write a solution file."""
-    known_kwargs = {"instance_name"}
+def _set_scip_param(model, key, value):
+    candidates = [key]
+    if "_" in key:
+        candidates.append(key.replace("_", "/"))
 
-    if "instance_name" not in kwargs:
-        print("Error: Please provide an instance name using the 'instance_name' keyword argument.")
-        print("Usage: solve_instances_with_solver(instance_name=<name>, solver='gurobi', TimeLimit=<seconds>)")
-        return
+    for candidate in candidates:
+        try:
+            model.setParam(candidate, value)
+            return candidate
+        except Exception:
+            continue
 
-    instance_name = kwargs.get("instance_name")
-    create_fixed_y = _as_bool(kwargs.pop("create_fixed_y", False))
-    sample_idx = int(kwargs.pop("sample_idx", 0))
-    random_seed = kwargs.pop("random_seed", 0)
-    save_assignments = _as_bool(kwargs.pop("save_assignments", False))
-    path = ROOT_DIR / "data" / "fjsp_instances" / f"{instance_name}.fjsp"
+    return None
 
-    if not path.exists():
-        print(f"Error: Instance file not found at '{path}'")
-        print("Available instances:")
-        instances_dir = ROOT_DIR / "data" / "fjsp_instances"
-        if instances_dir.exists():
-            for file in instances_dir.iterdir():
-                if file.suffix == ".fjsp":
-                    print(f"  - {file.stem}")
-        else:
-            print("Dir does not exist")
-        return
 
-    with open(path, "rb") as file:
-        fjsp_instance: FJSPData = pickle.load(file)
-
-    print(f"Loaded instance: {fjsp_instance.instance_name}")
-    print(f"Number of Jobs: {fjsp_instance.num_jobs}")
-    print(f"Number of Machines: {fjsp_instance.num_machines}")
+def _solve_gurobi_model(fjsp_instance, instance_name: str, create_fixed_y: bool, sample_idx: int, random_seed, save_assignments: bool, solver_kwargs):
+    if gp is None:
+        raise ImportError("gurobipy is not installed, but solver='gurobi' was requested.")
 
     model = gp.Model("FJSP Model")
 
-    for key, value in kwargs.items():
+    for key, value in solver_kwargs.items():
         if hasattr(model.Params, key):
-            known_kwargs.add(key)
             setattr(model.Params, key, value)
             print(f"  Set Gurobi parameter {key} = {value}")
-
-    for key in kwargs.keys():
-        if key not in known_kwargs:
+        else:
             print(f"Warning: Unknown keyword argument '{key}' provided. It will be ignored.")
 
-    model, variables = build_fjsp(model, fjsp_instance)
+    model, variables = build_fjsp_gurobi(model, fjsp_instance)
 
     fixed_y_assignment = None
     if create_fixed_y:
@@ -201,21 +195,17 @@ def solveModel(**kwargs):
 
     solution_dir = ROOT_DIR / "data" / "fjsp_solutions"
     solution_dir.mkdir(parents=True, exist_ok=True)
-    solution_suffix = ""
-    if create_fixed_y:
-        solution_suffix = f"__yfix_{sample_idx:03d}"
-    solution_path = solution_dir / f"solution_{instance_name}{solution_suffix}.txt"
+    solution_suffix = f"__yfix_{sample_idx:03d}" if create_fixed_y else ""
+    solution_path = solution_dir / f"solution_{instance_name}_gurobi{solution_suffix}.txt"
 
-    if create_fixed_y:
-        pass
-    else:
+    if not create_fixed_y:
         if model.Status == GRB.OPTIMAL:
             print(f"\nOptimal solution found! Objective value: {model.ObjVal:.2f}")
-            write_solution_file(model, variables, fjsp_instance, solution_path)
+            write_solution_file_gurobi(model, variables, fjsp_instance, solution_path)
             print(f"Solution written to: {solution_path}")
         elif model.Status == GRB.TIME_LIMIT and model.SolCount > 0:
             print(f"\nTime limit reached. Best solution found: {model.ObjVal:.2f}")
-            write_solution_file(model, variables, fjsp_instance, solution_path)
+            write_solution_file_gurobi(model, variables, fjsp_instance, solution_path)
             print(f"Solution written to: {solution_path}")
         elif model.Status == GRB.INFEASIBLE:
             print("\nError: Model is infeasible. No solution exists.")
@@ -230,10 +220,111 @@ def solveModel(**kwargs):
             instance_name=instance_name,
             sample_idx=sample_idx,
             fixed_y_assignment=fixed_y_assignment,
-            model=model,
+            objective_value=model.ObjVal if model.SolCount > 0 else None,
+            has_solution=model.SolCount > 0,
         )
         print(f"Fixed-Y result appended to: {csv_path}")
     model.dispose()
+
+
+def _solve_scip_model(fjsp_instance, instance_name: str, create_fixed_y: bool, sample_idx: int, random_seed, save_assignments: bool, solver_kwargs):
+    model = SCIPModel("FJSP Model")
+
+    for key, value in solver_kwargs.items():
+        actual_key = _set_scip_param(model, key, value)
+        if actual_key is None:
+            print(f"Warning: Unknown keyword argument '{key}' provided. It will be ignored.")
+        else:
+            print(f"  Set SCIP parameter {actual_key} = {value}")
+
+    model, variables = build_fjsp_scip(model, fjsp_instance)
+
+    if create_fixed_y:
+        print("Warning: create_fixed_y is not supported for solver 'scip'. Ignoring it.")
+
+    print("\nStarting optimization...")
+    model.optimize()
+
+    status = model.getStatus()
+    has_solution = model.getNSols() > 0
+
+    solution_dir = ROOT_DIR / "data" / "fjsp_solutions"
+    solution_dir.mkdir(parents=True, exist_ok=True)
+    solution_path = solution_dir / f"solution_{instance_name}_scip.txt"
+
+    if status == "optimal":
+        print(f"\nOptimal solution found! Objective value: {model.getObjVal():.2f}")
+        write_solution_file_scip(model, variables, fjsp_instance, solution_path)
+        print(f"Solution written to: {solution_path}")
+    elif status in {"timelimit", "gaplimit", "sollimit", "bestsollimit"} and has_solution:
+        print(f"\nLimit reached. Best solution found: {model.getObjVal():.2f}")
+        write_solution_file_scip(model, variables, fjsp_instance, solution_path)
+        print(f"Solution written to: {solution_path}")
+    elif status == "infeasible":
+        print("\nError: Model is infeasible. No solution exists.")
+    elif status == "unbounded":
+        print("\nError: Model is unbounded.")
+    else:
+        print(f"\nOptimization ended with status {status}. No solution written.")
+    model.freeProb()
+
+
+def solveModel(**kwargs):
+    """Load a pickled FJSP instance, solve it with Gurobi or SCIP, and write a solution file."""
+    if "instance_name" not in kwargs:
+        print("Error: Please provide an instance name using the 'instance_name' keyword argument.")
+        print("Usage: solve_instances_with_solver(instance_name=<name>, solver='gurobi', TimeLimit=<seconds>)")
+        return
+
+    instance_name = kwargs.pop("instance_name")
+    solver = kwargs.pop("solver", "gurobi").lower()
+    create_fixed_y = _as_bool(kwargs.pop("create_fixed_y", False))
+    sample_idx = int(kwargs.pop("sample_idx", 0))
+    random_seed = kwargs.pop("random_seed", 0)
+    save_assignments = _as_bool(kwargs.pop("save_assignments", False))
+    path = ROOT_DIR / "data" / "fjsp_instances" / f"{instance_name}.fjsp"
+
+    if not path.exists():
+        print(f"Error: Instance file not found at '{path}'")
+        print("Available instances:")
+        instances_dir = ROOT_DIR / "data" / "fjsp_instances"
+        if instances_dir.exists():
+            for file in instances_dir.iterdir():
+                if file.suffix == ".fjsp":
+                    print(f"  - {file.stem}")
+        else:
+            print("Dir does not exist")
+        return
+
+    with open(path, "rb") as file:
+        fjsp_instance: FJSPData = pickle.load(file)
+
+    print(f"Loaded instance: {fjsp_instance.instance_name}")
+    print(f"Number of Jobs: {fjsp_instance.num_jobs}")
+    print(f"Number of Machines: {fjsp_instance.num_machines}")
+
+    if solver == "gurobi":
+        _solve_gurobi_model(
+            fjsp_instance,
+            instance_name=instance_name,
+            create_fixed_y=create_fixed_y,
+            sample_idx=sample_idx,
+            random_seed=random_seed,
+            save_assignments=save_assignments,
+            solver_kwargs=kwargs,
+        )
+    elif solver == "scip":
+        _solve_scip_model(
+            fjsp_instance,
+            instance_name=instance_name,
+            create_fixed_y=create_fixed_y,
+            sample_idx=sample_idx,
+            random_seed=random_seed,
+            save_assignments=save_assignments,
+            solver_kwargs=kwargs,
+        )
+    else:
+        print(f"Error: Unknown solver '{solver}'. Use 'gurobi' or 'scip'")
 
 def solve_instances_with_solver(**kwargs):
     solver_kwargs = dict(kwargs)
@@ -255,11 +346,12 @@ def solve_instances_with_solver(**kwargs):
     if instance_name is None:
         instance_name = f"i{num_jobs}_k{num_machines}_{instance_nb}"
 
-    if solver == "gurobi":
+    if solver in {"gurobi", "scip"}:
         if create_fixed_y:
             for sample_idx in range(amount_of_samples_per_instance):
                 solveModel(
                     instance_name=instance_name,
+                    solver=solver,
                     create_fixed_y=True,
                     sample_idx=sample_idx,
                     random_seed=random_seed,
@@ -267,8 +359,8 @@ def solve_instances_with_solver(**kwargs):
                     **solver_kwargs,
                 )
         else:
-            solveModel(instance_name=instance_name, **solver_kwargs)
+            solveModel(instance_name=instance_name, solver=solver, **solver_kwargs)
 
     
     else:
-        print(f"Error: Unknown solver '{solver}'. Use 'gurobi'")
+        print(f"Error: Unknown solver '{solver}'. Use 'gurobi' or 'scip'")

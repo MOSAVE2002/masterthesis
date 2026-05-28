@@ -3,23 +3,27 @@
     "num_jobs": [5],
     "num_machines": [5],
     "num_operations_per_job": [5],
-    "nb_instances": 1,
+    "nb_instances": 5,
     "instance_names": ""
     },
  "programm_settings":{
-    "create_ins": "False",
+    "create_ins": "True",
     "solve_ins": "True",
-    "solver": ["gurobi"]
+    "solver": ["gurobi", "scip"]
     },
 "random_fixed_y":{
-   "create_fixed_y": "True",
+   "create_fixed_y": "False",
    "amount_of_samples_per_instance": 1000,
    "random_seed": 0,
    "save_assignments": "False"
 },
 "gurobi_params":{
    "OutputFlag": 1,
-   "TimeLimit": 2
+   "TimeLimit": 100
+},
+"scip_params":{
+   "display/verblevel": 4,
+   "limits/time": 100
 }
 
 
