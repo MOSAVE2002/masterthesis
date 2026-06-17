@@ -14,11 +14,10 @@
     "job_2_path_mean_setup",
     "job_3_path_mean_setup",
     "job_4_path_mean_setup",
-    "job_5_path_mean_setup",
-    "mean_assigned_operation_time_mean_setup"
+    "job_5_path_mean_setup"
   ],
   "target_column": "makespan",
-  "input_size": 16,
+  "input_size": 15,
   "input_normalization": "folded",
   "target_normalization": "folded",
   "feature_mean": [
@@ -36,8 +35,7 @@
     33.37774658203125,
     38.68252944946289,
     35.43368911743164,
-    38.147281646728516,
-    7.823369026184082
+    38.147281646728516
   ],
   "feature_std": [
     6.100587844848633,
@@ -54,8 +52,7 @@
     3.8040599822998047,
     4.019369125366211,
     6.863392353057861,
-    7.750543594360352,
-    0.630549430847168
+    7.750543594360352
   ],
   "target_mean": 39.77428436279297,
   "target_std": 5.285010814666748,
@@ -69,11 +66,11 @@
   "learning_rate": 0.001,
   "weight_decay": 1e-05,
   "seed": 42,
-  "best_epoch": 18,
-  "best_val_mse": 3.477954864501953,
-  "best_val_mae_makespan": 1.392635464668274,
-  "test_mse": 3.6464076042175293,
-  "test_rmse": 1.9095569130606003,
-  "test_mae_makespan": 1.3938401937484741,
-  "test_r2": 0.8638408101430408
+  "best_epoch": 155,
+  "best_val_mse": 3.8970651626586914,
+  "best_val_mae_makespan": 1.4936045408248901,
+  "test_mse": 3.8273935317993164,
+  "test_rmse": 1.9563725442254898,
+  "test_mae_makespan": 1.475659966468811,
+  "test_r2": 0.8570826799640274
 }

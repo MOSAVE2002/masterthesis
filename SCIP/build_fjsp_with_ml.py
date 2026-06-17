@@ -370,39 +370,6 @@ def build_fjsp(
         )
         feature_vars_by_name[feature_name] = feature_var
 
-    mean_time_lb = 0.0
-    mean_time_ub = 0.0
-    for operation in instance.real_operations:
-        operation_coefficients = [
-            instance.processing_times[operation, machine] + s_mean[machine]
-            for machine in instance.eligible_machines[operation]
-        ]
-        mean_time_lb += min(operation_coefficients)
-        mean_time_ub += max(operation_coefficients)
-
-    mean_time_lb /= len(instance.real_operations)
-    mean_time_ub /= len(instance.real_operations)
-
-    mean_assigned_operation_time = model.addVar(
-        vtype="C",
-        lb=float(mean_time_lb),
-        ub=float(mean_time_ub),
-        name="mean_assigned_operation_time_mean_setup",
-    )
-    model.addCons(
-        mean_assigned_operation_time
-        == quicksum(
-            (instance.processing_times[i, machine] + s_mean[machine]) * Y[i, machine]
-            for i in instance.real_operations
-            for machine in instance.eligible_machines[i]
-        )
-        / len(instance.real_operations),
-        name="mean_assigned_operation_time_mean_setup_def",
-    )
-    feature_vars_by_name[
-        "mean_assigned_operation_time_mean_setup"
-    ] = mean_assigned_operation_time
-
     missing_features = [
         feature_name
         for feature_name in feature_columns
