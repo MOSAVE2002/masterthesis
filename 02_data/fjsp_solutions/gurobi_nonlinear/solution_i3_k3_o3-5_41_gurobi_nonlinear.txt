@@ -1,0 +1,95 @@
+Solution summary:
+Formulation: nonlinear_transition_hazard_weibull_unconstrained
+Status: OPTIMAL
+Objective: 25.1897
+Exact objective (fixed decisions): 25.1897
+Objective error (model - exact): -0.000000
+Makespan: 25.1897
+Exact makespan (fixed decisions): 25.1897
+Runtime [s]: 0.1224
+Best bound: 25.189730
+MIP gap: 0.00000000
+MIP gap [%]: 0.000000
+Explored nodes: 1
+Solution count: 8
+Big M: 257.0000
+
+Model structure:
+Variables total: 459
+Variable types: continuous=219, binary=240, integer=0, semi-continuous=0, semi-integer=0
+Constraints total: 1256
+Linear constraints: 1246 (equality=96, less-or-equal=713, greater-or-equal=437)
+Quadratic constraints: 0 (equality=0, less-or-equal=0, greater-or-equal=0)
+General constraints: 10 (types: NL=10)
+SOS constraints: 0
+
+Reliability summary:
+Distribution: weibull
+Constraint enforced: False
+Constraint budget: 
+Total expected failure delay: 3.166492
+Exact total failure delay: 3.166492
+Predicted total failure delay: 
+Sum of predicted operation failure probabilities: 
+Raw probability-head sum before ReLU/clipping: 
+Exact Weibull failure delay: 3.166492
+
+Model parameters:
+GNN model path: 
+GNN metadata path: 
+Graph mode: 
+Convolution: 
+Aggregation: 
+Pooling: 
+GNN layers: 
+Hidden channels: 
+GNN used in objective: 
+Schedule upper bounds: 
+ReLU formulation: 
+Edge type: 
+Job precedence edges: 
+Machine predecessor edges: 
+Number GNN edges: 
+Reliability-graph schema: direct_machine_predecessor_transition_hazard_v1
+Reliability-graph parameters: {'enabled': True, 'beta': 3.0, 'transition_gamma': 0.02}
+
+Reliability parameters:
+machine_initial_age: 10.0000
+mu_fail: 5.0000
+weibull_eta: 80.0000
+weibull_beta: 3.0000
+repair_duration: 20.0000
+
+Operation values:
+op 1: C=1.0129, S=0.0000, D=1.0129, Delta=0.0129
+op 2: C=7.3718, S=1.0129, D=6.3589, Delta=0.3589
+op 3: C=15.5597, S=7.3718, D=8.1879, Delta=0.1879
+op 4: C=25.1897, S=15.5597, D=9.6301, Delta=0.6301
+op 5: C=13.6532, S=7.3718, D=6.2814, Delta=0.2814
+op 6: C=14.9381, S=13.6532, D=1.2849, Delta=0.2849
+op 7: C=19.9048, S=15.5597, D=4.3451, Delta=0.3451
+op 8: C=1.0129, S=0.0000, D=1.0129, Delta=0.0129
+op 9: C=10.6196, S=1.0129, D=9.6067, Delta=0.6067
+op 10: C=19.3839, S=14.9381, D=4.4458, Delta=0.4458
+
+Y values:
+Y[1,0] = 1, p=1.0000, transition=0.000000, R=10.000000, pi_fail=0.000646, tau=20.000000
+Y[1,1] = 0, p=1.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[2,0] = 1, p=6.0000, transition=0.555556, R=11.000000, pi_fail=0.017944, tau=20.000000
+Y[2,1] = 0, p=10.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[3,0] = 0, p=9.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[3,1] = 1, p=8.0000, transition=0.000000, R=10.000000, pi_fail=0.009393, tau=20.000000
+Y[3,2] = 0, p=9.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[4,2] = 1, p=9.0000, transition=0.000000, R=20.000000, pi_fail=0.031503, tau=20.000000
+Y[5,0] = 1, p=6.0000, transition=0.000000, R=17.000000, pi_fail=0.014068, tau=20.000000
+Y[5,2] = 0, p=6.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[6,0] = 1, p=1.0000, transition=0.555556, R=23.000000, pi_fail=0.014245, tau=20.000000
+Y[7,0] = 0, p=6.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[7,1] = 1, p=4.0000, transition=0.400000, R=18.000000, pi_fail=0.017256, tau=20.000000
+Y[7,2] = 0, p=4.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[8,0] = 0, p=1.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[8,1] = 0, p=1.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000
+Y[8,2] = 1, p=1.0000, transition=0.000000, R=10.000000, pi_fail=0.000646, tau=20.000000
+Y[9,2] = 1, p=9.0000, transition=0.888889, R=11.000000, pi_fail=0.030334, tau=20.000000
+Y[10,0] = 1, p=4.0000, transition=0.333333, R=24.000000, pi_fail=0.022290, tau=20.000000
+Y[10,2] = 0, p=5.0000, transition=, R=0.000000, pi_fail=0.000000, tau=20.000000

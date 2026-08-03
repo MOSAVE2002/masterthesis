@@ -1,8 +1,0 @@
-FJSP-Lösung
-======================================================================
-
-Status: optimal
-Makespan: 38.0000
-Zielfunktionswert: 38.0000
-Big-M H: 126
-

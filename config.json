@@ -1,30 +1,172 @@
 {
- "instance_parameters":{
-    "num_jobs": [5],
-    "num_machines": [5],
-    "num_operations_per_job": [5],
-    "nb_instances": 5,
-    "instance_names": ""
-    },
- "programm_settings":{
-    "create_ins": "True",
-    "solve_ins": "True",
-    "solver": ["gurobi", "scip"]
-    },
-"random_fixed_y":{
-   "create_fixed_y": "False",
-   "amount_of_samples_per_instance": 1000,
-   "random_seed": 0,
-   "save_assignments": "False"
-},
-"gurobi_params":{
-   "OutputFlag": 1,
-   "TimeLimit": 100
-},
-"scip_params":{
-   "display/verblevel": 4,
-   "limits/time": 100
-}
+  "schema_version": 12,
 
+  "workflow": {
+    "create_instances": false,
+    "generate_training_data": false,
+    "train_gnn": false,
+    "solve": true
+  },
 
+  "instances": {
+    "generation": {
+      "num_jobs": [3,5,7],
+      "num_machines": [3,5],
+      "operations_per_job": [3, 5],
+      "instances_per_size": 60,
+      "random_seed": 42,
+      "split_ratios": {
+        "train": 0.70,
+        "valid": 0.15,
+        "test": 0.15
+      }
+    }
+  },
+
+  "solve": {
+    "solvers": [
+      "gurobi_nonlinear","gurobi_gnn"
+    ],
+    "mip_gap": 0.0,
+    "evaluation": {
+      "random_seed": 2026,
+      "instance_directory": "02_data/fjsp_instances/evaluation",
+      "in_distribution": {
+        "enabled": true,
+        "instances_per_size": 5
+      },
+      "extrapolation": {
+        "enabled": false,
+        "num_jobs": [7],
+        "num_machines": [5, 7, 10],
+        "instances_per_size": 3
+      },
+      "stress": {
+        "enabled": false,
+        "num_jobs": [10],
+        "num_machines": [10],
+        "instances_per_size": 1
+      }
+    }
+  },
+
+  "constraint": {
+    "type": "weibull",
+    "enforce": false,
+    "weibull": {
+      "reliability_graph": {
+        "enabled": true,
+        "beta": 3.0,
+        "transition_gamma": 0.02
+      }
+    }
+  },
+
+  "training": {
+    "data_generation": {
+      "method": "gurobi_linear_labeled",
+      "samples_per_split": {
+        "training": 40,
+        "valid": 10,
+        "test": 10
+      },
+      "output_directory": "02_data/gnn_dataset",
+      "generate_splits": {
+        "training": true,
+        "valid": true,
+        "test": true
+      },
+      "random_seed": 42,
+      "reliability_ranges": {
+        "deployment_share": 0.70,
+        "deployment": {
+          "initial_age": 10.0,
+          "eta": 80.0,
+          "repair_duration": 20.0
+        },
+        "initial_age": [0.0, 80.0],
+        "eta": [80.0, 80.0],
+        "repair_duration": [10.0, 30.0]
+      },
+      "fixed_y": {
+        "time_limit_seconds": 5,
+        "output_flag": 0,
+        "pool_solutions": 10,
+        "pool_candidates": 50,
+        "pool_search_mode": 2,
+        "pool_gap": 1.0,
+        "mip_gap": 0.2,
+        "mip_focus": 1,
+        "enforce_constraint": false,
+        "fix_ratio_min": 0.25,
+        "fix_ratio_max": 0.5,
+        "fix_ratios": [0.25, 0.5],
+        "sequence_fix_ratios": [0.0, 0.5],
+        "pool_selection_ratios": {
+          "very_good_effective": 0.30,
+          "good_nominal_makespan": 0.15,
+          "low_failure_delay": 0.075,
+          "high_failure_delay": 0.075,
+          "pareto_tradeoff": 0.20,
+          "structurally_diverse": 0.10,
+          "very_bad_effective": 0.10
+        },
+        "minimum_ratio_by_max_dimension": {}
+      }
+    },
+
+    "gnn": {
+      "model_directory": "04_GraphNeuralNetworks/trained_gnn_models",
+      "combinations": [
+        {"graph_mode": "fixed_candidate", "convolution": "linear", "aggregation": "none", "pooling": "global_add", "layers": 1, "hidden_channels": [4, 8]},
+        {"graph_mode": "fixed_candidate", "convolution": "gcn", "aggregation": "sum", "pooling": "global_add", "layers": 1, "hidden_channels": [4, 8]},
+        {"graph_mode": "fixed_candidate", "convolution": "sage", "aggregation": "sum", "pooling": "global_add", "layers": 1, "hidden_channels": [4, 8]}
+      ],
+
+      "optimizer": {
+        "epochs": 3000,
+        "batch_size": 128,
+        "learning_rate": 0.0001
+      },
+
+      "validation": {
+        "split_strategy": "pre_split",
+        "interval_epochs": 10,
+        "patience_epochs": 50,
+        "enforce_graph_influence": true
+      }
+    }
+  },
+
+  "solvers": {
+    "gurobi": {
+      "common": {
+        "OutputFlag": 0,
+        "TimeLimit": 120,
+        "Threads": 1,
+        "Seed": 42
+      },
+      "gnn": {
+        "TimeLimit": 120,
+        "model_seed": 42,
+        "edge_type": "machine_only",
+        "add_machine_load_lb": true,
+        "add_schedule_upper_bounds": true,
+        "bound_tightening": true,
+        "analytic_bounds": true,
+        "structured_first_layer": true,
+        "relu_formulation": "big_m",
+        "write_solution": true
+      },
+
+      "nonlinear": {
+        "TimeLimit": 120,
+        "add_machine_load_lb": true,
+        "write_solution": true,
+        "plot_solution_schedule": false,
+        "plot_solution_graph": false,
+        "plot_solution_graph_style": "disjunctive"
+      }
+    }
+  }
 }
