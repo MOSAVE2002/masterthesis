@@ -1,0 +1,96 @@
+{
+  "instances_requested": [
+    "i3_k3_o3-5_1",
+    "i3_k3_o3-5_2",
+    "i3_k3_o3-5_3",
+    "i3_k3_o3-5_4",
+    "i3_k3_o3-5_6"
+  ],
+  "instances_completed": 5,
+  "failures": [],
+  "samples_per_instance": 15,
+  "pilot_replications": 256,
+  "label_replications": 1000,
+  "service_level": 0.95,
+  "service_boundary_width": 0.03,
+  "fixed_y": {
+    "time_limit_seconds": 4,
+    "output_flag": 0,
+    "pool_candidates": 30,
+    "minimum_candidate_pool_runs": 4,
+    "pool_search_mode": 2,
+    "pool_gap": 1.0,
+    "mip_gap": 0.05,
+    "mip_focus": 1,
+    "fix_ratios": [
+      0.25,
+      0.5
+    ],
+    "sequence_fix_ratios": [
+      0.25,
+      0.5
+    ],
+    "service_boundary_width": 0.03,
+    "candidate_generation_mode": "nonlinear_evaluated",
+    "nonlinear_probability_bands": {
+      "enabled": false,
+      "target_ratios": {
+        "low": 0.1,
+        "boundary_below": 0.4,
+        "boundary_above": 0.4,
+        "high": 0.1
+      }
+    },
+    "hybrid_selection": {
+      "enabled": true,
+      "apply_to_splits": [
+        "training",
+        "valid",
+        "test"
+      ],
+      "anchor_fraction": 0.25,
+      "anchor_ratios": {
+        "good_nominal_objective": 0.3,
+        "high_min_job_probability": 0.2,
+        "pareto_tradeoff": 0.2,
+        "structurally_diverse": 0.3
+      },
+      "job_probability_target_ratios": {
+        "low": 0.1,
+        "boundary_below": 0.4,
+        "boundary_above": 0.4,
+        "high": 0.1
+      },
+      "probability_target_basis": "min_job_probability",
+      "maximum_candidate_pool_runs": 8
+    },
+    "pool_selection_ratios": {
+      "service_boundary_below": 0.25,
+      "service_boundary_above": 0.15,
+      "high_min_job_probability": 0.15,
+      "low_min_job_probability": 0.1,
+      "good_nominal_objective": 0.15,
+      "pareto_tradeoff": 0.1,
+      "structurally_diverse": 0.1
+    }
+  },
+  "overall": {
+    "scope": "overall",
+    "graphs": 75,
+    "mc_low": 34,
+    "mc_boundary_below": 16,
+    "mc_boundary_above": 16,
+    "mc_high": 9,
+    "mc_near_boundary": 32,
+    "mc_service_feasible": 25,
+    "mean_mc_p_min": 0.65224,
+    "min_mc_p_min": 0.0,
+    "max_mc_p_min": 0.997,
+    "mean_nonlinear_p_min": 0.66068,
+    "mean_absolute_gap": 0.053641,
+    "mean_mc_minus_nonlinear": -0.00844,
+    "pearson_nonlinear_mc": 0.969751,
+    "bin_target_absolute_error": 0.746667,
+    "wall_seconds": 73.096808
+  }
+}

@@ -1,0 +1,30 @@
+Solution summary:
+Formulation: gnn_per_job_ontime_probability_v3
+Status: TIME_LIMIT
+Objective definition: machine_assignment_cost
+Objective: 
+Best bound: 130.250000
+MIP gap: 
+Makespan: 
+Runtime [s]: 20.001073
+Model build runtime [s]: 0.081516
+Optimizer wall runtime [s]: 20.001112
+Build plus optimizer runtime [s]: 20.082628
+Solution count: 0
+variables: 4166
+continuous: 3579
+binary: 587
+integer: 0
+linear_constraints: 13864
+quadratic_constraints: 0
+general_constraints: 0
+nonlinear_constraints: 0
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Service levels: {1: 0.95, 2: 0.95, 3: 0.95}
+Due dates: {1: 51.35, 2: 51.35, 3: 51.35}
+GNN convolution: sage
+GNN layers: 2
+GNN hidden channels: 8

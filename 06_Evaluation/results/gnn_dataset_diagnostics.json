@@ -1,0 +1,25 @@
+{
+  "status": "evaluated",
+  "dataset_directory": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/02_data/gnn_dataset",
+  "available_splits": [
+    "training",
+    "valid",
+    "test"
+  ],
+  "source_files": {
+    "training": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/02_data/gnn_dataset/training/graphs_training.csv",
+    "valid": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/02_data/gnn_dataset/valid/graphs_valid.csv",
+    "test": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/02_data/gnn_dataset/test/graphs_test.csv"
+  },
+  "graphs": 5460,
+  "labels": 20900,
+  "service_level": 0.95,
+  "boundary_width": 0.03,
+  "histogram_bins": 20,
+  "outputs": {
+    "distribution_csv": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/06_Evaluation/results/gnn_dataset_distribution.csv",
+    "constant_baseline_csv": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/06_Evaluation/results/gnn_constant_baseline.csv",
+    "histogram_pdf": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/06_Evaluation/results/gnn_label_histograms.pdf",
+    "histogram_png": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/06_Evaluation/results/gnn_label_histograms.png"
+  }
+}

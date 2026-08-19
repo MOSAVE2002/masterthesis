@@ -1,0 +1,30 @@
+Solution summary:
+Formulation: nonlinear_per_job_ontime_probability_lb_v3
+Status: TIME_LIMIT
+Objective definition: machine_assignment_cost
+Objective: 
+Best bound: 275.312500
+MIP gap: 
+Makespan: 
+Runtime [s]: 20.001536
+Model build runtime [s]: 0.035361
+Optimizer wall runtime [s]: 20.001306
+Build plus optimizer runtime [s]: 20.036667
+Solution count: 0
+variables: 1405
+continuous: 301
+binary: 1104
+integer: 0
+linear_constraints: 2475
+quadratic_constraints: 14
+general_constraints: 93
+nonlinear_constraints: 93
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Service levels: {1: 0.95, 2: 0.95, 3: 0.95, 4: 0.95, 5: 0.95, 6: 0.95, 7: 0.95}
+Due dates: {1: 115.7, 2: 115.7, 3: 115.7, 4: 115.7, 5: 115.7, 6: 115.7, 7: 115.7}
+GNN convolution: 
+GNN layers: 
+GNN hidden channels: 

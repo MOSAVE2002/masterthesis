@@ -1,0 +1,98 @@
+Solution summary:
+Formulation: gnn_per_job_ontime_probability_v3
+Status: OPTIMAL
+Objective definition: machine_assignment_cost
+Objective: 243.125000
+Best bound: 243.125000
+MIP gap: 0.000000
+Makespan: 131.000000
+Runtime [s]: 14.350922
+Model build runtime [s]: 0.254988
+Optimizer wall runtime [s]: 14.350761
+Build plus optimizer runtime [s]: 14.605749
+Solution count: 1
+variables: 12531
+continuous: 10906
+binary: 1625
+integer: 0
+linear_constraints: 43902
+quadratic_constraints: 0
+general_constraints: 0
+nonlinear_constraints: 0
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Service levels: {1: 0.95, 2: 0.95, 3: 0.95, 4: 0.95, 5: 0.95, 6: 0.95, 7: 0.95}
+Due dates: {1: 85.15, 2: 85.15, 3: 85.15, 4: 85.15, 5: 85.15, 6: 85.15, 7: 85.15}
+GNN convolution: sage
+GNN layers: 2
+GNN hidden channels: 6
+
+Alpha service level summary:
+Minimum realized per-job alpha service level: 0.985593
+Minimum alpha service slack: 0.035593
+All per-job alpha targets satisfied: yes
+Probability label method: monte_carlo_weibull_preempt_resume_right_shift_v1
+
+Per-job alpha service levels:
+job 1: completion=66.000000, due_date=85.150000, realized_alpha=1.000000, target_alpha=0.950000, alpha_slack=0.050000, satisfied=yes
+job 2: completion=67.814768, due_date=85.150000, realized_alpha=1.000000, target_alpha=0.950000, alpha_slack=0.050000, satisfied=yes
+job 3: completion=29.000000, due_date=85.150000, realized_alpha=1.000000, target_alpha=0.950000, alpha_slack=0.050000, satisfied=yes
+job 4: completion=43.000000, due_date=85.150000, realized_alpha=1.000000, target_alpha=0.950000, alpha_slack=0.050000, satisfied=yes
+job 5: completion=62.000000, due_date=85.150000, realized_alpha=1.000000, target_alpha=0.950000, alpha_slack=0.050000, satisfied=yes
+job 6: completion=73.000000, due_date=85.150000, realized_alpha=0.985593, target_alpha=0.950000, alpha_slack=0.035593, satisfied=yes
+job 7: completion=52.000000, due_date=85.150000, realized_alpha=0.999420, target_alpha=0.950000, alpha_slack=0.049420, satisfied=yes
+
+Operation values:
+op 1: machine=2, S=9.000000, C=15.000000, T=12.000000, Pd_model=, Pd_gnn=
+op 2: machine=1, S=15.000000, C=23.000000, T=19.000000, Pd_model=, Pd_gnn=
+op 3: machine=2, S=49.000000, C=56.000000, T=52.500000, Pd_model=, Pd_gnn=
+op 4: machine=1, S=56.000000, C=58.000000, T=57.000000, Pd_model=, Pd_gnn=
+op 5: machine=2, S=62.000000, C=66.000000, T=64.000000, Pd_model=, Pd_gnn=
+op 6: machine=1, S=0.000000, C=9.000000, T=4.500000, Pd_model=, Pd_gnn=
+op 7: machine=2, S=21.000000, C=26.000000, T=23.500000, Pd_model=, Pd_gnn=
+op 8: machine=0, S=57.814768, C=67.814768, T=62.814768, Pd_model=, Pd_gnn=
+op 9: machine=0, S=0.000000, C=5.000000, T=2.500000, Pd_model=, Pd_gnn=
+op 10: machine=0, S=5.000000, C=8.000000, T=6.500000, Pd_model=, Pd_gnn=
+op 11: machine=2, S=26.000000, C=27.000000, T=26.500000, Pd_model=, Pd_gnn=
+op 12: machine=2, S=27.000000, C=29.000000, T=28.000000, Pd_model=, Pd_gnn=
+op 13: machine=2, S=15.000000, C=21.000000, T=18.000000, Pd_model=, Pd_gnn=
+op 14: machine=2, S=31.000000, C=39.000000, T=35.000000, Pd_model=, Pd_gnn=
+op 15: machine=2, S=39.000000, C=43.000000, T=41.000000, Pd_model=, Pd_gnn=
+op 16: machine=2, S=0.000000, C=9.000000, T=4.500000, Pd_model=, Pd_gnn=
+op 17: machine=1, S=23.000000, C=28.000000, T=25.500000, Pd_model=, Pd_gnn=
+op 18: machine=2, S=56.000000, C=62.000000, T=59.000000, Pd_model=, Pd_gnn=
+op 19: machine=2, S=29.000000, C=31.000000, T=30.000000, Pd_model=, Pd_gnn=
+op 20: machine=1, S=31.000000, C=33.000000, T=32.000000, Pd_model=, Pd_gnn=
+op 21: machine=2, S=44.000000, C=49.000000, T=46.500000, Pd_model=, Pd_gnn=
+op 22: machine=1, S=58.000000, C=59.000000, T=58.500000, Pd_model=, Pd_gnn=
+op 23: machine=2, S=66.000000, C=73.000000, T=69.500000, Pd_model=, Pd_gnn=
+op 24: machine=0, S=8.000000, C=12.000000, T=10.000000, Pd_model=, Pd_gnn=
+op 25: machine=2, S=43.000000, C=44.000000, T=43.500000, Pd_model=, Pd_gnn=
+op 26: machine=1, S=44.000000, C=52.000000, T=48.000000, Pd_model=, Pd_gnn=
+
+Active U edges:
+U(1, 13, 2)=1
+U(2, 17, 1)=1
+U(3, 18, 2)=1
+U(4, 22, 1)=1
+U(5, 23, 2)=1
+U(6, 2, 1)=1
+U(7, 11, 2)=1
+U(9, 10, 0)=1
+U(10, 24, 0)=1
+U(11, 12, 2)=1
+U(12, 19, 2)=1
+U(13, 7, 2)=1
+U(14, 15, 2)=1
+U(15, 25, 2)=1
+U(16, 1, 2)=1
+U(17, 20, 1)=1
+U(18, 5, 2)=1
+U(19, 14, 2)=1
+U(20, 26, 1)=1
+U(21, 3, 2)=1
+U(24, 8, 0)=1
+U(25, 21, 2)=1
+U(26, 4, 1)=1

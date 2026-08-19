@@ -1,0 +1,6 @@
+target_band,attempts,solved,solve_rate,target_hits,target_hit_rate,mc_low,mc_boundary_below,mc_boundary_above,mc_high,mean_nonlinear_p_min,mean_mc_p_min,median_mc_p_min,mean_absolute_gap,mean_wall_seconds
+low,5,4,0.8,4,1.0,4,0,0,0,0.222033,0.5805,0.5835,0.393006,1.571496
+boundary_below,5,0,0.0,0,0.0,0,0,0,0,,,,,4.8153
+boundary_above,5,3,0.6,1,0.3333333333333333,1,1,1,0,0.955439,0.864667,0.941,0.091049,5.372914
+high,5,3,0.6,2,0.6666666666666666,0,1,0,2,0.980095,0.973333,0.997,0.030053,7.734795
+overall,20,10,0.5,7,0.7,5,2,1,2,0.669474,0.7836,0.872,0.193533,4.873626

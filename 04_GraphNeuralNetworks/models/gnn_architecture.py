@@ -1,141 +1,110 @@
-"""Canonical GNN architecture names and compatibility validation."""
+"""Architecture naming for the active linear and SAGE Pd models."""
 
 from itertools import product
+from pathlib import Path
+
 
 GRAPH_FIXED = "fixed_candidate"
 CONV_LINEAR = "linear"
-CONV_GCN = "gcn"
-CONV_GINE = "gine"
-CONV_MPNN = "mpnn"
 CONV_SAGE = "sage"
-MESSAGE_PASSING_CONVOLUTIONS = {
-    CONV_GCN,
-    CONV_GINE,
-    CONV_MPNN,
-    CONV_SAGE,
-}
-SUM_ONLY_CONVOLUTIONS = {CONV_GINE, CONV_MPNN}
-
+MESSAGE_PASSING_CONVOLUTIONS = {CONV_SAGE}
 POOL_ADD = "global_add"
 VALID_LAYER_COUNTS = {1, 2, 3}
 
 
 def normalize_convolution(value):
-    normalized = str(value).strip()
-    if normalized not in {
-        CONV_LINEAR,
-        CONV_GCN,
-        CONV_GINE,
-        CONV_MPNN,
-        CONV_SAGE,
-    }:
-        raise ValueError(
-            "convolution must be linear, gcn, gine, mpnn, or sage."
-        )
-    return normalized
+    convolution = str(value).strip().lower()
+    if convolution not in {CONV_LINEAR, CONV_SAGE}:
+        raise ValueError("convolution must be 'linear' or 'sage'.")
+    return convolution
 
 
 def normalize_pooling(value):
-    normalized = str(value).strip()
-    if normalized != POOL_ADD:
-        raise ValueError("pooling must be global_add.")
-    return normalized
+    pooling = str(value).strip().lower()
+    if pooling != POOL_ADD:
+        raise ValueError("pooling must be 'global_add'.")
+    return pooling
 
 
 def normalize_aggregation(value, convolution):
     convolution = normalize_convolution(convolution)
     if convolution == CONV_LINEAR:
         if value not in (None, "", "none"):
-            raise ValueError(
-                "Linear requires aggregation='none'."
-            )
+            raise ValueError("linear requires aggregation='none'.")
         return "none"
-    normalized = str(value or "sum").strip().lower()
-    if normalized not in {"mean", "sum"}:
-        raise ValueError("aggregation must be mean or sum.")
-    if convolution in SUM_ONLY_CONVOLUTIONS and normalized != "sum":
-        raise ValueError(f"{convolution.upper()} requires aggregation='sum'.")
-    return normalized
+    aggregation = str(value or "sum").strip().lower()
+    if aggregation != "sum":
+        raise ValueError("sage requires aggregation='sum'.")
+    return aggregation
 
 
 def validate_architecture(graph_mode, convolution, aggregation, pooling):
     graph_mode = str(graph_mode).strip().lower()
     if graph_mode != GRAPH_FIXED:
-        raise ValueError("graph_mode must be fixed_candidate.")
+        raise ValueError("graph_mode must be 'fixed_candidate'.")
     convolution = normalize_convolution(convolution)
-    aggregation = normalize_aggregation(aggregation, convolution)
-    pooling = normalize_pooling(pooling)
     return {
         "graph_mode": graph_mode,
         "convolution": convolution,
-        "aggregation": aggregation,
-        "pooling": pooling,
+        "aggregation": normalize_aggregation(aggregation, convolution),
+        "pooling": normalize_pooling(pooling),
     }
 
 
 def _positive_integer_options(value, name, allowed=None):
     values = value if isinstance(value, (list, tuple)) else [value]
-    if not values:
-        raise ValueError(f"{name} must not be empty.")
     result = []
     for item in values:
         if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
-            raise ValueError(
-                f"{name} must be a positive integer or a non-empty list "
-                "of positive integers."
-            )
+            raise ValueError(f"{name} must contain positive integers.")
         if allowed is not None and item not in allowed:
-            allowed_text = ", ".join(str(option) for option in sorted(allowed))
-            raise ValueError(f"{name} must be one of {allowed_text}.")
+            choices = ", ".join(map(str, sorted(allowed)))
+            raise ValueError(f"{name} must be one of {choices}.")
         if item not in result:
             result.append(item)
+    if not result:
+        raise ValueError(f"{name} must not be empty.")
     return result
 
 
 def expand_architecture_variants(raw, defaults=None):
-    """Expand one config entry into explicit layer/hidden-size variants."""
     raw = dict(raw or {})
     defaults = dict(defaults or {})
     architecture = validate_architecture(
-        raw.get(
-            "graph_mode",
-            defaults.get("graph_mode", GRAPH_FIXED),
-        ),
-        raw.get(
-            "convolution",
-            defaults.get("convolution", CONV_SAGE),
-        ),
+        raw.get("graph_mode", defaults.get("graph_mode", GRAPH_FIXED)),
+        raw.get("convolution", defaults.get("convolution", CONV_SAGE)),
         raw.get("aggregation", defaults.get("aggregation")),
         raw.get("pooling", defaults.get("pooling", POOL_ADD)),
     )
     layers = raw.get("layers", defaults.get("layers"))
-    hidden_channels = raw.get(
-        "hidden_channels", defaults.get("hidden_channels")
-    )
-    if layers is None or hidden_channels is None:
-        raise ValueError(
-            "Every GNN combination must define layers and "
-            "hidden_channels."
-        )
-    layer_options = _positive_integer_options(
-        layers,
-        "layers",
-        allowed=VALID_LAYER_COUNTS,
-    )
-    hidden_options = _positive_integer_options(
-        hidden_channels,
-        "hidden_channels",
-    )
+    hidden = raw.get("hidden_channels", defaults.get("hidden_channels"))
+    if layers is None or hidden is None:
+        raise ValueError("layers and hidden_channels are required.")
     return [
-        {
-            **architecture,
-            "layers": layers,
-            "hidden_channels": hidden_channels,
-        }
-        for layers, hidden_channels in product(
-            layer_options, hidden_options
+        {**architecture, "layers": layer, "hidden_channels": width}
+        for layer, width in product(
+            _positive_integer_options(
+                layers, "layers", allowed=VALID_LAYER_COUNTS
+            ),
+            _positive_integer_options(hidden, "hidden_channels"),
         )
     ]
+
+
+def _explicit_size(layers, hidden_channels):
+    if (layers is None) != (hidden_channels is None):
+        raise ValueError(
+            "layers and hidden_channels must either both be set or omitted."
+        )
+    if layers is None:
+        return None
+    layer = _positive_integer_options(
+        layers, "layers", allowed=VALID_LAYER_COUNTS
+    )
+    hidden = _positive_integer_options(hidden_channels, "hidden_channels")
+    if len(layer) != 1 or len(hidden) != 1:
+        raise ValueError("A path requires one explicit model size.")
+    return layer[0], hidden[0]
 
 
 def architecture_stem(
@@ -148,31 +117,17 @@ def architecture_stem(
     layers=None,
     hidden_channels=None,
 ):
-    arch = validate_architecture(graph_mode, convolution, aggregation, pooling)
-    stem = (
-        f"fjsp_gnn_{arch['graph_mode']}_{arch['convolution']}_"
-        f"{arch['aggregation']}_{arch['pooling']}"
+    architecture = validate_architecture(
+        graph_mode, convolution, aggregation, pooling
     )
-    if (layers is None) != (hidden_channels is None):
-        raise ValueError(
-            "layers and hidden_channels must either both be set or both "
-            "be omitted."
-        )
-    if layers is not None:
-        layer_value = _positive_integer_options(
-            layers, "layers", allowed=VALID_LAYER_COUNTS
-        )
-        hidden_value = _positive_integer_options(
-            hidden_channels, "hidden_channels"
-        )
-        if len(layer_value) != 1 or len(hidden_value) != 1:
-            raise ValueError(
-                "A model name requires one explicit layers and "
-                "hidden_channels value."
-            )
-        stem += (
-            f"_layers{layer_value[0]}_hidden{hidden_value[0]}"
-        )
+    stem = (
+        f"fjsp_gnn_{architecture['graph_mode']}_"
+        f"{architecture['convolution']}_{architecture['aggregation']}_"
+        f"{architecture['pooling']}"
+    )
+    size = _explicit_size(layers, hidden_channels)
+    if size:
+        stem += f"_layers{size[0]}_hidden{size[1]}"
     return f"{stem}_{target}_seed{int(seed)}"
 
 
@@ -184,30 +139,16 @@ def architecture_slug(
     layers=None,
     hidden_channels=None,
 ):
-    arch = validate_architecture(graph_mode, convolution, aggregation, pooling)
-    slug = (
-        f"{arch['convolution']}_{arch['aggregation']}_{arch['pooling']}"
+    architecture = validate_architecture(
+        graph_mode, convolution, aggregation, pooling
     )
-    if (layers is None) != (hidden_channels is None):
-        raise ValueError(
-            "layers and hidden_channels must either both be set or both "
-            "be omitted."
-        )
-    if layers is not None:
-        layer_value = _positive_integer_options(
-            layers, "layers", allowed=VALID_LAYER_COUNTS
-        )
-        hidden_value = _positive_integer_options(
-            hidden_channels, "hidden_channels"
-        )
-        if len(layer_value) != 1 or len(hidden_value) != 1:
-            raise ValueError(
-                "A model directory requires one explicit layers and "
-                "hidden_channels value."
-            )
-        slug += (
-            f"_layers{layer_value[0]}_hidden{hidden_value[0]}"
-        )
+    slug = (
+        f"{architecture['convolution']}_{architecture['aggregation']}_"
+        f"{architecture['pooling']}"
+    )
+    size = _explicit_size(layers, hidden_channels)
+    if size:
+        slug += f"_layers{size[0]}_hidden{size[1]}"
     return slug
 
 
@@ -220,29 +161,15 @@ def architecture_model_dir(
     layers=None,
     hidden_channels=None,
 ):
-    arch = validate_architecture(graph_mode, convolution, aggregation, pooling)
-    if layers is None and hidden_channels is None:
-        return root / architecture_slug(**arch)
-    if layers is None or hidden_channels is None:
-        raise ValueError(
-            "layers and hidden_channels must either both be set or both "
-            "be omitted."
-        )
-    layer_value = _positive_integer_options(
-        layers, "layers", allowed=VALID_LAYER_COUNTS
+    architecture = validate_architecture(
+        graph_mode, convolution, aggregation, pooling
     )
-    hidden_value = _positive_integer_options(
-        hidden_channels, "hidden_channels"
+    size = _explicit_size(layers, hidden_channels)
+    root = Path(root)
+    if size is None:
+        return root / architecture_slug(**architecture)
+    family = (
+        f"{architecture['convolution']}_{architecture['aggregation']}_"
+        f"{architecture['pooling']}"
     )
-    if len(layer_value) != 1 or len(hidden_value) != 1:
-        raise ValueError(
-            "A trained-model directory requires one layers and one "
-            "hidden_channels value."
-        )
-    model_directory = (
-        f"{arch['convolution']}_{arch['aggregation']}_{arch['pooling']}"
-    )
-    size_directory = (
-        f"hidden{hidden_value[0]}_layers{layer_value[0]}"
-    )
-    return root / model_directory / size_directory
+    return root / family / f"hidden{size[1]}_layers{size[0]}"

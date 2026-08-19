@@ -3,6 +3,7 @@ import random
 import os
 import sys
 import types
+import math
 from pathlib import Path
 
 
@@ -33,28 +34,37 @@ SPLIT_CONFIG_KEYS = {
     "valid": "valid",
     "test": "test",
 }
-FIXED_SOLUTION_CSV_FILENAMES = {
-    "train": "graphs_fixed_training.csv",
-    "valid": "graphs_fixed_valid.csv",
-    "test": "graphs_fixed_test.csv",
-}
-
-
 class FJSPData:
     def _set_default_nonlinear_parameters(self):
-        """
-        Default parameters for the nonlinear reliability model.
+        """Install the scenario-free Weibull/repair model defaults."""
+        self.weibull_beta = 2.0
 
-        For now all machines use the same values. Later this can become
-        machine-specific if the experiments need it.
-        """
-        self.mu_fail = 5
-        self.machine_initial_age = 10
-        self.weibull_eta = 80
-        self.weibull_beta = 3.0
-        self.repair_duration = 20
-        # Kept as a legacy alias for old pickled instances and reports.
-        self.failure_cost = self.repair_duration
+    def _set_independent_machine_parameters(self, rng, ranges=None):
+        """Draw cost and reliability independently for every machine."""
+        from helper.stochastic_fjsp import (
+            INDEPENDENT_GENERATION_MODEL,
+            normalize_independent_machine_parameter_ranges,
+        )
+
+        normalized = normalize_independent_machine_parameter_ranges(ranges)
+        self.instance_generation_model = INDEPENDENT_GENERATION_MODEL
+        self.machine_parameter_ranges = normalized
+
+        def sampled(name):
+            lower, upper = normalized[name]
+            return {
+                machine: rng.uniform(lower, upper)
+                for machine in range(self.num_machines)
+            }
+
+        self.machine_cost = sampled("hourly_cost")
+        self.weibull_alpha = sampled("weibull_alpha")
+        self.weibull_beta = sampled("weibull_beta")
+        self.repair_rate = sampled("repair_rate")
+        self.repair_duration = {
+            machine: 1.0 / rate
+            for machine, rate in self.repair_rate.items()
+        }
 
     def _build_operation_metadata(self):
         """
@@ -112,7 +122,11 @@ class FJSPData:
         num_operations = None,
         path = '../FJSP_Simulation/02_data/instances_text/',
         flag_same_operations = False,
-        flag_save_file = True):
+        flag_save_file = True,
+        processing_time_range=None,
+        processing_time_deviation=0.2,
+        machine_parameter_ranges=None,
+        random_source=None):
 
         """
         Initializes the FJSPInstanceGenerator with the specified parameters.
@@ -120,6 +134,7 @@ class FJSPData:
         """
         
         self.nb_instance = nb_instance
+        rng = random_source if random_source is not None else random
 
         if num_operations is None:
             num_operations = []
@@ -144,9 +159,20 @@ class FJSPData:
         
         # Processing time parameters
         #TODO Operation time sollte einstellbar sein -> gute Values finden
-        self.processing_time_per_ope_min = 1
-        self.processing_time_per_ope_max = 10
-        self.proctime_deviation = 0.2
+        processing_time_range = processing_time_range or (1, 10)
+        if len(processing_time_range) != 2:
+            raise ValueError("processing_time_range must contain two values.")
+        self.processing_time_per_ope_min = int(processing_time_range[0])
+        self.processing_time_per_ope_max = int(processing_time_range[1])
+        self.proctime_deviation = float(processing_time_deviation)
+        if (
+            self.processing_time_per_ope_min <= 0
+            or self.processing_time_per_ope_min
+            > self.processing_time_per_ope_max
+        ):
+            raise ValueError("Invalid positive processing-time range.")
+        if not 0.0 <= self.proctime_deviation < 1.0:
+            raise ValueError("processing_time_deviation must lie in [0, 1).")
         self._set_default_nonlinear_parameters()
 
          # Instance Name
@@ -165,23 +191,23 @@ class FJSPData:
             num_operations_per_job = round((self.ope_per_job_min + self.ope_per_job_max) / 2)
             self.nums_operation = [num_operations_per_job for _ in range(self.num_jobs)]
         else:
-            self.nums_operation = [random.randint(self.ope_per_job_min, self.ope_per_job_max) for _ in range(self.num_jobs)]
+            self.nums_operation = [rng.randint(self.ope_per_job_min, self.ope_per_job_max) for _ in range(self.num_jobs)]
         self.num_operations = sum(self.nums_operation) # Amount of operations
 
-        self.nums_option = [random.randint(1, self.num_machines) for _ in range(self.num_operations)]   # was macht das?
+        self.nums_option = [rng.randint(1, self.num_machines) for _ in range(self.num_operations)]
         self.nums_options = sum(self.nums_option)
 
         self.ope_machine = []
         for val in self.nums_option:
-            self.ope_machine = self.ope_machine + sorted(random.sample(range(self.num_machines), val)) # flache Liste von möglichen Maschinen
+            self.ope_machine = self.ope_machine + sorted(rng.sample(range(self.num_machines), val)) # flache Liste von möglichen Maschinen
 
         self.processing_time = []
-        self.processing_times_mean = [random.randint(self.processing_time_per_ope_min, self.processing_time_per_ope_max) for _ in range(self.num_operations)]
+        self.processing_times_mean = [rng.randint(self.processing_time_per_ope_min, self.processing_time_per_ope_max) for _ in range(self.num_operations)]
         
         for i in range(len(self.nums_option)):
             low_bound = max(self.processing_time_per_ope_min, round(self.processing_times_mean[i] * (1 - self.proctime_deviation))) #
             high_bound = min(self.processing_time_per_ope_max, round(self.processing_times_mean[i] * (1 + self.proctime_deviation))) #
-            process_time_ope = [random.randint(low_bound, high_bound) for _ in range(self.nums_option[i])]
+            process_time_ope = [rng.randint(low_bound, high_bound) for _ in range(self.nums_option[i])]
             self.processing_time = self.processing_time + process_time_ope 
 
         self.num_ope_bias = [sum(self.nums_operation[0:i]) for i in range(self.num_jobs)] # kumulierte Summe als Liste
@@ -235,6 +261,11 @@ class FJSPData:
 
         self.lines = lines
         self._build_operation_metadata()
+        self._set_independent_machine_parameters(
+            rng, machine_parameter_ranges
+        )
+        from helper.stochastic_fjsp import ensure_stochastic_parameters
+        ensure_stochastic_parameters(self)
         
         # Text file zum einfacheren Lesen lassen
         if self.flag_save_file:
@@ -257,6 +288,9 @@ def generate_instances(
     split_ratios=None,
     random_seed=42,
     output_directory=None,
+    processing_time_range=None,
+    processing_time_deviation=0.2,
+    machine_parameter_ranges=None,
 ):
     """
     Generate multiple instances 
@@ -267,6 +301,7 @@ def generate_instances(
 
     No text files are created.
     """
+    generation_rng = random.Random(int(random_seed))
     instances = [
         FJSPData(
             nb_instance=instance_nb,
@@ -276,6 +311,10 @@ def generate_instances(
             operations_per_job_max=operations_per_job_max,
             num_operations=num_operations,
             flag_save_file=False,
+            processing_time_range=processing_time_range,
+            processing_time_deviation=processing_time_deviation,
+            machine_parameter_ranges=machine_parameter_ranges,
+            random_source=generation_rng,
         )
         for instance_nb in range(1, nb_instances + 1)
     ]
@@ -292,9 +331,13 @@ def generate_instance_specs(
     split_ratios=None,
     random_seed=42,
     output_directory=None,
+    processing_time_range=None,
+    processing_time_deviation=0.2,
+    machine_parameter_ranges=None,
 ):
     """Generate configured sizes and split every size independently."""
     split_instances = {split_name: [] for split_name in SPLIT_NAMES}
+    generation_rng = random.Random(int(random_seed))
     for spec_index, spec in enumerate(specs):
         size_instances = [
             FJSPData(
@@ -305,6 +348,10 @@ def generate_instance_specs(
                 operations_per_job_max=max(spec["operations_per_job"]),
                 num_operations=None,
                 flag_save_file=False,
+                processing_time_range=processing_time_range,
+                processing_time_deviation=processing_time_deviation,
+                machine_parameter_ranges=machine_parameter_ranges,
+                random_source=generation_rng,
             )
             for instance_nb in range(1, spec["count"] + 1)
         ]
@@ -325,28 +372,31 @@ def generate_evaluation_instance_specs(
     specs,
     random_seed=42,
     output_directory=None,
+    processing_time_range=None,
+    processing_time_deviation=0.2,
+    machine_parameter_ranges=None,
 ):
     """Generate a flat holdout set without train/valid/test subdirectories."""
     output_directory = Path(output_directory or INSTANCE_DIRECTORY)
-    random_state = random.getstate()
+    generation_rng = random.Random(int(random_seed))
     instances = []
-    try:
-        random.seed(int(random_seed))
-        for spec in specs:
-            instances.extend(
-                FJSPData(
-                    nb_instance=instance_number,
-                    num_jobs=spec["num_jobs"],
-                    num_machines=spec["num_machines"],
-                    operations_per_job_min=min(spec["operations_per_job"]),
-                    operations_per_job_max=max(spec["operations_per_job"]),
-                    num_operations=None,
-                    flag_save_file=False,
-                )
-                for instance_number in range(1, spec["count"] + 1)
+    for spec in specs:
+        instances.extend(
+            FJSPData(
+                nb_instance=instance_number,
+                num_jobs=spec["num_jobs"],
+                num_machines=spec["num_machines"],
+                operations_per_job_min=min(spec["operations_per_job"]),
+                operations_per_job_max=max(spec["operations_per_job"]),
+                num_operations=None,
+                flag_save_file=False,
+                processing_time_range=processing_time_range,
+                processing_time_deviation=processing_time_deviation,
+                machine_parameter_ranges=machine_parameter_ranges,
+                random_source=generation_rng,
             )
-    finally:
-        random.setstate(random_state)
+            for instance_number in range(1, spec["count"] + 1)
+        )
 
     names = [instance.instance_name for instance in instances]
     if len(names) != len(set(names)):
@@ -503,11 +553,17 @@ def save_instance_splits(
 
 def load_generated_instance(instance_name, instance_directory=None):
     """Load an instance from a flat evaluation tier or a dataset split."""
+    from helper.stochastic_fjsp import ensure_stochastic_parameters
+
+    def upgraded(path):
+        with path.open("rb") as instance_file:
+            instance = pickle.load(instance_file)
+        return ensure_stochastic_parameters(instance)
+
     directory = Path(instance_directory or INSTANCE_DIRECTORY)
     direct_path = directory / f"{instance_name}.pkl"
     if direct_path.exists():
-        with direct_path.open("rb") as instance_file:
-            return pickle.load(instance_file)
+        return upgraded(direct_path)
     for split_name in SPLIT_NAMES:
         instance_path = (
             directory
@@ -515,14 +571,12 @@ def load_generated_instance(instance_name, instance_directory=None):
             / f"{instance_name}.pkl"
         )
         if instance_path.exists():
-            with instance_path.open("rb") as instance_file:
-                return pickle.load(instance_file)
+            return upgraded(instance_path)
 
     legacy_directory = ROOT_DIR / "02_data" / "fjsp_instances"
     legacy_path = legacy_directory / f"{instance_name}.fjsp"
     if legacy_path.exists():
-        with legacy_path.open("rb") as instance_file:
-            return pickle.load(instance_file)
+        return upgraded(legacy_path)
     raise FileNotFoundError(f"Generated instance not found: {instance_name}")
 
 
@@ -555,8 +609,23 @@ def configured_instance_names_by_split(
     split_ratios=None,
     random_seed=42,
     instance_directory=None,
+    processing_time_range=None,
+    processing_time_deviation=None,
+    machine_parameter_ranges=None,
 ):
     """Select and validate exactly the instances requested by the config."""
+    from helper.stochastic_fjsp import (
+        INDEPENDENT_GENERATION_MODEL,
+        normalize_independent_machine_parameter_ranges,
+    )
+
+    expected_machine_ranges = (
+        normalize_independent_machine_parameter_ranges(
+            machine_parameter_ranges
+        )
+        if machine_parameter_ranges is not None else None
+    )
+
     specs = list(specs)
     if not specs:
         raise ValueError("Mindestens eine Instanzgröße muss konfiguriert sein.")
@@ -611,6 +680,51 @@ def configured_instance_names_by_split(
             instance_name,
             instance_directory=instance_directory,
         )
+        if (
+            getattr(instance, "instance_generation_model", None)
+            != INDEPENDENT_GENERATION_MODEL
+        ):
+            raise ValueError(
+                f"Gespeicherte Instanz {instance_name} verwendet noch das "
+                "alte modernitätsbasierte Generatormodell. Setze "
+                "workflow.create_instances einmal auf true."
+            )
+        if (
+            expected_machine_ranges is not None
+            and getattr(instance, "machine_parameter_ranges", None)
+            != expected_machine_ranges
+        ):
+            raise ValueError(
+                f"Gespeicherte Instanz {instance_name} verwendet andere "
+                "Maschinenparameterbereiche. Setze "
+                "workflow.create_instances einmal auf true."
+            )
+        if processing_time_range is not None:
+            expected_processing_range = tuple(map(int, processing_time_range))
+            actual_processing_range = (
+                int(instance.processing_time_per_ope_min),
+                int(instance.processing_time_per_ope_max),
+            )
+            if actual_processing_range != expected_processing_range:
+                raise ValueError(
+                    f"Gespeicherte Instanz {instance_name} verwendet einen "
+                    "anderen Bearbeitungszeitbereich. Setze "
+                    "workflow.create_instances einmal auf true."
+                )
+        if (
+            processing_time_deviation is not None
+            and not math.isclose(
+                float(instance.proctime_deviation),
+                float(processing_time_deviation),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            raise ValueError(
+                f"Gespeicherte Instanz {instance_name} verwendet eine "
+                "andere Bearbeitungszeitabweichung. Setze "
+                "workflow.create_instances einmal auf true."
+            )
         actual_operations = [int(value) for value in instance.nums_operation]
         if (
             int(instance.num_jobs) != expected["num_jobs"]

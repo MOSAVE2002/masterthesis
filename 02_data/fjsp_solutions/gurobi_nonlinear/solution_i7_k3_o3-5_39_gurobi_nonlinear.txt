@@ -1,0 +1,104 @@
+Solution summary:
+Formulation: nonlinear_per_job_ontime_probability_lb_v3
+Status: OPTIMAL
+Objective definition: machine_assignment_cost
+Objective: 256.250000
+Best bound: 256.250000
+MIP gap: 0.000000
+Makespan: 177.000000
+Runtime [s]: 18.472718
+Model build runtime [s]: 0.023462
+Optimizer wall runtime [s]: 18.472509
+Build plus optimizer runtime [s]: 18.495971
+Solution count: 3
+variables: 932
+continuous: 229
+binary: 703
+integer: 0
+linear_constraints: 1628
+quadratic_constraints: 14
+general_constraints: 60
+nonlinear_constraints: 60
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Service levels: {1: 0.95, 2: 0.95, 3: 0.95, 4: 0.95, 5: 0.95, 6: 0.95, 7: 0.95}
+Due dates: {1: 115.05, 2: 115.05, 3: 115.05, 4: 115.05, 5: 115.05, 6: 115.05, 7: 115.05}
+GNN convolution: 
+GNN layers: 
+GNN hidden channels: 
+
+Alpha service level summary:
+Minimum realized per-job alpha service level: 0.975836
+Minimum alpha service slack: 0.025836
+All per-job alpha targets satisfied: yes
+Probability label method: clipped_markov_expected_delay_lower_bound_v2
+
+Per-job alpha service levels:
+job 1: completion=75.860825, due_date=115.050000, realized_alpha=0.995083, target_alpha=0.950000, alpha_slack=0.045083, satisfied=yes
+job 2: completion=108.782129, due_date=115.050000, realized_alpha=0.981879, target_alpha=0.950000, alpha_slack=0.031879, satisfied=yes
+job 3: completion=87.245816, due_date=115.050000, realized_alpha=0.995160, target_alpha=0.950000, alpha_slack=0.045160, satisfied=yes
+job 4: completion=23.324273, due_date=115.050000, realized_alpha=0.996471, target_alpha=0.950000, alpha_slack=0.046471, satisfied=yes
+job 5: completion=105.525567, due_date=115.050000, realized_alpha=0.975836, target_alpha=0.950000, alpha_slack=0.025836, satisfied=yes
+job 6: completion=90.910330, due_date=115.050000, realized_alpha=0.984221, target_alpha=0.950000, alpha_slack=0.034221, satisfied=yes
+job 7: completion=74.860825, due_date=115.050000, realized_alpha=0.993130, target_alpha=0.950000, alpha_slack=0.043130, satisfied=yes
+
+Operation values:
+op 1: machine=2, S=12.274725, C=13.274725, T=12.774725, Pd_model=0.023426, Pd_gnn=
+op 2: machine=2, S=13.274725, C=18.274725, T=15.774725, Pd_model=0.028233, Pd_gnn=
+op 3: machine=1, S=35.516340, C=39.516340, T=37.516340, Pd_model=0.042645, Pd_gnn=
+op 4: machine=1, S=63.823305, C=68.823305, T=66.323305, Pd_model=0.004817, Pd_gnn=
+op 5: machine=2, S=74.860825, C=75.860825, T=75.360825, Pd_model=0.003993, Pd_gnn=
+op 6: machine=1, S=15.904427, C=21.904427, T=18.904427, Pd_model=0.051896, Pd_gnn=
+op 7: machine=0, S=65.461794, C=77.461794, T=71.461794, Pd_model=0.000652, Pd_gnn=
+op 8: machine=1, S=77.778506, C=88.778506, T=83.278506, Pd_model=0.000563, Pd_gnn=
+op 9: machine=2, S=88.782129, C=94.782129, T=91.782129, Pd_model=0.000764, Pd_gnn=
+op 10: machine=0, S=94.782129, C=108.782129, T=101.782129, Pd_model=0.000000, Pd_gnn=
+op 11: machine=1, S=30.446734, C=35.446734, T=32.946734, Pd_model=0.049799, Pd_gnn=
+op 12: machine=0, S=53.563157, C=64.563157, T=59.063157, Pd_model=0.004842, Pd_gnn=
+op 13: machine=2, S=64.860825, C=68.860825, T=66.860825, Pd_model=0.007973, Pd_gnn=
+op 14: machine=0, S=77.559023, C=84.559023, T=81.059023, Pd_model=0.000101, Pd_gnn=
+op 15: machine=2, S=85.245816, C=87.245816, T=86.245816, Pd_model=0.001397, Pd_gnn=
+op 16: machine=1, S=2.509558, C=8.509558, T=5.509558, Pd_model=0.014351, Pd_gnn=
+op 17: machine=2, S=8.673619, C=11.673619, T=10.173619, Pd_model=0.018594, Pd_gnn=
+op 18: machine=0, S=20.324273, C=23.324273, T=21.824273, Pd_model=0.091868, Pd_gnn=
+op 19: machine=0, S=12.502484, C=17.502484, T=15.002484, Pd_model=0.080369, Pd_gnn=
+op 20: machine=1, S=96.525567, C=97.525567, T=97.025567, Pd_model=0.000064, Pd_gnn=
+op 21: machine=2, S=97.525567, C=105.525567, T=101.525567, Pd_model=0.000236, Pd_gnn=
+op 22: machine=2, S=0.000000, C=7.000000, T=3.500000, Pd_model=0.004678, Pd_gnn=
+op 23: machine=2, S=18.274725, C=21.274725, T=19.774725, Pd_model=0.033150, Pd_gnn=
+op 24: machine=0, S=23.407656, C=26.407656, T=24.907656, Pd_model=0.088850, Pd_gnn=
+op 25: machine=0, S=40.636486, C=52.636486, T=46.636486, Pd_model=0.022378, Pd_gnn=
+op 26: machine=0, S=87.910330, C=90.910330, T=89.410330, Pd_model=0.000016, Pd_gnn=
+op 27: machine=0, S=2.680752, C=9.680752, T=6.180752, Pd_model=0.029799, Pd_gnn=
+op 28: machine=0, S=26.608840, C=40.608840, T=33.608840, Pd_model=0.063689, Pd_gnn=
+op 29: machine=2, S=68.860825, C=74.860825, T=71.860825, Pd_model=0.005383, Pd_gnn=
+
+Active U edges:
+U(27, 19, 0)=1
+U(19, 18, 0)=1
+U(18, 24, 0)=1
+U(24, 28, 0)=1
+U(28, 25, 0)=1
+U(25, 12, 0)=1
+U(12, 7, 0)=1
+U(7, 14, 0)=1
+U(14, 26, 0)=1
+U(26, 10, 0)=1
+U(16, 6, 1)=1
+U(6, 11, 1)=1
+U(11, 3, 1)=1
+U(3, 4, 1)=1
+U(4, 8, 1)=1
+U(8, 20, 1)=1
+U(22, 17, 2)=1
+U(17, 1, 2)=1
+U(1, 2, 2)=1
+U(2, 23, 2)=1
+U(23, 13, 2)=1
+U(13, 29, 2)=1
+U(29, 5, 2)=1
+U(5, 15, 2)=1
+U(15, 9, 2)=1
+U(9, 21, 2)=1

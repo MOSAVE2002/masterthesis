@@ -1,0 +1,68 @@
+Solution summary:
+Formulation: gnn_per_job_ontime_probability_v3
+Status: OPTIMAL
+Objective definition: machine_assignment_cost
+Objective: 118.250000
+Best bound: 118.250000
+MIP gap: 0.000000
+Makespan: 82.000000
+Runtime [s]: 2.756550
+Model build runtime [s]: 0.089312
+Optimizer wall runtime [s]: 2.756570
+Build plus optimizer runtime [s]: 2.845883
+Solution count: 1
+variables: 4644
+continuous: 3978
+binary: 666
+integer: 0
+linear_constraints: 15861
+quadratic_constraints: 0
+general_constraints: 0
+nonlinear_constraints: 0
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Service levels: {1: 0.95, 2: 0.95, 3: 0.95}
+Due dates: {1: 53.300000000000004, 2: 53.300000000000004, 3: 53.300000000000004}
+GNN convolution: sage
+GNN layers: 2
+GNN hidden channels: 6
+
+Alpha service level summary:
+Minimum realized per-job alpha service level: 0.966321
+Minimum alpha service slack: 0.016321
+All per-job alpha targets satisfied: yes
+Probability label method: monte_carlo_weibull_preempt_resume_right_shift_v1
+
+Per-job alpha service levels:
+job 1: completion=41.000000, due_date=53.300000, realized_alpha=0.996049, target_alpha=0.950000, alpha_slack=0.046049, satisfied=yes
+job 2: completion=36.000000, due_date=53.300000, realized_alpha=0.996966, target_alpha=0.950000, alpha_slack=0.046966, satisfied=yes
+job 3: completion=45.058920, due_date=53.300000, realized_alpha=0.966321, target_alpha=0.950000, alpha_slack=0.016321, satisfied=yes
+
+Operation values:
+op 1: machine=1, S=0.000000, C=1.000000, T=0.500000, Pd_model=, Pd_gnn=
+op 2: machine=1, S=1.000000, C=10.000000, T=5.500000, Pd_model=, Pd_gnn=
+op 3: machine=0, S=14.000000, C=24.000000, T=19.000000, Pd_model=, Pd_gnn=
+op 4: machine=1, S=24.000000, C=31.000000, T=27.500000, Pd_model=, Pd_gnn=
+op 5: machine=2, S=31.000000, C=41.000000, T=36.000000, Pd_model=, Pd_gnn=
+op 6: machine=0, S=0.000000, C=5.000000, T=2.500000, Pd_model=, Pd_gnn=
+op 7: machine=0, S=5.000000, C=8.000000, T=6.500000, Pd_model=, Pd_gnn=
+op 8: machine=2, S=27.058920, C=29.058920, T=28.058920, Pd_model=, Pd_gnn=
+op 9: machine=1, S=31.000000, C=36.000000, T=33.500000, Pd_model=, Pd_gnn=
+op 10: machine=0, S=8.000000, C=14.000000, T=11.000000, Pd_model=, Pd_gnn=
+op 11: machine=2, S=21.058920, C=27.058920, T=24.058920, Pd_model=, Pd_gnn=
+op 12: machine=0, S=27.058920, C=40.058920, T=33.558920, Pd_model=, Pd_gnn=
+op 13: machine=0, S=40.058920, C=45.058920, T=42.558920, Pd_model=, Pd_gnn=
+
+Active U edges:
+U(1, 2, 1)=1
+U(2, 4, 1)=1
+U(3, 12, 0)=1
+U(4, 9, 1)=1
+U(6, 7, 0)=1
+U(7, 10, 0)=1
+U(8, 5, 2)=1
+U(10, 3, 0)=1
+U(11, 8, 2)=1
+U(12, 13, 0)=1

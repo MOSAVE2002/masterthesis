@@ -15,7 +15,7 @@ CONSTRAINT_WEIBULL = "weibull"
 VALID_CONSTRAINT_TYPES = {CONSTRAINT_WEIBULL}
 
 TARGET_COLUMNS = {
-    CONSTRAINT_WEIBULL: "total_failure_delay",
+    CONSTRAINT_WEIBULL: "job_ontime_probabilities",
 }
 
 
@@ -32,13 +32,7 @@ def target_column(constraint_type):
     return TARGET_COLUMNS[validate_constraint_type(constraint_type)]
 
 
-def model_stem(constraint_type, seed):
-    target = target_column(constraint_type)
-    return f"fjsp_gnn_{target}_{int(seed)}"
-
-
 def configured_constraint_type():
     return validate_constraint_type(
         CONSTRAINT_CONFIG.get("type", CONSTRAINT_WEIBULL)
     )
-
