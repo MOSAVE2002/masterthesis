@@ -1,4 +1,4 @@
-"""Evaluate GNN probability accuracy and calibration against Monte Carlo."""
+"""Evaluate embedded GNN repair buffers against the nonlinear equation."""
 
 from __future__ import annotations
 
@@ -55,65 +55,30 @@ def _gnn_probability_rows(job_rows):
             continue
         if row.get("postsolve_evaluation_status", "evaluated") != "evaluated":
             continue
-        prediction = float(row["internal_probability"])
-        observed = float(row["mc_ontime_probability"])
-        target = float(row["target_service_level"])
-        if not 0.0 <= prediction <= 1.0:
-            raise ValueError(
-                f"GNN prediction outside [0,1]: {prediction}."
-            )
-        if not 0.0 <= observed <= 1.0:
-            raise ValueError(
-                f"Monte-Carlo probability outside [0,1]: {observed}."
-            )
+        prediction = float(row["internal_expected_repair_buffer"])
+        observed = float(row["reference_expected_repair_buffer"])
+        if prediction < 0.0 or observed < 0.0:
+            raise ValueError("Expected repair buffers must be nonnegative.")
         result.append({
             "model": row["model"],
             "instance_name": row["instance_name"],
             "job_id": row["job_id"],
             "prediction": prediction,
             "observed": observed,
-            "target": target,
         })
     return result
 
 
-def _classification_metrics(rows):
-    pairs = [
-        (
-            row["prediction"] >= row["target"],
-            row["observed"] >= row["target"],
-        )
-        for row in rows
-    ]
-    tp = sum(predicted and actual for predicted, actual in pairs)
-    tn = sum(not predicted and not actual for predicted, actual in pairs)
-    fp = sum(predicted and not actual for predicted, actual in pairs)
-    fn = sum(not predicted and actual for predicted, actual in pairs)
-    recall = _safe_divide(tp, tp + fn)
-    specificity = _safe_divide(tn, tn + fp)
-    precision = _safe_divide(tp, tp + fp)
-    return {
-        "threshold_accuracy": _safe_divide(tp + tn, len(rows)),
-        "threshold_balanced_accuracy": 0.5 * (recall + specificity),
-        "threshold_precision": precision,
-        "threshold_recall": recall,
-        "threshold_specificity": specificity,
-        "threshold_f1": _safe_divide(
-            2.0 * precision * recall, precision + recall
-        ),
-        "true_positive": tp,
-        "true_negative": tn,
-        "false_positive": fp,
-        "false_negative": fn,
-    }
-
-
 def _calibration_rows(rows, calibration_bins, model):
     grouped = defaultdict(list)
+    maximum = max(
+        max(row["prediction"], row["observed"]) for row in rows
+    )
+    width = maximum / int(calibration_bins) if maximum > 0.0 else 1.0
     for row in rows:
         index = min(
             int(calibration_bins) - 1,
-            int(row["prediction"] * int(calibration_bins)),
+            int(row["prediction"] / width),
         )
         grouped[index].append(row)
     result = []
@@ -128,35 +93,24 @@ def _calibration_rows(rows, calibration_bins, model):
         result.append({
             "model": model,
             "bin_index": index,
-            "bin_lower": index / int(calibration_bins),
-            "bin_upper": (index + 1) / int(calibration_bins),
+            "bin_lower": index * width,
+            "bin_upper": (index + 1) * width,
             "count": len(values),
             "mean_prediction": mean_prediction,
-            "mean_mc_probability": mean_observed,
-            "calibration_gap": mean_prediction - mean_observed,
-            "absolute_calibration_gap": abs(
+            "mean_reference_buffer": mean_observed,
+            "mean_error": mean_prediction - mean_observed,
+            "mean_absolute_error": abs(
                 mean_prediction - mean_observed
             ),
         })
     return result
 
 
-def _metric_row(rows, model, boundary_width, calibration_rows):
+def _metric_row(rows, model, _boundary_width, calibration_rows):
     errors = [row["prediction"] - row["observed"] for row in rows]
-    boundary_errors = [
-        abs(row["prediction"] - row["observed"])
-        for row in rows
-        if abs(row["observed"] - row["target"])
-        <= float(boundary_width) + 1e-12
-    ]
-    ece = sum(
-        row["count"] * row["absolute_calibration_gap"]
-        for row in calibration_rows
-    ) / len(rows)
-    maximum_calibration_error = max(
-        (row["absolute_calibration_gap"] for row in calibration_rows),
-        default=0.0,
-    )
+    mean_observed = sum(row["observed"] for row in rows) / len(rows)
+    residual = sum(error * error for error in errors)
+    total = sum((row["observed"] - mean_observed) ** 2 for row in rows)
     return {
         "model": model,
         "job_predictions": len(rows),
@@ -165,19 +119,9 @@ def _metric_row(rows, model, boundary_width, calibration_rows):
         "rmse": math.sqrt(
             sum(error * error for error in errors) / len(errors)
         ),
-        "soft_brier_score": (
-            sum(error * error for error in errors) / len(errors)
-        ),
         "mean_error_bias": sum(errors) / len(errors),
         "maximum_absolute_error": max(abs(error) for error in errors),
-        "boundary_predictions": len(boundary_errors),
-        "boundary_mae": (
-            sum(boundary_errors) / len(boundary_errors)
-            if boundary_errors else None
-        ),
-        "expected_calibration_error": ece,
-        "maximum_calibration_error": maximum_calibration_error,
-        **_classification_metrics(rows),
+        "r_squared": 1.0 - residual / total if total > 1e-12 else None,
     }
 
 
@@ -198,16 +142,14 @@ def _write_calibration_plot(pdf_path, png_path, calibration_rows):
         rows = [row for row in calibration_rows if row["model"] == model]
         axis.plot(
             [row["mean_prediction"] for row in rows],
-            [row["mean_mc_probability"] for row in rows],
+            [row["mean_reference_buffer"] for row in rows],
             marker="o",
             linewidth=1.5,
             label=model,
         )
-    axis.set_xlim(0.0, 1.0)
-    axis.set_ylim(0.0, 1.0)
-    axis.set_xlabel("Mittlere GNN-Wahrscheinlichkeit")
-    axis.set_ylabel("Mittlere Monte-Carlo-Wahrscheinlichkeit")
-    axis.set_title("Kalibrierung der GNN-Wahrscheinlichkeiten")
+    axis.set_xlabel("Mittlerer GNN-Reparaturpuffer")
+    axis.set_ylabel("Mittlerer nichtlinearer Referenzpuffer")
+    axis.set_title("GNN-Ersatz des nichtlinearen Reparaturpuffers")
     axis.grid(alpha=0.25)
     axis.legend(loc="best", fontsize=8)
     figure.tight_layout()
@@ -232,25 +174,19 @@ def run_prediction_evaluation(
     else:
         input_path = None
     probability_rows = _gnn_probability_rows(job_rows)
-    metric_path = output_directory / "gnn_prediction_metrics.csv"
-    calibration_path = output_directory / "gnn_calibration.csv"
-    calibration_pdf = output_directory / "gnn_calibration.pdf"
-    calibration_png = output_directory / "gnn_calibration.png"
+    metric_path = output_directory / "gnn_repair_buffer_metrics.csv"
+    calibration_path = output_directory / "gnn_repair_buffer_bins.csv"
+    calibration_pdf = output_directory / "gnn_repair_buffer_comparison.pdf"
+    calibration_png = output_directory / "gnn_repair_buffer_comparison.png"
     metadata_path = output_directory / "gnn_prediction_diagnostics.json"
     metric_fields = [
         "model", "job_predictions", "instances", "mae", "rmse",
-        "soft_brier_score", "mean_error_bias", "maximum_absolute_error",
-        "boundary_predictions", "boundary_mae",
-        "expected_calibration_error", "maximum_calibration_error",
-        "threshold_accuracy", "threshold_balanced_accuracy",
-        "threshold_precision", "threshold_recall",
-        "threshold_specificity", "threshold_f1", "true_positive",
-        "true_negative", "false_positive", "false_negative",
+        "mean_error_bias", "maximum_absolute_error", "r_squared",
     ]
     calibration_fields = [
         "model", "bin_index", "bin_lower", "bin_upper", "count",
-        "mean_prediction", "mean_mc_probability", "calibration_gap",
-        "absolute_calibration_gap",
+        "mean_prediction", "mean_reference_buffer", "mean_error",
+        "mean_absolute_error",
     ]
     if not probability_rows:
         _write_csv(metric_path, [], metric_fields)
@@ -297,10 +233,8 @@ def run_prediction_evaluation(
         "input_path": str(input_path) if input_path else "in_memory_job_rows",
         "models": sorted(by_model),
         "job_predictions": len(probability_rows),
-        "boundary_width": float(boundary_width),
         "calibration_bins": int(calibration_bins),
-        "calibration_weighting": "equal-width bins, weighted ECE",
-        "observed_probability": "independent Monte Carlo point estimate",
+        "reference": "nonlinear Weibull expected-repair equation",
         "outputs": {
             "metrics_csv": str(metric_path),
             "calibration_csv": str(calibration_path),
@@ -351,9 +285,9 @@ def evaluate_from_config(config=None):
         output_directory=output_directory,
         boundary_width=settings.get(
             "boundary_width",
-            config["training"]["data_generation"]["fixed_y"][
-                "service_boundary_width"
-            ],
+            config["training"]["data_generation"]["fixed_y"].get(
+                "label_distribution_half_width", 0.25
+            ),
         ),
         calibration_bins=settings.get("calibration_bins", 10),
     )
@@ -395,7 +329,7 @@ def main():
         boundary_width=settings.get(
             "boundary_width",
             config["training"]["data_generation"]["fixed_y"][
-                "service_boundary_width"
+                "label_distribution_half_width"
             ],
         ),
         calibration_bins=settings.get("calibration_bins", 10),

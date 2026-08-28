@@ -1,0 +1,3476 @@
+{
+  "adaptive_due_dates": {
+    "enabled": true,
+    "maximum_candidate_pool_runs": 4,
+    "mip_gap": 0.01,
+    "output_flag": 0,
+    "relative_makespan_offsets": [
+      0.02,
+      0.05,
+      0.1,
+      0.2
+    ],
+    "seed": 42,
+    "time_limit_seconds": 2
+  },
+  "completed_at_utc": "2026-08-28T20:24:00.111914+00:00",
+  "failure_handling": {
+    "summary_filename": "generation_summary.json"
+  },
+  "graph": {
+    "graph_schema": "direct_machine_and_job_predecessor_node_messages_v8",
+    "include_job_precedence_edges": true,
+    "include_machine_predecessor_edges": true,
+    "machine_predecessor_edge_scope": "direct"
+  },
+  "label": {
+    "label_method": "weibull_expected_repair_buffer_v1",
+    "source": "fixed_schedule_nonlinear_weibull_repair_equation",
+    "target_column": "nonlinear_expected_repair_buffer"
+  },
+  "output_directory": "/Users/mosave/Library/Mobile Documents/com~apple~CloudDocs/Masterthesis/FJSP_Simulation/02_data/gnn_dataset",
+  "samples_per_instance": 4,
+  "schema_version": 6,
+  "splits": {
+    "test": {
+      "configured_count": 27,
+      "configured_instances": [
+        "i3_k3_o3-5_11",
+        "i3_k3_o3-5_3",
+        "i3_k3_o3-5_7",
+        "i3_k4_o3-5_19",
+        "i3_k4_o3-5_30",
+        "i3_k4_o3-5_8",
+        "i3_k5_o3-5_1",
+        "i3_k5_o3-5_21",
+        "i3_k5_o3-5_33",
+        "i4_k3_o3-5_12",
+        "i4_k3_o3-5_23",
+        "i4_k3_o3-5_5",
+        "i4_k4_o3-5_18",
+        "i4_k4_o3-5_33",
+        "i4_k4_o3-5_8",
+        "i4_k5_o3-5_21",
+        "i4_k5_o3-5_33",
+        "i4_k5_o3-5_8",
+        "i5_k3_o3-5_28",
+        "i5_k3_o3-5_29",
+        "i5_k3_o3-5_30",
+        "i5_k4_o3-5_24",
+        "i5_k4_o3-5_25",
+        "i5_k4_o3-5_30",
+        "i5_k5_o3-5_13",
+        "i5_k5_o3-5_17",
+        "i5_k5_o3-5_21"
+      ],
+      "final_job_probability_coverage": null,
+      "skipped_instances": [],
+      "successful_instances": [
+        {
+          "candidate_count": 10,
+          "instance_name": "i3_k3_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 8,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k3_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i3_k3_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i3_k4_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k4_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i3_k4_o3-5_8",
+          "job_probability_distribution": {
+            "high": 10,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k5_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i3_k5_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_33",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i4_k3_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i4_k3_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 10,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i4_k3_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k4_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k4_o3-5_8",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k5_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_above": 6,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i4_k5_o3-5_33",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i4_k5_o3-5_8",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i5_k3_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k3_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i5_k3_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 17,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k4_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 16,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k4_o3-5_25",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k4_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_below": 2,
+            "high": 16,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k5_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 2,
+            "high": 10,
+            "low": 7
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 2,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        }
+      ],
+      "written_graphs": 108
+    },
+    "train": {
+      "configured_count": 252,
+      "configured_instances": [
+        "i3_k3_o3-5_1",
+        "i3_k3_o3-5_10",
+        "i3_k3_o3-5_13",
+        "i3_k3_o3-5_14",
+        "i3_k3_o3-5_15",
+        "i3_k3_o3-5_16",
+        "i3_k3_o3-5_17",
+        "i3_k3_o3-5_18",
+        "i3_k3_o3-5_19",
+        "i3_k3_o3-5_2",
+        "i3_k3_o3-5_21",
+        "i3_k3_o3-5_22",
+        "i3_k3_o3-5_23",
+        "i3_k3_o3-5_24",
+        "i3_k3_o3-5_25",
+        "i3_k3_o3-5_26",
+        "i3_k3_o3-5_27",
+        "i3_k3_o3-5_28",
+        "i3_k3_o3-5_29",
+        "i3_k3_o3-5_30",
+        "i3_k3_o3-5_31",
+        "i3_k3_o3-5_32",
+        "i3_k3_o3-5_34",
+        "i3_k3_o3-5_35",
+        "i3_k3_o3-5_4",
+        "i3_k3_o3-5_6",
+        "i3_k3_o3-5_8",
+        "i3_k3_o3-5_9",
+        "i3_k4_o3-5_1",
+        "i3_k4_o3-5_10",
+        "i3_k4_o3-5_12",
+        "i3_k4_o3-5_13",
+        "i3_k4_o3-5_14",
+        "i3_k4_o3-5_15",
+        "i3_k4_o3-5_16",
+        "i3_k4_o3-5_17",
+        "i3_k4_o3-5_18",
+        "i3_k4_o3-5_2",
+        "i3_k4_o3-5_20",
+        "i3_k4_o3-5_21",
+        "i3_k4_o3-5_22",
+        "i3_k4_o3-5_23",
+        "i3_k4_o3-5_24",
+        "i3_k4_o3-5_25",
+        "i3_k4_o3-5_26",
+        "i3_k4_o3-5_27",
+        "i3_k4_o3-5_28",
+        "i3_k4_o3-5_3",
+        "i3_k4_o3-5_31",
+        "i3_k4_o3-5_32",
+        "i3_k4_o3-5_33",
+        "i3_k4_o3-5_34",
+        "i3_k4_o3-5_35",
+        "i3_k4_o3-5_6",
+        "i3_k4_o3-5_7",
+        "i3_k4_o3-5_9",
+        "i3_k5_o3-5_10",
+        "i3_k5_o3-5_11",
+        "i3_k5_o3-5_12",
+        "i3_k5_o3-5_13",
+        "i3_k5_o3-5_14",
+        "i3_k5_o3-5_15",
+        "i3_k5_o3-5_16",
+        "i3_k5_o3-5_18",
+        "i3_k5_o3-5_19",
+        "i3_k5_o3-5_2",
+        "i3_k5_o3-5_20",
+        "i3_k5_o3-5_22",
+        "i3_k5_o3-5_23",
+        "i3_k5_o3-5_24",
+        "i3_k5_o3-5_26",
+        "i3_k5_o3-5_28",
+        "i3_k5_o3-5_29",
+        "i3_k5_o3-5_3",
+        "i3_k5_o3-5_30",
+        "i3_k5_o3-5_31",
+        "i3_k5_o3-5_32",
+        "i3_k5_o3-5_34",
+        "i3_k5_o3-5_35",
+        "i3_k5_o3-5_4",
+        "i3_k5_o3-5_6",
+        "i3_k5_o3-5_7",
+        "i3_k5_o3-5_8",
+        "i3_k5_o3-5_9",
+        "i4_k3_o3-5_1",
+        "i4_k3_o3-5_11",
+        "i4_k3_o3-5_13",
+        "i4_k3_o3-5_14",
+        "i4_k3_o3-5_15",
+        "i4_k3_o3-5_16",
+        "i4_k3_o3-5_17",
+        "i4_k3_o3-5_18",
+        "i4_k3_o3-5_19",
+        "i4_k3_o3-5_2",
+        "i4_k3_o3-5_20",
+        "i4_k3_o3-5_21",
+        "i4_k3_o3-5_22",
+        "i4_k3_o3-5_25",
+        "i4_k3_o3-5_26",
+        "i4_k3_o3-5_27",
+        "i4_k3_o3-5_28",
+        "i4_k3_o3-5_29",
+        "i4_k3_o3-5_3",
+        "i4_k3_o3-5_30",
+        "i4_k3_o3-5_31",
+        "i4_k3_o3-5_34",
+        "i4_k3_o3-5_35",
+        "i4_k3_o3-5_4",
+        "i4_k3_o3-5_6",
+        "i4_k3_o3-5_7",
+        "i4_k3_o3-5_8",
+        "i4_k3_o3-5_9",
+        "i4_k4_o3-5_1",
+        "i4_k4_o3-5_10",
+        "i4_k4_o3-5_11",
+        "i4_k4_o3-5_12",
+        "i4_k4_o3-5_13",
+        "i4_k4_o3-5_14",
+        "i4_k4_o3-5_16",
+        "i4_k4_o3-5_17",
+        "i4_k4_o3-5_2",
+        "i4_k4_o3-5_20",
+        "i4_k4_o3-5_21",
+        "i4_k4_o3-5_22",
+        "i4_k4_o3-5_23",
+        "i4_k4_o3-5_24",
+        "i4_k4_o3-5_25",
+        "i4_k4_o3-5_26",
+        "i4_k4_o3-5_27",
+        "i4_k4_o3-5_28",
+        "i4_k4_o3-5_29",
+        "i4_k4_o3-5_3",
+        "i4_k4_o3-5_30",
+        "i4_k4_o3-5_32",
+        "i4_k4_o3-5_34",
+        "i4_k4_o3-5_35",
+        "i4_k4_o3-5_4",
+        "i4_k4_o3-5_5",
+        "i4_k4_o3-5_7",
+        "i4_k4_o3-5_9",
+        "i4_k5_o3-5_1",
+        "i4_k5_o3-5_11",
+        "i4_k5_o3-5_12",
+        "i4_k5_o3-5_13",
+        "i4_k5_o3-5_14",
+        "i4_k5_o3-5_15",
+        "i4_k5_o3-5_16",
+        "i4_k5_o3-5_17",
+        "i4_k5_o3-5_18",
+        "i4_k5_o3-5_19",
+        "i4_k5_o3-5_2",
+        "i4_k5_o3-5_20",
+        "i4_k5_o3-5_22",
+        "i4_k5_o3-5_23",
+        "i4_k5_o3-5_24",
+        "i4_k5_o3-5_25",
+        "i4_k5_o3-5_27",
+        "i4_k5_o3-5_28",
+        "i4_k5_o3-5_29",
+        "i4_k5_o3-5_3",
+        "i4_k5_o3-5_30",
+        "i4_k5_o3-5_31",
+        "i4_k5_o3-5_32",
+        "i4_k5_o3-5_35",
+        "i4_k5_o3-5_4",
+        "i4_k5_o3-5_5",
+        "i4_k5_o3-5_7",
+        "i4_k5_o3-5_9",
+        "i5_k3_o3-5_1",
+        "i5_k3_o3-5_10",
+        "i5_k3_o3-5_11",
+        "i5_k3_o3-5_12",
+        "i5_k3_o3-5_13",
+        "i5_k3_o3-5_14",
+        "i5_k3_o3-5_15",
+        "i5_k3_o3-5_16",
+        "i5_k3_o3-5_18",
+        "i5_k3_o3-5_19",
+        "i5_k3_o3-5_2",
+        "i5_k3_o3-5_20",
+        "i5_k3_o3-5_21",
+        "i5_k3_o3-5_22",
+        "i5_k3_o3-5_23",
+        "i5_k3_o3-5_26",
+        "i5_k3_o3-5_27",
+        "i5_k3_o3-5_31",
+        "i5_k3_o3-5_32",
+        "i5_k3_o3-5_33",
+        "i5_k3_o3-5_34",
+        "i5_k3_o3-5_35",
+        "i5_k3_o3-5_4",
+        "i5_k3_o3-5_5",
+        "i5_k3_o3-5_6",
+        "i5_k3_o3-5_7",
+        "i5_k3_o3-5_8",
+        "i5_k3_o3-5_9",
+        "i5_k4_o3-5_1",
+        "i5_k4_o3-5_11",
+        "i5_k4_o3-5_12",
+        "i5_k4_o3-5_14",
+        "i5_k4_o3-5_15",
+        "i5_k4_o3-5_16",
+        "i5_k4_o3-5_17",
+        "i5_k4_o3-5_18",
+        "i5_k4_o3-5_19",
+        "i5_k4_o3-5_20",
+        "i5_k4_o3-5_21",
+        "i5_k4_o3-5_22",
+        "i5_k4_o3-5_23",
+        "i5_k4_o3-5_26",
+        "i5_k4_o3-5_27",
+        "i5_k4_o3-5_28",
+        "i5_k4_o3-5_29",
+        "i5_k4_o3-5_3",
+        "i5_k4_o3-5_31",
+        "i5_k4_o3-5_32",
+        "i5_k4_o3-5_33",
+        "i5_k4_o3-5_35",
+        "i5_k4_o3-5_4",
+        "i5_k4_o3-5_5",
+        "i5_k4_o3-5_6",
+        "i5_k4_o3-5_7",
+        "i5_k4_o3-5_8",
+        "i5_k4_o3-5_9",
+        "i5_k5_o3-5_1",
+        "i5_k5_o3-5_10",
+        "i5_k5_o3-5_11",
+        "i5_k5_o3-5_12",
+        "i5_k5_o3-5_14",
+        "i5_k5_o3-5_15",
+        "i5_k5_o3-5_18",
+        "i5_k5_o3-5_19",
+        "i5_k5_o3-5_2",
+        "i5_k5_o3-5_20",
+        "i5_k5_o3-5_22",
+        "i5_k5_o3-5_23",
+        "i5_k5_o3-5_24",
+        "i5_k5_o3-5_25",
+        "i5_k5_o3-5_26",
+        "i5_k5_o3-5_28",
+        "i5_k5_o3-5_29",
+        "i5_k5_o3-5_3",
+        "i5_k5_o3-5_30",
+        "i5_k5_o3-5_31",
+        "i5_k5_o3-5_32",
+        "i5_k5_o3-5_33",
+        "i5_k5_o3-5_34",
+        "i5_k5_o3-5_35",
+        "i5_k5_o3-5_5",
+        "i5_k5_o3-5_6",
+        "i5_k5_o3-5_8",
+        "i5_k5_o3-5_9"
+      ],
+      "final_job_probability_coverage": null,
+      "skipped_instances": [],
+      "successful_instances": [
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k3_o3-5_1",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k3_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_below": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k3_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 8,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 17,
+          "instance_name": "i3_k3_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k3_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 15,
+          "instance_name": "i3_k3_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 8,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k3_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 8
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k3_o3-5_18",
+          "job_probability_distribution": {
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k3_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i3_k3_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i3_k3_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k3_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k3_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i3_k3_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 8,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i3_k3_o3-5_25",
+          "job_probability_distribution": {
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 14,
+          "instance_name": "i3_k3_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i3_k3_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k3_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i3_k3_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k3_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 20,
+          "instance_name": "i3_k3_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 9,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 19,
+          "instance_name": "i3_k3_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 18,
+          "instance_name": "i3_k3_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k3_o3-5_35",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 17,
+          "instance_name": "i3_k3_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i3_k3_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k3_o3-5_8",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i3_k3_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i3_k4_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i3_k4_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 6,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i3_k4_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i3_k4_o3-5_13",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k4_o3-5_14",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i3_k4_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k4_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k4_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i3_k4_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k4_o3-5_2",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i3_k4_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i3_k4_o3-5_21",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 18,
+          "instance_name": "i3_k4_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i3_k4_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 9,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i3_k4_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 21,
+          "instance_name": "i3_k4_o3-5_25",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i3_k4_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k4_o3-5_27",
+          "job_probability_distribution": {
+            "high": 10,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i3_k4_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i3_k4_o3-5_3",
+          "job_probability_distribution": {
+            "high": 10,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i3_k4_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i3_k4_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k4_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k4_o3-5_34",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k4_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k4_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k4_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i3_k4_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k5_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i3_k5_o3-5_11",
+          "job_probability_distribution": {
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i3_k5_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 8
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i3_k5_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_16",
+          "job_probability_distribution": {
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k5_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k5_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i3_k5_o3-5_20",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i3_k5_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k5_o3-5_23",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i3_k5_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i3_k5_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i3_k5_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k5_o3-5_3",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_30",
+          "job_probability_distribution": {
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k5_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i3_k5_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i3_k5_o3-5_34",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i3_k5_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i3_k5_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i3_k5_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 8,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k5_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k5_o3-5_8",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 8,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k5_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 6,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i4_k3_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k3_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k3_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i4_k3_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i4_k3_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k3_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 11,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k3_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k3_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 9,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k3_o3-5_19",
+          "job_probability_distribution": {
+            "high": 14,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k3_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 20,
+          "instance_name": "i4_k3_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k3_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i4_k3_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k3_o3-5_25",
+          "job_probability_distribution": {
+            "boundary_below": 2,
+            "high": 12,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k3_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 11,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i4_k3_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 1,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i4_k3_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k3_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k3_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k3_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 3,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i4_k3_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 2,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k3_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "high": 10,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k3_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k3_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k3_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 12,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i4_k3_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k3_o3-5_8",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i4_k3_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i4_k4_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 10,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k4_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 12,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i4_k4_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i4_k4_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 16,
+          "instance_name": "i4_k4_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k4_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k4_o3-5_20",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k4_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k4_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i4_k4_o3-5_24",
+          "job_probability_distribution": {
+            "high": 13,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_25",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k4_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i4_k4_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 3,
+            "high": 8,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i4_k4_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 12,
+          "instance_name": "i4_k4_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i4_k4_o3-5_30",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i4_k4_o3-5_32",
+          "job_probability_distribution": {
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k4_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k4_o3-5_35",
+          "job_probability_distribution": {
+            "high": 13,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i4_k4_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_below": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k4_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i4_k4_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i4_k5_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 11,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k5_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 13,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i4_k5_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k5_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i4_k5_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k5_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 11,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k5_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i4_k5_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k5_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k5_o3-5_19",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k5_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 12,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i4_k5_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 10,
+            "low": 5
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k5_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "boundary_below": 1,
+            "high": 7,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i4_k5_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i4_k5_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i4_k5_o3-5_25",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i4_k5_o3-5_27",
+          "job_probability_distribution": {
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i4_k5_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i4_k5_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i4_k5_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 12,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i4_k5_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 13,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i4_k5_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 29,
+          "instance_name": "i4_k5_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k5_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 11,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 16,
+          "instance_name": "i4_k5_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i4_k5_o3-5_5",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i4_k5_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i4_k5_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "boundary_below": 1,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k3_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 3,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 16,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k3_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k3_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 17,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i5_k3_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 2,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 14,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k3_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 2,
+            "high": 13,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k3_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 17,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 16,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i5_k3_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k3_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 13,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 2,
+            "high": 13,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i5_k3_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k3_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k3_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k3_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 15,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k3_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 2,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k3_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k3_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i5_k3_o3-5_8",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 16,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k3_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k4_o3-5_1",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "boundary_below": 1,
+            "high": 10,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 28,
+          "instance_name": "i5_k4_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 18,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 26,
+          "instance_name": "i5_k4_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 19
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k4_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 37,
+          "instance_name": "i5_k4_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 19
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k4_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k4_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 2,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 20,
+          "instance_name": "i5_k4_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k4_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 2,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k4_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k4_o3-5_21",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 18,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k4_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k4_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 14,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i5_k4_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "boundary_below": 2,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i5_k4_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i5_k4_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i5_k4_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k4_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k4_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 16,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k4_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k4_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 17,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k4_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k4_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k4_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k4_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k4_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k4_o3-5_8",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k4_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_1",
+          "job_probability_distribution": {
+            "high": 17,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k5_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i5_k5_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k5_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k5_o3-5_14",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 2,
+            "high": 16,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k5_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k5_o3-5_18",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 16,
+          "instance_name": "i5_k5_o3-5_2",
+          "job_probability_distribution": {
+            "high": 18,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i5_k5_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_above": 7,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_22",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_23",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k5_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 12,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_25",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 17,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k5_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 17,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k5_o3-5_28",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 18
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k5_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "high": 12,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 2,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k5_o3-5_30",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 14,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k5_o3-5_31",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k5_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 13,
+            "low": 4
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k5_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_above": 5,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 30,
+          "instance_name": "i5_k5_o3-5_35",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 16,
+            "low": 3
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i5_k5_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 2,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k5_o3-5_8",
+          "job_probability_distribution": {
+            "boundary_below": 2,
+            "high": 16,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_9",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 2,
+            "high": 17
+          },
+          "written_graphs": 4
+        }
+      ],
+      "written_graphs": 1008
+    },
+    "valid": {
+      "configured_count": 36,
+      "configured_instances": [
+        "i3_k3_o3-5_12",
+        "i3_k3_o3-5_20",
+        "i3_k3_o3-5_33",
+        "i3_k3_o3-5_5",
+        "i3_k4_o3-5_11",
+        "i3_k4_o3-5_29",
+        "i3_k4_o3-5_4",
+        "i3_k4_o3-5_5",
+        "i3_k5_o3-5_17",
+        "i3_k5_o3-5_25",
+        "i3_k5_o3-5_27",
+        "i3_k5_o3-5_5",
+        "i4_k3_o3-5_10",
+        "i4_k3_o3-5_24",
+        "i4_k3_o3-5_32",
+        "i4_k3_o3-5_33",
+        "i4_k4_o3-5_15",
+        "i4_k4_o3-5_19",
+        "i4_k4_o3-5_31",
+        "i4_k4_o3-5_6",
+        "i4_k5_o3-5_10",
+        "i4_k5_o3-5_26",
+        "i4_k5_o3-5_34",
+        "i4_k5_o3-5_6",
+        "i5_k3_o3-5_17",
+        "i5_k3_o3-5_24",
+        "i5_k3_o3-5_25",
+        "i5_k3_o3-5_3",
+        "i5_k4_o3-5_10",
+        "i5_k4_o3-5_13",
+        "i5_k4_o3-5_2",
+        "i5_k4_o3-5_34",
+        "i5_k5_o3-5_16",
+        "i5_k5_o3-5_27",
+        "i5_k5_o3-5_4",
+        "i5_k5_o3-5_7"
+      ],
+      "final_job_probability_coverage": null,
+      "skipped_instances": [],
+      "successful_instances": [
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k3_o3-5_12",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i3_k3_o3-5_20",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k3_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 9,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i3_k3_o3-5_5",
+          "job_probability_distribution": {
+            "high": 10,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k4_o3-5_11",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i3_k4_o3-5_29",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i3_k4_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i3_k4_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 9
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k5_o3-5_17",
+          "job_probability_distribution": {
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 25,
+          "instance_name": "i3_k5_o3-5_25",
+          "job_probability_distribution": {
+            "high": 12
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 32,
+          "instance_name": "i3_k5_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 11
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i3_k5_o3-5_5",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 10
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i4_k3_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i4_k3_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k3_o3-5_32",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 11,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 39,
+          "instance_name": "i4_k3_o3-5_33",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 38,
+          "instance_name": "i4_k4_o3-5_15",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k4_o3-5_19",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 15
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 16,
+          "instance_name": "i4_k4_o3-5_31",
+          "job_probability_distribution": {
+            "high": 16
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 18,
+          "instance_name": "i4_k4_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 23,
+          "instance_name": "i4_k5_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 13
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 22,
+          "instance_name": "i4_k5_o3-5_26",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i4_k5_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 12,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 24,
+          "instance_name": "i4_k5_o3-5_6",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 14
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_17",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_24",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 17,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 35,
+          "instance_name": "i5_k3_o3-5_25",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 16,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 36,
+          "instance_name": "i5_k3_o3-5_3",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k4_o3-5_10",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 2,
+            "high": 14,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 34,
+          "instance_name": "i5_k4_o3-5_13",
+          "job_probability_distribution": {
+            "boundary_above": 3,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k4_o3-5_2",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 17
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 33,
+          "instance_name": "i5_k4_o3-5_34",
+          "job_probability_distribution": {
+            "boundary_below": 1,
+            "high": 19
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_16",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "boundary_below": 1,
+            "high": 15,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 31,
+          "instance_name": "i5_k5_o3-5_27",
+          "job_probability_distribution": {
+            "boundary_above": 4,
+            "boundary_below": 1,
+            "high": 14,
+            "low": 1
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 27,
+          "instance_name": "i5_k5_o3-5_4",
+          "job_probability_distribution": {
+            "boundary_above": 1,
+            "boundary_below": 1,
+            "high": 16,
+            "low": 2
+          },
+          "written_graphs": 4
+        },
+        {
+          "candidate_count": 40,
+          "instance_name": "i5_k5_o3-5_7",
+          "job_probability_distribution": {
+            "boundary_above": 2,
+            "high": 14,
+            "low": 4
+          },
+          "written_graphs": 4
+        }
+      ],
+      "written_graphs": 144
+    }
+  },
+  "started_at_utc": "2026-08-28T20:11:54.303737+00:00",
+  "status": "completed",
+  "totals": {
+    "configured_instances": 315,
+    "processed_instances": 315,
+    "skipped_instances": 0,
+    "successful_instances": 315,
+    "written_graphs": 1260
+  },
+  "training_due_date_scale_factors": [
+    1.0
+  ],
+  "training_weibull_scale_factors": [
+    1.0
+  ],
+  "updated_at_utc": "2026-08-28T20:24:00.111916+00:00"
+}

@@ -1,4 +1,4 @@
-"""Evaluate GNN label coverage and a constant-probability baseline."""
+"""Evaluate expected-repair-buffer labels and a constant baseline."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 CONFIG_PATH = ROOT_DIR / "config.json"
+from helper.surrogate_constraint import configured_constraint_type, target_column
+
+TARGET_COLUMN = target_column(configured_constraint_type())
 DEFAULT_DATASET_DIRECTORY = ROOT_DIR / "02_data" / "gnn_dataset"
 DEFAULT_OUTPUT_DIRECTORY = ROOT_DIR / "06_Evaluation" / "results"
 SPLIT_FILES = {
@@ -66,7 +69,7 @@ def _write_csv(path, rows, fieldnames):
         writer.writerows(rows)
 
 
-def _load_dataset(dataset_directory, expected_service_level):
+def _load_dataset(dataset_directory, _expected_service_level):
     dataset_directory = Path(dataset_directory)
     labels_by_split = defaultdict(list)
     graph_rows = []
@@ -80,7 +83,7 @@ def _load_dataset(dataset_directory, expected_service_level):
             reader = csv.DictReader(handle)
             required = {
                 "instance_name",
-                "job_ontime_probabilities",
+                TARGET_COLUMN,
                 "reliability_graph_parameters",
             }
             missing = required - set(reader.fieldnames or [])
@@ -98,29 +101,14 @@ def _load_dataset(dataset_directory, expected_service_level):
                     )
                 probabilities = [
                     float(value) for value in json.loads(
-                        row["job_ontime_probabilities"]
+                        row[TARGET_COLUMN]
                     )
                 ]
                 if not probabilities or any(
-                    not 0.0 <= value <= 1.0 for value in probabilities
+                    value < 0.0 for value in probabilities
                 ):
                     raise ValueError(
-                        f"Invalid job probabilities in {path}:{row_number}."
-                    )
-                graph_config = json.loads(
-                    row["reliability_graph_parameters"]
-                )
-                service_level = float(graph_config["service_level"])
-                if not math.isclose(
-                    service_level,
-                    float(expected_service_level),
-                    rel_tol=0.0,
-                    abs_tol=1e-12,
-                ):
-                    raise ValueError(
-                        f"{path}:{row_number} uses service_level="
-                        f"{service_level}, expected {expected_service_level}. "
-                        "Regenerate the GNN dataset before evaluation."
+                        f"Invalid repair buffers in {path}:{row_number}."
                     )
                 generation_mode = (
                     row.get("candidate_generation_mode")
@@ -132,6 +120,14 @@ def _load_dataset(dataset_directory, expected_service_level):
                     "jobs": int(match.group("jobs")),
                     "machines": int(match.group("machines")),
                     "generation_mode": generation_mode,
+                    "due_date_factor": (
+                        float(row["training_effective_due_date_factor"])
+                        if row.get("training_effective_due_date_factor")
+                        not in (None, "")
+                        else float(row["due_date_factor"])
+                        if row.get("due_date_factor") not in (None, "")
+                        else None
+                    ),
                     "probabilities": probabilities,
                 }
                 graph_rows.append(graph_record)
@@ -152,43 +148,27 @@ def _distribution_row(
     service_level,
     boundary_width,
 ):
-    counts = Counter(
-        _probability_bin(value, service_level, boundary_width)
-        for value in probabilities
-    )
+    del service_level, boundary_width
     labels = len(probabilities)
     mean = sum(probabilities) / labels
     variance = sum((value - mean) ** 2 for value in probabilities) / labels
     exact_zero = sum(value <= 1e-12 for value in probabilities)
-    exact_one = sum(value >= 1.0 - 1e-12 for value in probabilities)
-    boundary = counts["boundary_below"] + counts["boundary_above"]
-    entropy = -sum(
-        _safe_divide(counts[name], labels)
-        * math.log2(_safe_divide(counts[name], labels))
-        for name in PROBABILITY_BINS
-        if counts[name]
-    )
+    ordered = sorted(probabilities)
+    quantile = lambda fraction: ordered[round(fraction * (labels - 1))]
     return {
         "split": split,
         "group_type": group_type,
         "group": group,
         "graphs": int(graphs),
         "labels": labels,
-        "mean_probability": mean,
+        "mean_repair_buffer": mean,
         "standard_deviation": math.sqrt(variance),
+        "minimum": ordered[0],
+        "p10": quantile(0.10),
+        "median": quantile(0.50),
+        "p90": quantile(0.90),
+        "maximum": ordered[-1],
         "exact_zero_rate": _safe_divide(exact_zero, labels),
-        "exact_one_rate": _safe_divide(exact_one, labels),
-        "endpoint_rate": _safe_divide(exact_zero + exact_one, labels),
-        "low_rate": _safe_divide(counts["low"], labels),
-        "boundary_below_rate": _safe_divide(
-            counts["boundary_below"], labels
-        ),
-        "boundary_above_rate": _safe_divide(
-            counts["boundary_above"], labels
-        ),
-        "high_rate": _safe_divide(counts["high"], labels),
-        "boundary_rate": _safe_divide(boundary, labels),
-        "four_bin_entropy_bits": entropy,
     }
 
 
@@ -216,6 +196,19 @@ def _distribution_rows(
                 [
                     row for row in split_graphs
                     if row["generation_mode"] == mode
+                ],
+            ))
+        for factor in sorted({
+            row["due_date_factor"]
+            for row in split_graphs
+            if row["due_date_factor"] is not None
+        }):
+            groups.append((
+                "effective_due_date_factor",
+                f"{factor:.2f}",
+                [
+                    row for row in split_graphs
+                    if row["due_date_factor"] == factor
                 ],
             ))
         for group_type, group, rows in groups:
@@ -263,6 +256,7 @@ def _constant_baseline_rows(
     service_level,
     boundary_width,
 ):
+    del service_level, boundary_width
     constant = sum(labels_by_split["training"]) / len(
         labels_by_split["training"]
     )
@@ -275,33 +269,16 @@ def _constant_baseline_rows(
         errors = [prediction - label for prediction, label in zip(
             predictions, labels
         )]
-        boundary_errors = [
-            abs(error)
-            for label, error in zip(labels, errors)
-            if abs(label - service_level) <= boundary_width + 1e-12
-        ]
-        metrics = _classification_metrics(
-            labels, predictions, service_level
-        )
         rows.append({
             "split": split,
-            "baseline": "training_mean_probability",
-            "constant_probability": constant,
+            "baseline": "training_mean_repair_buffer",
+            "constant_repair_buffer": constant,
             "labels": len(labels),
             "mae": sum(abs(error) for error in errors) / len(errors),
             "rmse": math.sqrt(
                 sum(error * error for error in errors) / len(errors)
             ),
-            "soft_brier_score": (
-                sum(error * error for error in errors) / len(errors)
-            ),
             "mean_error_bias": sum(errors) / len(errors),
-            "boundary_labels": len(boundary_errors),
-            "boundary_mae": (
-                sum(boundary_errors) / len(boundary_errors)
-                if boundary_errors else None
-            ),
-            **metrics,
         })
     return rows
 
@@ -335,42 +312,81 @@ def _write_histogram(
         axis.hist(
             values,
             bins=int(histogram_bins),
-            range=(0.0, 1.0),
             color="#4C78A8",
             edgecolor="white",
         )
-        axis.axvspan(
-            service_level - boundary_width,
-            service_level + boundary_width,
-            color="#F58518",
-            alpha=0.18,
-            label="Boundary",
-        )
-        axis.axvline(
-            service_level,
-            color="#E45756",
-            linestyle="--",
-            linewidth=1.5,
-            label=f"alpha={service_level:.2f}",
-        )
         axis.set_title(f"{split}: {len(values)} Job-Labels")
-        axis.set_xlim(0.0, 1.0)
         axis.set_ylabel("Anzahl")
-        axis.legend(loc="upper center")
-    axes[-1, 0].set_xlabel("Monte-Carlo-Pünktlichkeitswahrscheinlichkeit")
-    figure.suptitle("Verteilung der GNN-Trainingslabels", fontsize=14)
+    axes[-1, 0].set_xlabel("Erwarteter Reparaturpuffer")
+    figure.suptitle("Verteilung der GNN-Reparaturpuffer-Labels", fontsize=14)
     figure.tight_layout()
     figure.savefig(pdf_path, bbox_inches="tight")
     figure.savefig(png_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
+def _write_due_factor_histogram(
+    pdf_path,
+    png_path,
+    graph_rows,
+    service_level,
+    boundary_width,
+    histogram_bins,
+):
+    """Plot individual job labels by due-date factor, not graph minima."""
+    values_by_factor = defaultdict(list)
+    for row in graph_rows:
+        factor = row["due_date_factor"]
+        if factor is not None:
+            values_by_factor[factor].extend(row["probabilities"])
+    if not values_by_factor:
+        return False
+
+    cache_directory = Path(tempfile.gettempdir()) / "fjsp-matplotlib-cache"
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(cache_directory))
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_directory))
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    factors = sorted(values_by_factor)
+    figure, axes = plt.subplots(
+        len(factors),
+        1,
+        figsize=(10, max(3.2, 3.0 * len(factors))),
+        squeeze=False,
+    )
+    for axis, factor in zip(axes[:, 0], factors):
+        values = values_by_factor[factor]
+        axis.hist(
+            values,
+            bins=int(histogram_bins),
+            color="#4C78A8",
+            edgecolor="white",
+        )
+        axis.set_title(
+            f"Due-Date-Faktor {factor:.2f}: {len(values)} Job-Labels"
+        )
+        axis.set_ylabel("Anzahl")
+    axes[-1, 0].set_xlabel("Erwarteter Reparaturpuffer")
+    figure.suptitle(
+        "Job-Level-Trainingslabels nach Due-Date-Faktor", fontsize=14
+    )
+    figure.tight_layout()
+    figure.savefig(pdf_path, bbox_inches="tight")
+    figure.savefig(png_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+    return True
+
+
 def run_dataset_evaluation(
     *,
     dataset_directory=DEFAULT_DATASET_DIRECTORY,
     output_directory=DEFAULT_OUTPUT_DIRECTORY,
-    expected_service_level=0.95,
-    boundary_width=0.03,
+    expected_service_level=0.50,
+    boundary_width=0.25,
     histogram_bins=20,
 ):
     dataset_directory = _project_path(dataset_directory).resolve()
@@ -389,6 +405,12 @@ def run_dataset_evaluation(
     baseline_path = output_directory / "gnn_constant_baseline.csv"
     histogram_pdf = output_directory / "gnn_label_histograms.pdf"
     histogram_png = output_directory / "gnn_label_histograms.png"
+    factor_histogram_pdf = (
+        output_directory / "gnn_job_label_histograms_by_due_factor.pdf"
+    )
+    factor_histogram_png = (
+        output_directory / "gnn_job_label_histograms_by_due_factor.png"
+    )
     metadata_path = output_directory / "gnn_dataset_diagnostics.json"
     _write_csv(distribution_path, distributions, list(distributions[0]))
     _write_csv(baseline_path, baselines, list(baselines[0]))
@@ -396,6 +418,14 @@ def run_dataset_evaluation(
         histogram_pdf,
         histogram_png,
         labels_by_split,
+        expected_service_level,
+        boundary_width,
+        histogram_bins,
+    )
+    has_factor_histogram = _write_due_factor_histogram(
+        factor_histogram_pdf,
+        factor_histogram_png,
+        graph_rows,
         expected_service_level,
         boundary_width,
         histogram_bins,
@@ -409,14 +439,18 @@ def run_dataset_evaluation(
         },
         "graphs": len(graph_rows),
         "labels": sum(len(values) for values in labels_by_split.values()),
-        "service_level": float(expected_service_level),
-        "boundary_width": float(boundary_width),
+        "label_distribution_center": float(expected_service_level),
+        "label_distribution_half_width": float(boundary_width),
         "histogram_bins": int(histogram_bins),
         "outputs": {
             "distribution_csv": str(distribution_path),
             "constant_baseline_csv": str(baseline_path),
             "histogram_pdf": str(histogram_pdf),
             "histogram_png": str(histogram_png),
+            **({
+                "due_factor_histogram_pdf": str(factor_histogram_pdf),
+                "due_factor_histogram_png": str(factor_histogram_png),
+            } if has_factor_histogram else {}),
         },
     }
     metadata_path.write_text(
@@ -426,12 +460,21 @@ def run_dataset_evaluation(
     print(f"WROTE {baseline_path}")
     print(f"WROTE {histogram_pdf}")
     print(f"WROTE {histogram_png}")
+    if has_factor_histogram:
+        print(f"WROTE {factor_histogram_pdf}")
+        print(f"WROTE {factor_histogram_png}")
     print(f"WROTE {metadata_path}")
     return {
         "distribution_csv": distribution_path,
         "constant_baseline_csv": baseline_path,
         "histogram_pdf": histogram_pdf,
         "histogram_png": histogram_png,
+        "due_factor_histogram_pdf": (
+            factor_histogram_pdf if has_factor_histogram else None
+        ),
+        "due_factor_histogram_png": (
+            factor_histogram_png if has_factor_histogram else None
+        ),
         "metadata": metadata_path,
         "distribution_rows": distributions,
         "baseline_rows": baselines,
@@ -450,7 +493,6 @@ def evaluate_from_config(config=None):
         return None
     data_config = config["training"]["data_generation"]
     fixed = data_config["fixed_y"]
-    graph_config = config["constraint"]["weibull"]["reliability_graph"]
     return run_dataset_evaluation(
         dataset_directory=settings.get(
             "dataset_directory", data_config["output_directory"]
@@ -461,9 +503,9 @@ def evaluate_from_config(config=None):
                 "output_directory", DEFAULT_OUTPUT_DIRECTORY
             ),
         ),
-        expected_service_level=graph_config["service_level"],
+        expected_service_level=fixed.get("label_distribution_center", 0.50),
         boundary_width=settings.get(
-            "boundary_width", fixed["service_boundary_width"]
+            "boundary_width", fixed.get("label_distribution_half_width", 0.25)
         ),
         histogram_bins=settings.get("histogram_bins", 20),
     )
@@ -485,7 +527,6 @@ def main():
     settings = config.get("evaluation", {}).get("dataset_diagnostics", {})
     data_config = config["training"]["data_generation"]
     fixed = data_config["fixed_y"]
-    graph_config = config["constraint"]["weibull"]["reliability_graph"]
     return run_dataset_evaluation(
         dataset_directory=(
             args.dataset_directory
@@ -504,9 +545,9 @@ def main():
                 ),
             )
         ),
-        expected_service_level=graph_config["service_level"],
+        expected_service_level=fixed.get("label_distribution_center", 0.50),
         boundary_width=settings.get(
-            "boundary_width", fixed["service_boundary_width"]
+            "boundary_width", fixed.get("label_distribution_half_width", 0.25)
         ),
         histogram_bins=settings.get("histogram_bins", 20),
     )

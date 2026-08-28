@@ -1,0 +1,523 @@
+\subsection{Einbettung des GNN als MILP}
+\label{sec:gnn-milp-einbettung}
+
+Nach dem Training werden die Gewichte und Biasparameter des GNN fixiert und
+das resultierende Netz als gemischt-ganzzahliges lineares Modell in das
+FJSP-Grundmodell eingebettet. Dadurch gehen die vom GNN geschätzten
+Pünktlichkeitswahrscheinlichkeiten unmittelbar in die Optimierung ein. Die
+Einbettung folgt dabei dem üblichen Vorgehen, affine Netzwerkschichten direkt
+als lineare Gleichungen abzubilden und die ReLU-Aktivierungen mithilfe von
+Binärvariablen exakt zu linearisieren \cite{anderson2020strong}.
+
+Untersucht werden drei Architekturvarianten mit identischen Knotenfeatures,
+Dimensionen der verdeckten Repräsentationen, Aktivierungsfunktionen sowie
+Pooling- und Ausgabeschichten. Sie unterscheiden sich ausschließlich durch
+die im Message Passing verwendete Graphstruktur. Die lineare Variante (LIN)
+verarbeitet nur den Zustand des jeweiligen Knotens. Die JOB-Variante ergänzt feste
+Jobpräzedenzkanten. Die FULL-Variante berücksichtigt darüber hinaus
+Maschinenkanten, die erst durch die Maschinenzuordnungs- und
+Reihenfolgeentscheidungen des FJSP bestimmt werden. Die technologisch
+vorgegebenen Jobpräzedenzkanten bleiben auch in der FULL-Variante fest; nur die
+Maschinenkanten sind entscheidungsabhängig.
+
+Während des Trainings liegt die Graphstruktur jedes Trainingsbeispiels nach
+Festlegung des zugehörigen Ablaufplans vollständig vor. Bei der Einbettung in
+das Optimierungsmodell gilt dies lediglich für die Jobpräzedenzkanten. In der
+FULL-Variante wird die aktive Maschinennachbarschaft dagegen endogen während
+der Lösung bestimmt. Deshalb erfordert nur diese Variante zusätzliche
+Hilfsvariablen zur Kopplung der binären Kantenentscheidungen mit den
+kontinuierlichen Knotenrepräsentationen. Die Architektur der beiden
+Message-Passing-Varianten orientiert sich an GraphSAGE
+\cite{hamilton2017inductive}; anstelle einer Mittelwertbildung wird hier eine
+Summenaggregation verwendet.
+
+\begin{table}[H]
+\centering
+\caption{Ergänzende Notation der GNN-Formulierung}
+\label{tab:notation_fjsp_gnn}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{0.88}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\multicolumn{2}{l}{\textbf{Mengen und Parameter}}\\
+\midrule
+
+$\mathcal{A}=\{\mathrm{LIN},\mathrm{JOB},\mathrm{FULL}\}$
+& GNN-Architekturvarianten \\
+
+$\mathcal{L}=\{1,\dots,L\}$
+& GNN-Schichten; hier: $L=1$ \\
+
+$\mathcal{Q}_0=\{1,\dots,5\}$
+& Eingangskanäle bzw. Knotenfeatures \\
+
+$\mathcal{Q}_{\ell}=\{1,\dots,d_{\ell}\}$
+& Hidden-Kanäle der Schicht $\ell$; hier: $d_{\ell}=4$ \\
+
+$\mathcal{P}_i$
+& direkte Jobvorgänger von Operation $i$ \\
+
+$\mathcal{O}_u$
+& Operationen des Jobs $u$ \\
+
+$\mathcal{E}^{M}$
+& zulässige Maschinenkanten $(j,i,k)$ \\
+
+$\alpha_u$
+& gefordertes Serviceniveau für Job $u$ \\
+
+$W_{\mathrm{lin}}^{(\ell,\mathrm{LIN})}$
+& Gewichtsmatrix der linearen Schicht $\ell$ \\
+
+$W_{\mathrm{root}}^{(\ell,s)}$
+& Gewichtsmatrix für den eigenen Knotenzustand \\
+
+$W_{\mathrm{msg}}^{(\ell,s)}$
+& Gewichtsmatrix für aggregierte Nachrichten \\
+
+$b^{(\ell,s)}$
+& Biasvektor der GNN-Schicht $\ell$ \\
+
+$w_{\mathrm{out}}^s,\ b_{\mathrm{out}}^s$
+& Gewichtsvektor und Bias der Ausgabeschicht \\
+
+$w_{\mathrm{skip}}^s,\ b_{\mathrm{skip}}^s$
+& Gewichtsvektor und Bias der Skip-Verbindung \\
+
+$\underline{h}_{iq}^{(\ell,s)},\ \overline{h}_{iq}^{(\ell,s)}$
+& Schranken der aktivierten Knotenrepräsentation \\
+
+$\underline{v}_{ir}^{(\ell,s)},\ \overline{v}_{ir}^{(\ell,s)}$
+& Schranken der Präaktivierung \\
+
+\midrule
+\multicolumn{2}{l}{\textbf{Entscheidungs-, Hilfs- und abgeleitete Größen}}\\
+\midrule
+
+$x_{iq}$
+& Eingabefeature $q$ von Operationsknoten $i$ \\
+
+$h_{ir}^{(\ell,s)}$
+& aktivierte Knotenrepräsentation nach Schicht $\ell$ \\
+
+$v_{ir}^{(\ell,s)}$
+& Präaktivierung vor der ReLU-Funktion \\
+
+$a_{iq}^{(\ell-1,s)}$
+& aggregierte Nachrichtensumme \\
+
+$U_{jik}$
+& 1, falls $j$ direkter Maschinenvorgänger von $i$ auf $k$ ist \\
+
+$Z_{jikq}^{(\ell-1)}$
+& Linearisierung von $U_{jik}h_{jq}^{(\ell-1,\mathrm{FULL})}$ \\
+
+$\delta_{ir}^{(\ell,s)}$
+& Binärvariable der ReLU-Linearisierung \\
+
+$g_{ur}^{s}$
+& gepoolte Hidden-Repräsentation von Job $u$ \\
+
+$\bar{x}_{uq}$
+& gepooltes Eingabefeature für die Skip-Verbindung \\
+
+$o_u^s$
+& ungeclippte affine Ausgabe für Job $u$ \\
+
+$\widehat{P}_{u}^{s}$
+& auf $[0,1]$ begrenzte GNN-Schätzung für Job $u$ \\
+
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Für alle Varianten wird die Eingaberepräsentation durch
+$h_{iq}^{(0,s)}=x_{iq}$ initialisiert. Die fünf Eingabefeatures beschreiben
+den normierten nominalen Start- und Fertigstellungszeitpunkt, die
+Bearbeitungszeit relativ zum Weibull-Skalenparameter, eine normierte
+Reparaturrate sowie den normierten Weibull-Formparameter. Da diese Größen von
+den Maschinenzuordnungs- und Zeitvariablen des FJSP abhängen, entsteht eine
+direkte Verbindung zwischen Ablaufplanung und GNN-Prognose.
+
+
+% ============================================================
+% Architekturabhängige Nachrichtenaggregation
+% ============================================================
+
+Die drei untersuchten Architekturvarianten unterscheiden sich ausschließlich
+hinsichtlich der Informationen, die zwischen den Operationsknoten
+ausgetauscht werden. Für jede Variante wird ein separates neuronales Netz
+trainiert und anschließend unabhängig in das Optimierungsmodell eingebettet.
+Die nachfolgenden Formulierungen stellen somit alternative und nicht
+gleichzeitig verwendete Architekturvarianten dar.
+
+
+% ============================================================
+% Variante 1: Lineare Baseline
+% ============================================================
+
+\paragraph{Variante 1: Lineare Baseline ohne Message Passing.}
+
+Die lineare Baseline verarbeitet jeden Operationsknoten unabhängig von seinen
+Vorgängern und Nachbarn. Da keine Nachrichten aggregiert werden, hängt die
+neue Knotenrepräsentation ausschließlich von der Repräsentation desselben
+Knotens in der vorherigen Schicht ab. Die Präaktivierung lautet
+
+\begin{align}
+v_{ir}^{(\ell,\mathrm{LIN})}
+&=
+b_r^{(\ell,\mathrm{LIN})}
++
+\sum_{q\in\mathcal{Q}_{\ell-1}}
+W_{\mathrm{lin},rq}^{(\ell,\mathrm{LIN})}
+h_{iq}^{(\ell-1,\mathrm{LIN})}
+\nonumber\\
+&&&
+\forall\,i\in\mathcal{O},\;
+r\in\mathcal{Q}_\ell,\;
+\ell\in\mathcal{L}.
+\label{eq:gnn-linear-layer}
+\end{align}
+
+Diese Variante dient als strukturfreie Baseline. Der Vergleich mit den
+nachfolgenden Varianten zeigt, ob die Berücksichtigung der Graphstruktur einen
+zusätzlichen Beitrag zur Vorhersagequalität leistet.
+
+
+% ============================================================
+% Variante 2: Jobpräzedenzkanten
+% ============================================================
+
+\paragraph{Variante 2: Message Passing über feste Jobpräzedenzkanten.}
+
+Die zweite Variante berücksichtigt die technologisch vorgegebenen
+Präzedenzbeziehungen innerhalb eines Jobs. Die Menge $\mathcal{P}_i$ enthält
+die direkten Jobvorgänger der Operation $i$. Für jeden Featurekanal $q$
+werden deren Repräsentationen durch Summation aggregiert:
+
+\begin{align}
+a_{iq}^{(\ell-1,\mathrm{JOB})}
+&=
+\sum_{j\in\mathcal{P}_i}
+h_{jq}^{(\ell-1,\mathrm{JOB})}
+\nonumber\\
+&&&
+\forall\,i\in\mathcal{O},\;
+q\in\mathcal{Q}_{\ell-1},\;
+\ell\in\mathcal{L}.
+\label{eq:gnn-job-aggregation}
+\end{align}
+
+Die Präaktivierung eines Knotens setzt sich anschließend aus der eigenen
+Repräsentation und den aggregierten Nachrichten seiner Jobvorgänger zusammen:
+
+\begin{align}
+v_{ir}^{(\ell,\mathrm{JOB})}
+&=
+b_r^{(\ell,\mathrm{JOB})}
++
+\sum_{q\in\mathcal{Q}_{\ell-1}}
+W_{\mathrm{root},rq}^{(\ell,\mathrm{JOB})}
+h_{iq}^{(\ell-1,\mathrm{JOB})}
+\nonumber\\
+&\quad+
+\sum_{q\in\mathcal{Q}_{\ell-1}}
+W_{\mathrm{msg},rq}^{(\ell,\mathrm{JOB})}
+a_{iq}^{(\ell-1,\mathrm{JOB})}
+\nonumber\\
+&&&
+\forall\,i\in\mathcal{O},\;
+r\in\mathcal{Q}_\ell,\;
+\ell\in\mathcal{L}.
+\label{eq:gnn-job-layer}
+\end{align}
+
+Da die Jobpräzedenzkanten unabhängig von den Planungsentscheidungen
+feststehen, erfordert ihre Aktivierung keine zusätzlichen Binärvariablen. Die
+Binärvariablen $\delta_{ir}^{(\ell,\mathrm{JOB})}$ werden ausschließlich für
+ReLU-Einheiten benötigt, deren Präaktivierungsintervall die Null enthält.
+
+
+% ============================================================
+% Variante 3: Job- und Maschinenkanten
+% ============================================================
+
+\paragraph{Variante 3: Message Passing über Job- und Maschinenkanten.}
+
+Die dritte Variante erweitert die festen Jobpräzedenzkanten um
+entscheidungsabhängige Maschinenkanten. Die Binärvariable $U_{jik}$ nimmt den
+Wert eins an, wenn die Operationen $j$ und $i$ Maschine $k$ zugeordnet sind
+und $j$ dort unmittelbarer Vorgänger von $i$ ist. Eine Nachricht von $j$ nach
+$i$ wird folglich nur dann berücksichtigt, wenn die entsprechende
+Maschinenkante aktiv ist. Die zur Definition der unmittelbaren Vorgänger
+erforderlichen Zuordnungs-, Reihenfolge-, Fluss- und Randbedingungen sind
+Bestandteil der Kopplung mit dem FJSP-Grundmodell.
+
+Das Produkt aus der binären Kantenvariable $U_{jik}$ und der kontinuierlichen
+Knotenrepräsentation $h_{jq}^{(\ell-1,\mathrm{FULL})}$ wird durch die
+Hilfsvariable
+
+\begin{equation}
+Z_{jikq}^{(\ell-1)}
+=
+U_{jik}h_{jq}^{(\ell-1,\mathrm{FULL})}
+\label{eq:gnn-full-product-definition}
+\end{equation}
+
+repräsentiert. Unter Verwendung der gültigen Schranken
+$\underline{h}_{jq}^{(\ell-1,\mathrm{FULL})}$ und
+$\overline{h}_{jq}^{(\ell-1,\mathrm{FULL})}$ wird das
+Binär-Kontinuierlich-Produkt durch die folgenden vier Ungleichungen exakt
+linearisiert:
+
+\begin{align}
+Z_{jikq}^{(\ell-1)}
+&\ge
+\underline{h}_{jq}^{(\ell-1,\mathrm{FULL})}U_{jik}
+&&
+\forall\,(j,i,k)\in\mathcal{E}^{M},\;
+q\in\mathcal{Q}_{\ell-1},\;
+\ell\in\mathcal{L},
+\label{eq:gnn-full-product-lb1}
+\\
+Z_{jikq}^{(\ell-1)}
+&\le
+\overline{h}_{jq}^{(\ell-1,\mathrm{FULL})}U_{jik}
+&&
+\forall\,(j,i,k)\in\mathcal{E}^{M},\;
+q\in\mathcal{Q}_{\ell-1},\;
+\ell\in\mathcal{L},
+\label{eq:gnn-full-product-ub1}
+\\
+Z_{jikq}^{(\ell-1)}
+&\ge
+h_{jq}^{(\ell-1,\mathrm{FULL})}
+-
+\overline{h}_{jq}^{(\ell-1,\mathrm{FULL})}(1-U_{jik})
+&&
+\forall\,(j,i,k)\in\mathcal{E}^{M},\;
+q\in\mathcal{Q}_{\ell-1},\;
+\ell\in\mathcal{L},
+\label{eq:gnn-full-product-lb2}
+\\
+Z_{jikq}^{(\ell-1)}
+&\le
+h_{jq}^{(\ell-1,\mathrm{FULL})}
+-
+\underline{h}_{jq}^{(\ell-1,\mathrm{FULL})}(1-U_{jik})
+&&
+\forall\,(j,i,k)\in\mathcal{E}^{M},\;
+q\in\mathcal{Q}_{\ell-1},\;
+\ell\in\mathcal{L}.
+\label{eq:gnn-full-product-ub2}
+\end{align}
+
+Für $U_{jik}=0$ erzwingen die Nebenbedingungen
+\eqref{eq:gnn-full-product-lb1}--\eqref{eq:gnn-full-product-ub2} den Wert
+$Z_{jikq}^{(\ell-1)}=0$. Für $U_{jik}=1$ folgt dagegen
+$Z_{jikq}^{(\ell-1)}=h_{jq}^{(\ell-1,\mathrm{FULL})}$. Damit wird die
+Nachricht exakt entsprechend der im Ablaufplan gewählten Maschinenkante ein-
+oder ausgeschaltet.
+
+Die vollständige Aggregation umfasst sowohl die Repräsentationen der festen
+Jobvorgänger als auch die über $U_{jik}$ aktivierten Nachrichten der
+Maschinenvorgänger:
+
+\begin{align}
+a_{iq}^{(\ell-1,\mathrm{FULL})}
+&=
+\sum_{j\in\mathcal{P}_i}
+h_{jq}^{(\ell-1,\mathrm{FULL})}
++
+\sum_{(j,i,k)\in\mathcal{E}^{M}}
+Z_{jikq}^{(\ell-1)}
+\nonumber\\
+&&&
+\forall\,i\in\mathcal{O},\;
+q\in\mathcal{Q}_{\ell-1},\;
+\ell\in\mathcal{L}.
+\label{eq:gnn-full-aggregation}
+\end{align}
+
+Die Präaktivierung ergibt sich wiederum aus der eigenen Knotenrepräsentation
+und den aggregierten Nachrichten:
+
+\begin{align}
+v_{ir}^{(\ell,\mathrm{FULL})}
+&=
+b_r^{(\ell,\mathrm{FULL})}
++
+\sum_{q\in\mathcal{Q}_{\ell-1}}
+W_{\mathrm{root},rq}^{(\ell,\mathrm{FULL})}
+h_{iq}^{(\ell-1,\mathrm{FULL})}
+\nonumber\\
+&\quad+
+\sum_{q\in\mathcal{Q}_{\ell-1}}
+W_{\mathrm{msg},rq}^{(\ell,\mathrm{FULL})}
+a_{iq}^{(\ell-1,\mathrm{FULL})}
+\nonumber\\
+&&&
+\forall\,i\in\mathcal{O},\;
+r\in\mathcal{Q}_\ell,\;
+\ell\in\mathcal{L}.
+\label{eq:gnn-full-layer}
+\end{align}
+
+Damit bilden die drei Varianten eine schrittweise Erweiterung der verwendeten
+Strukturinformationen:
+
+\[
+\underbrace{\mathrm{LIN}}_{\text{keine Nachbarschaft}}
+\;\longrightarrow\;
+\underbrace{\mathrm{JOB}}_{\text{feste Jobpräzedenzkanten}}
+\;\longrightarrow\;
+\underbrace{\mathrm{FULL}}_{
+  \substack{\text{feste Jobpräzedenzkanten}\\
+            +\text{ entscheidungsabhängige Maschinenkanten}}
+}.
+\]
+
+\paragraph{Linearisierung der ReLU-Aktivierung.}
+
+Auf die jeweilige Präaktivierung $v_{ir}^{(\ell,s)}$ wird in allen drei
+Architekturvarianten dieselbe ReLU-Funktion angewendet:
+
+\begin{equation}
+h_{ir}^{(\ell,s)}
+=
+\max\{0,v_{ir}^{(\ell,s)}\}.
+\label{eq:gnn-relu-definition}
+\end{equation}
+
+Falls
+$\underline{v}_{ir}^{(\ell,s)}<0<\overline{v}_{ir}^{(\ell,s)}$ gilt, wird
+diese stückweise lineare Funktion mithilfe der Binärvariable
+$\delta_{ir}^{(\ell,s)}$ exakt abgebildet:
+
+\begin{align}
+h_{ir}^{(\ell,s)}
+&\ge v_{ir}^{(\ell,s)},
+\label{eq:gnn-relu-lb-pre}\\
+h_{ir}^{(\ell,s)}
+&\ge 0,
+\label{eq:gnn-relu-lb-zero}\\
+h_{ir}^{(\ell,s)}
+&\le
+v_{ir}^{(\ell,s)}
+-\underline{v}_{ir}^{(\ell,s)}
+\bigl(1-\delta_{ir}^{(\ell,s)}\bigr),
+\label{eq:gnn-relu-ub-active}\\
+h_{ir}^{(\ell,s)}
+&\le
+\overline{v}_{ir}^{(\ell,s)}\delta_{ir}^{(\ell,s)},
+\label{eq:gnn-relu-ub-inactive}\\
+\delta_{ir}^{(\ell,s)}
+&\in\{0,1\}.
+\label{eq:gnn-relu-binary}
+\end{align}
+
+Die Indizes $i\in\mathcal{O}$, $r\in\mathcal{Q}_{\ell}$,
+$\ell\in\mathcal{L}$ und $s\in\mathcal{A}$ gelten für die
+Nebenbedingungen \eqref{eq:gnn-relu-lb-pre}--\eqref{eq:gnn-relu-binary}.
+Für $\delta_{ir}^{(\ell,s)}=0$ folgt $h_{ir}^{(\ell,s)}=0$; für
+$\delta_{ir}^{(\ell,s)}=1$ gilt
+$h_{ir}^{(\ell,s)}=v_{ir}^{(\ell,s)}$. Liegt das gesamte
+Präaktivierungsintervall auf einer Seite der Null, kann die Binärvariable
+entfallen: Für $\overline{v}_{ir}^{(\ell,s)}\le 0$ wird
+$h_{ir}^{(\ell,s)}=0$ fixiert, während für
+$\underline{v}_{ir}^{(\ell,s)}\ge 0$ die lineare Gleichung
+$h_{ir}^{(\ell,s)}=v_{ir}^{(\ell,s)}$ ausreicht. Enge, neuronenspezifische
+Schranken stärken somit nicht nur die LP-Relaxation, sondern können auch die
+Anzahl zusätzlicher Binärvariablen reduzieren.
+
+\paragraph{Jobspezifisches Pooling und Ausgabeschicht.}
+
+Nach der letzten GNN-Schicht werden die Knotenrepräsentationen aller
+Operationen eines Jobs addiert. Für jeden Job $u$ und Hidden-Kanal $r$ gilt
+
+\begin{align}
+g_{ur}^{s}
+&=
+\sum_{i\in\mathcal{O}_u}h_{ir}^{(L,s)},
+&&
+r\in\mathcal{Q}_{L},\quad s\in\mathcal{A}.
+\label{eq:gnn-job-pooling}
+\end{align}
+
+Parallel dazu werden die ursprünglichen Eingabefeatures für die direkte
+Skip-Verbindung jobspezifisch aggregiert:
+
+\begin{align}
+\bar{x}_{uq}
+&=
+\sum_{i\in\mathcal{O}_u}x_{iq},
+&&
+q\in\mathcal{Q}_{0}.
+\label{eq:gnn-input-pooling}
+\end{align}
+
+Die skalare Ausgabe des Netzes ergibt sich aus der gepoolten
+Hidden-Repräsentation und der gepoolten Eingaberepräsentation:
+
+\begin{align}
+o_u^s
+&=
+b_{\mathrm{out}}^s+b_{\mathrm{skip}}^s
++\sum_{r\in\mathcal{Q}_{L}}w_{\mathrm{out},r}^s g_{ur}^{s}
++\sum_{q\in\mathcal{Q}_{0}}w_{\mathrm{skip},q}^s\bar{x}_{uq}.
+\label{eq:gnn-output}
+\end{align}
+
+Im trainierten Netz wird diese rohe Ausgabe zunächst durch eine ReLU auf
+nichtnegative Werte und anschließend durch Clipping auf eins begrenzt:
+
+\begin{equation}
+\widehat{P}_{u}^{s}
+=
+\min\bigl\{1,\max\{0,o_u^s\}\bigr\}.
+\label{eq:gnn-probability-postprocessing}
+\end{equation}
+
+Für ein vorgegebenes Serviceniveau $\alpha_u\in(0,1]$ ist die Bedingung
+$\widehat{P}_{u}^{s}\ge\alpha_u$ äquivalent zu
+
+\begin{equation}
+o_u^s\ge\alpha_u
+\qquad
+\forall\,u.
+\label{eq:gnn-service-level}
+\end{equation}
+
+Die ReLU- und Clipping-Operation der Ausgabeschicht müssen daher nicht
+zusätzlich in das MILP aufgenommen werden. Dies vermeidet weitere
+Binärvariablen, ohne die zulässige Menge bezüglich der
+Serviceniveauanforderung zu verändern. Die auf $[0,1]$ begrenzte Schätzung
+aus \eqref{eq:gnn-probability-postprocessing} wird lediglich zur Interpretation
+und Ausgabe der Prognose benötigt. Da das GNN auf simulierten
+Pünktlichkeitsanteilen trainiert wird, ist $\widehat{P}_{u}^{s}$ eine
+statistische Punktschätzung und keine mathematisch garantierte Untergrenze der
+tatsächlichen Pünktlichkeitswahrscheinlichkeit. Die Güte der resultierenden
+Serviceniveaubedingung ist daher empirisch anhand unabhängiger
+Simulationsdaten zu validieren.
+
+\paragraph{Einbindung in das FJSP-Grundmodell.}
+
+Die Nebenbedingungen des deterministischen FJSP-Grundmodells zur eindeutigen
+Maschinenzuordnung, zu den Bearbeitungs- und Fertigstellungszeiten, zu den
+Jobpräzedenzen sowie zum Ausschluss zeitlicher Überlappungen bleiben
+unverändert bestehen. Für die FULL-Variante werden zusätzlich die Variablen
+$U_{jik}$ und die zugehörigen Kopplungsbedingungen eingeführt, damit $U_{jik}$
+genau die im Ablaufplan aktiven unmittelbaren Maschinenvorgänger beschreibt.
+Die Gleichungen der jeweils gewählten GNN-Variante, die
+ReLU-Linearisierungen, das jobspezifische Pooling und die
+Serviceniveaubedingung \eqref{eq:gnn-service-level} erweitern dieses
+Grundmodell.
+
+Die nichtlinearen Nebenbedingungen des analytischen Referenzmodells zur
+Berechnung der Pünktlichkeitswahrscheinlichkeiten werden im GNN-Modell nicht
+beibehalten. Ihre Funktion übernimmt das trainierte Ersatzmodell. Da nach dem
+Training sämtliche Netzwerkparameter konstant sind und alle verbleibenden
+Nichtlinearitäten exakt linearisiert beziehungsweise für die
+Serviceniveaubedingung äquivalent umgeformt werden, ist das resultierende
+Optimierungsmodell ein MILP.

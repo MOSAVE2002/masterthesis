@@ -87,29 +87,39 @@ def _pytorch_graph(variables, instance):
             beta / 5.0,
         ])
 
-    edges = []
-    for source, target, machine in variables["U_index"]:
+    machine_edges = []
+    for source, target, machine in variables.get("U_index", []):
         if _value(variables["U"][source, target, machine]) <= 0.5:
             continue
-        edges.append((
+        machine_edges.append((
             operation_to_index[source], operation_to_index[target]
         ))
+    job_edges = []
     for target in operations:
         for source in instance.predecessors.get(target, []):
             if source not in operation_to_index:
                 continue
-            edges.append((
+            job_edges.append((
                 operation_to_index[source], operation_to_index[target]
             ))
+
+    edges = machine_edges + job_edges
 
     if edges:
         edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
+    if job_edges:
+        job_edge_index = torch.tensor(
+            job_edges, dtype=torch.long
+        ).t().contiguous()
+    else:
+        job_edge_index = torch.empty((2, 0), dtype=torch.long)
 
     graph = Data(
         x=torch.tensor(node_features, dtype=torch.float32),
         edge_index=edge_index,
+        job_edge_index=job_edge_index,
         job_membership=torch.tensor(
             [job_to_index[operation_job[operation]] for operation in operations],
             dtype=torch.long,
@@ -143,11 +153,11 @@ def validate_result(result, *, tolerance=1e-5):
     pytorch_values = _pytorch_prediction(
         variables["gnn_model_path"], metadata, graph
     )
+    # The current target is an expected repair-time buffer, not a probability.
+    # The embedded output already contains the same ReLU as the PyTorch model,
+    # so values greater than one are valid and must not be clipped.
     gurobi_values = [
-        min(
-            1.0,
-            max(0.0, _value(variables["gnn_job_output_expressions"][job])),
-        )
+        _value(variables["gnn_job_output_expressions"][job])
         for job in jobs
     ]
     if len(pytorch_values) != len(gurobi_values):
@@ -205,7 +215,7 @@ def _parse_args():
     )
     parser.add_argument(
         "--convolution",
-        choices=("linear", "sage"),
+        choices=("linear", "sage", "job"),
         help="Validate only this configured GNN architecture.",
     )
     parser.add_argument("--tolerance", type=float, default=1e-5)

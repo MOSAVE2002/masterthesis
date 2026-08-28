@@ -66,6 +66,156 @@ class FJSPData:
             for machine, rate in self.repair_rate.items()
         }
 
+    def _set_profile_machine_parameters(
+        self, rng, config, due_date_config=None
+    ):
+        from helper.stochastic_fjsp import (
+            PROFILE_GENERATION_MODEL,
+            normalize_machine_profile_config,
+        )
+
+        cfg = normalize_machine_profile_config(config)
+        profile_names = list(cfg["profiles"])
+        assignments = [
+            profile_names[index % len(profile_names)]
+            for index in range(self.num_machines)
+        ]
+        rng.shuffle(assignments)
+        self.instance_generation_model = PROFILE_GENERATION_MODEL
+        self.machine_profile_config = cfg
+        self.machine_profiles = dict(enumerate(assignments))
+
+        def jittered(machine, field):
+            profile = cfg["profiles"][self.machine_profiles[machine]]
+            width = cfg["parameter_jitter"][field]
+            return profile[field] * rng.uniform(1.0 - width, 1.0 + width)
+
+        machines = range(self.num_machines)
+        self.machine_speed = {
+            machine: jittered(machine, "speed")
+            for machine in machines
+        }
+        self.machine_cost = {
+            machine: jittered(machine, "cost_rate")
+            for machine in machines
+        }
+        self.weibull_alpha = {
+            machine: jittered(machine, "weibull_alpha")
+            for machine in machines
+        }
+        self.repair_rate = {
+            machine: jittered(machine, "repair_rate")
+            for machine in machines
+        }
+        self.weibull_beta = {
+            machine: float(
+                cfg["profiles"][self.machine_profiles[machine]][
+                    "weibull_beta"
+                ]
+            )
+            for machine in machines
+        }
+        self.repair_duration = {
+            machine: 1.0 / self.repair_rate[machine]
+            for machine in machines
+        }
+
+        by_profile = {
+            profile: [
+                machine
+                for machine in machines
+                if self.machine_profiles[machine] == profile
+            ]
+            for profile in profile_names
+        }
+        noise_lower, noise_upper = cfg["operation_time_noise"]
+        self.operation_base_time = {}
+        self.eligible_machines = {}
+        self.processing_times = {}
+        self.nums_option, self.ope_machine, self.processing_time = [], [], []
+        for operation in self.real_operations:
+            base = rng.randint(
+                self.processing_time_per_ope_min,
+                self.processing_time_per_ope_max,
+            )
+            self.operation_base_time[operation] = float(base)
+            available_profiles = [
+                name for name in profile_names if by_profile[name]
+            ]
+            minimum = min(
+                cfg["minimum_profile_classes_per_operation"],
+                len(available_profiles),
+            )
+            selected_profiles = rng.sample(available_profiles, minimum)
+            if (
+                len(available_profiles) > minimum
+                and rng.random() < cfg["all_profiles_probability"]
+            ):
+                selected_profiles = available_profiles
+            eligible = [rng.choice(by_profile[name]) for name in selected_profiles]
+            for machine in machines:
+                if (
+                    machine not in eligible
+                    and rng.random()
+                    < cfg["additional_same_profile_machine_probability"]
+                ):
+                    eligible.append(machine)
+            eligible = sorted(set(eligible))
+            self.eligible_machines[operation] = eligible
+            self.nums_option.append(len(eligible))
+            for machine in eligible:
+                duration = max(
+                    1,
+                    int(math.ceil(
+                        base
+                        / self.machine_speed[machine]
+                        * rng.uniform(noise_lower, noise_upper)
+                    )),
+                )
+                self.processing_times[operation, machine] = duration
+                self.ope_machine.append(machine)
+                self.processing_time.append(duration)
+        self.nums_options = sum(self.nums_option)
+        self.num_machine_bias = [
+            sum(self.nums_option[:index])
+            for index in range(self.num_operations)
+        ]
+        self.processing_times_mean = [
+            self.operation_base_time[operation]
+            for operation in self.real_operations
+        ]
+
+        due_cfg = dict(due_date_config or {})
+        factors = [
+            float(value)
+            for value in due_cfg.get(
+                "factors", [1.55, 1.60, 1.65, 1.70]
+            )
+        ]
+        lower_bound = max(
+            sum(
+                min(
+                    self.processing_times[operation, machine]
+                    for machine in self.eligible_machines[operation]
+                )
+                for operation in self.real_operations
+            ) / self.num_machines,
+            max(
+                sum(
+                    min(
+                        self.processing_times[operation, machine]
+                        for machine in self.eligible_machines[operation]
+                    )
+                    for operation in operations
+                )
+                for operations in self.jobs.values()
+            ),
+        )
+        factor = factors[(int(self.nb_instance) - 1) % len(factors)]
+        due = float(math.ceil(factor * lower_bound))
+        self.due_date_factor = factor
+        self.due_dates = {job: due for job in self.jobs}
+
     def _build_operation_metadata(self):
         """
         
@@ -126,6 +276,8 @@ class FJSPData:
         processing_time_range=None,
         processing_time_deviation=0.2,
         machine_parameter_ranges=None,
+        machine_profile_config=None,
+        due_date_config=None,
         random_source=None):
 
         """
@@ -261,9 +413,14 @@ class FJSPData:
 
         self.lines = lines
         self._build_operation_metadata()
-        self._set_independent_machine_parameters(
-            rng, machine_parameter_ranges
-        )
+        if machine_profile_config is not None:
+            self._set_profile_machine_parameters(
+                rng, machine_profile_config, due_date_config
+            )
+        else:
+            self._set_independent_machine_parameters(
+                rng, machine_parameter_ranges
+            )
         from helper.stochastic_fjsp import ensure_stochastic_parameters
         ensure_stochastic_parameters(self)
         
@@ -291,6 +448,8 @@ def generate_instances(
     processing_time_range=None,
     processing_time_deviation=0.2,
     machine_parameter_ranges=None,
+    machine_profile_config=None,
+    due_date_config=None,
 ):
     """
     Generate multiple instances 
@@ -314,6 +473,8 @@ def generate_instances(
             processing_time_range=processing_time_range,
             processing_time_deviation=processing_time_deviation,
             machine_parameter_ranges=machine_parameter_ranges,
+            machine_profile_config=machine_profile_config,
+            due_date_config=due_date_config,
             random_source=generation_rng,
         )
         for instance_nb in range(1, nb_instances + 1)
@@ -334,6 +495,8 @@ def generate_instance_specs(
     processing_time_range=None,
     processing_time_deviation=0.2,
     machine_parameter_ranges=None,
+    machine_profile_config=None,
+    due_date_config=None,
 ):
     """Generate configured sizes and split every size independently."""
     split_instances = {split_name: [] for split_name in SPLIT_NAMES}
@@ -351,6 +514,8 @@ def generate_instance_specs(
                 processing_time_range=processing_time_range,
                 processing_time_deviation=processing_time_deviation,
                 machine_parameter_ranges=machine_parameter_ranges,
+                machine_profile_config=machine_profile_config,
+                due_date_config=due_date_config,
                 random_source=generation_rng,
             )
             for instance_nb in range(1, spec["count"] + 1)
@@ -375,6 +540,9 @@ def generate_evaluation_instance_specs(
     processing_time_range=None,
     processing_time_deviation=0.2,
     machine_parameter_ranges=None,
+    machine_profile_config=None,
+    due_date_config=None,
+    instance_name_suffix=None,
 ):
     """Generate a flat holdout set without train/valid/test subdirectories."""
     output_directory = Path(output_directory or INSTANCE_DIRECTORY)
@@ -393,12 +561,21 @@ def generate_evaluation_instance_specs(
                 processing_time_range=processing_time_range,
                 processing_time_deviation=processing_time_deviation,
                 machine_parameter_ranges=machine_parameter_ranges,
+                machine_profile_config=machine_profile_config,
+                due_date_config=due_date_config,
                 random_source=generation_rng,
             )
             for instance_number in range(1, spec["count"] + 1)
         )
 
     names = [instance.instance_name for instance in instances]
+    if instance_name_suffix:
+        suffix = str(instance_name_suffix).strip().strip("_")
+        if not suffix:
+            raise ValueError("instance_name_suffix must not be blank.")
+        for instance in instances:
+            instance.instance_name = f"{instance.instance_name}_{suffix}"
+        names = [instance.instance_name for instance in instances]
     if len(names) != len(set(names)):
         raise ValueError("Evaluation instance names must be unique.")
 
@@ -612,11 +789,14 @@ def configured_instance_names_by_split(
     processing_time_range=None,
     processing_time_deviation=None,
     machine_parameter_ranges=None,
+    machine_profile_config=None,
 ):
     """Select and validate exactly the instances requested by the config."""
     from helper.stochastic_fjsp import (
         INDEPENDENT_GENERATION_MODEL,
+        PROFILE_GENERATION_MODEL,
         normalize_independent_machine_parameter_ranges,
+        normalize_machine_profile_config,
     )
 
     expected_machine_ranges = (
@@ -624,6 +804,10 @@ def configured_instance_names_by_split(
             machine_parameter_ranges
         )
         if machine_parameter_ranges is not None else None
+    )
+    expected_profile_config = (
+        normalize_machine_profile_config(machine_profile_config)
+        if machine_profile_config is not None else None
     )
 
     specs = list(specs)
@@ -680,14 +864,25 @@ def configured_instance_names_by_split(
             instance_name,
             instance_directory=instance_directory,
         )
-        if (
-            getattr(instance, "instance_generation_model", None)
-            != INDEPENDENT_GENERATION_MODEL
-        ):
+        expected_model = (
+            PROFILE_GENERATION_MODEL
+            if expected_profile_config is not None
+            else INDEPENDENT_GENERATION_MODEL
+        )
+        if getattr(instance, "instance_generation_model", None) != expected_model:
             raise ValueError(
                 f"Gespeicherte Instanz {instance_name} verwendet noch das "
-                "alte modernitätsbasierte Generatormodell. Setze "
+                "falsche Generatormodell. Setze "
                 "workflow.create_instances einmal auf true."
+            )
+        if (
+            expected_profile_config is not None
+            and getattr(instance, "machine_profile_config", None)
+            != expected_profile_config
+        ):
+            raise ValueError(
+                f"Gespeicherte Instanz {instance_name} verwendet andere "
+                "Maschinenprofile. Setze workflow.create_instances einmal auf true."
             )
         if (
             expected_machine_ranges is not None

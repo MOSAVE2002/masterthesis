@@ -390,11 +390,8 @@ class HybridCandidateSelectionTests(unittest.TestCase):
         self.assertAlmostEqual(
             candidate["nonlinear_min_job_probability"], 0.96
         )
-        self.assertEqual(
-            json.loads(candidate["row"][
-                "nonlinear_job_ontime_probability_lbs"
-            ]),
-            [0.96],
+        self.assertNotIn(
+            "nonlinear_job_ontime_probability_lbs", candidate["row"]
         )
 
     def test_fixed_schedule_without_positive_slack_has_zero_bound(self):
@@ -427,31 +424,109 @@ class HybridCandidateSelectionTests(unittest.TestCase):
 
         self.assertEqual(candidate["nonlinear_job_probabilities"], [0.0])
 
-    def test_earliest_start_respects_job_and_machine_predecessors(self):
+    def test_candidate_uses_stored_gurobi_timing(self):
+        def variable(value):
+            return SimpleNamespace(Xn=float(value))
+
         instance = SimpleNamespace(
-            predecessors={1: [], 2: [1], 3: []}
+            jobs={1: (1,)},
+            predecessors={1: ()},
+            job_end_operations={1: 1},
+            due_dates={1: 12.0},
+            processing_times={(1, 0): 3.0},
         )
+        variables = {
+            "real_operations": (1,),
+            "eligible_machines": {1: (0,)},
+            "Y": {(1, 0): variable(1.0)},
+            "U_index": (),
+            "U": {},
+            "C": {1: variable(9.0)},
+            "weibull_alpha": {0: 24.0},
+            "weibull_beta": {0: 2.0},
+            "repair_rate": {0: 0.5},
+        }
+        model = SimpleNamespace(PoolObjVal=12.0, Runtime=0.1)
 
-        starts, completions = generator._earliest_start_times(
+        candidate = generator._candidate_from_solution(
+            model,
+            variables,
             instance,
-            [1, 2, 3],
-            {1: 3.0, 2: 4.0, 3: 2.0},
-            [(3, 2, 0)],
+            generator.normalize_reliability_graph_config(None),
+            solution_number=0,
+            run_index=0,
+            fix_stats={},
+            candidate_generation_mode="nonlinear_evaluated",
         )
 
-        self.assertEqual(starts, {1: 0.0, 3: 0.0, 2: 3.0})
-        self.assertEqual(completions, {1: 3.0, 3: 2.0, 2: 7.0})
+        self.assertEqual(
+            candidate["row"]["schedule_timing_method"],
+            "gurobi_solution",
+        )
+        self.assertEqual(
+            candidate["simulation_schedule"].planned_starts[1], 6.0
+        )
+        self.assertEqual(
+            json.loads(candidate["row"]["gnn_node_features"])[0][:2],
+            [0.5, 0.75],
+        )
 
-    def test_earliest_start_rejects_precedence_cycle(self):
-        instance = SimpleNamespace(predecessors={1: [], 2: [1]})
+    def test_candidate_uses_direct_u_machine_edges_for_gnn(self):
+        def variable(value):
+            return SimpleNamespace(Xn=float(value))
 
-        with self.assertRaisesRegex(ValueError, "contains a cycle"):
-            generator._earliest_start_times(
-                instance,
-                [1, 2],
-                {1: 3.0, 2: 4.0},
-                [(2, 1, 0)],
-            )
+        operations = (1, 2, 3)
+        directed = tuple(
+            (source, target, 0)
+            for source in operations
+            for target in operations
+            if source != target
+        )
+        instance = SimpleNamespace(
+            jobs={1: operations},
+            predecessors={1: (), 2: (1,), 3: (2,)},
+            job_end_operations={1: 3},
+            due_dates={1: 20.0},
+            due_date_factor=1.70,
+            processing_times={(operation, 0): 2.0 for operation in operations},
+        )
+        variables = {
+            "real_operations": operations,
+            "eligible_machines": {operation: (0,) for operation in operations},
+            "Y": {(operation, 0): variable(1.0) for operation in operations},
+            "U_index": directed,
+            "U": {
+                edge: variable(edge in {(1, 2, 0), (2, 3, 0)})
+                for edge in directed
+            },
+            "C": {
+                1: variable(2.0),
+                2: variable(4.0),
+                3: variable(6.0),
+            },
+            "weibull_alpha": {0: 24.0},
+            "weibull_beta": {0: 2.0},
+            "repair_rate": {0: 0.5},
+        }
+        candidate = generator._candidate_from_solution(
+            SimpleNamespace(PoolObjVal=12.0, Runtime=0.1),
+            variables,
+            instance,
+            generator.normalize_reliability_graph_config(None),
+            solution_number=0,
+            run_index=0,
+            fix_stats={},
+        )
+
+        self.assertEqual(
+            candidate["simulation_schedule"].machine_edges,
+            ((1, 2, 0), (2, 3, 0)),
+        )
+        self.assertEqual(
+            json.loads(candidate["row"]["gnn_active_edges"]),
+            [[0, 1], [1, 2], [0, 1], [1, 2]],
+        )
+        self.assertEqual(candidate["row"]["due_date_factor"], 1.70)
 
     def test_hybrid_selection_can_balance_minimum_job_probability(self):
         config = {
@@ -506,24 +581,57 @@ class HybridCandidateSelectionTests(unittest.TestCase):
             (0.95, 0.98),
         )
 
-    def test_nonlinear_sequence_fix_uses_primary_order_variable(self):
+    def test_final_job_probability_coverage_checks_individual_labels(self):
+        fixed = {
+            "hybrid_selection": {
+                "enabled": True,
+                "final_job_probability_coverage": {
+                    "apply_to_splits": ["training"],
+                    "minimum_ratios": {
+                        "boundary_below": 0.20,
+                        "boundary_above": 0.20,
+                    },
+                },
+            },
+        }
+        result = generator._validate_final_job_probability_coverage(
+            fixed,
+            "training",
+            Counter({
+                "low": 2,
+                "boundary_below": 3,
+                "boundary_above": 3,
+                "high": 2,
+            }),
+        )
+        self.assertEqual(result["labels"], 10)
+        with self.assertRaisesRegex(RuntimeError, "boundary_below"):
+            generator._validate_final_job_probability_coverage(
+                fixed,
+                "training",
+                Counter({
+                    "low": 5,
+                    "boundary_below": 1,
+                    "boundary_above": 3,
+                    "high": 1,
+                }),
+            )
+
+    def test_neighborhood_fixes_only_machine_assignments(self):
         class Variable:
             def __init__(self, value):
                 self.X = float(value)
                 self.lb = 0.0
                 self.ub = 1.0
 
-        order = Variable(0.0)
-        direct_edge = Variable(1.0)
+        selected = Variable(1.0)
+        rejected = Variable(0.0)
         variables = {
-            "Y": {(0, 0): Variable(1.0), (1, 0): Variable(1.0)},
-            "X": {(0, 1, 0): order},
-            "U": {(1, 0, 0): direct_edge},
-            "U_index": [(1, 0, 0)],
+            "Y": {(0, 0): selected, (0, 1): rejected},
         }
         instance = SimpleNamespace(
-            real_operations=[0, 1],
-            eligible_machines={0: [0], 1: [0]},
+            real_operations=[0],
+            eligible_machines={0: [0, 1]},
         )
         model = SimpleNamespace(update=Mock())
 
@@ -532,16 +640,15 @@ class HybridCandidateSelectionTests(unittest.TestCase):
             variables,
             instance,
             generator.random.Random(42),
-            0.0,
             1.0,
             use_incumbent=True,
         )
 
-        self.assertEqual(stats["fixed_predecessor_edges"], 1)
-        self.assertEqual(order.lb, 0.0)
-        self.assertEqual(order.ub, 0.0)
-        self.assertEqual(direct_edge.lb, 0.0)
-        self.assertEqual(direct_edge.ub, 1.0)
+        self.assertEqual(stats["fixed_operations"], 1)
+        self.assertEqual(selected.lb, 1.0)
+        self.assertEqual(selected.ub, 1.0)
+        self.assertEqual(rejected.lb, 0.0)
+        self.assertEqual(rejected.ub, 0.0)
         model.update.assert_called_once()
 
     def test_probability_bin_boundaries_follow_service_level(self):
@@ -564,7 +671,6 @@ class HybridCandidateSelectionTests(unittest.TestCase):
                 "pool_candidates": 3,
                 "minimum_candidate_pool_runs": 1,
                 "fix_ratios": [0.25],
-                "sequence_fix_ratios": [0.25],
                 "service_boundary_width": 0.10,
             },
             "random_seed": 42,

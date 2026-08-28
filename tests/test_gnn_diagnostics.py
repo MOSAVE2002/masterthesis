@@ -16,6 +16,7 @@ dataset_evaluation = importlib.import_module(
 prediction_evaluation = importlib.import_module(
     "06_Evaluation.evaluate_gnn_predictions"
 )
+TARGET_COLUMN = "nonlinear_expected_repair_buffer"
 
 
 def _write_dataset(path, rows):
@@ -23,20 +24,22 @@ def _write_dataset(path, rows):
     fieldnames = [
         "instance_name",
         "candidate_generation_mode",
-        "job_ontime_probabilities",
+        "due_date_factor",
+        TARGET_COLUMN,
         "reliability_graph_parameters",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for instance_name, mode, probabilities in rows:
+        for values in rows:
+            instance_name, mode, probabilities = values[:3]
+            due_date_factor = values[3] if len(values) > 3 else ""
             writer.writerow({
                 "instance_name": instance_name,
                 "candidate_generation_mode": mode,
-                "job_ontime_probabilities": json.dumps(probabilities),
-                "reliability_graph_parameters": json.dumps({
-                    "service_level": 0.95,
-                }),
+                "due_date_factor": due_date_factor,
+                TARGET_COLUMN: json.dumps(probabilities),
+                "reliability_graph_parameters": json.dumps({}),
             })
 
 
@@ -49,8 +52,8 @@ class GNNDiagnosticsTests(unittest.TestCase):
             _write_dataset(
                 dataset / "training" / "graphs_training.csv",
                 [
-                    ("i3_k3_o3-5_1", "unconstrained", [0.0, 1.0]),
-                    ("i3_k3_o3-5_2", "nominal_ontime", [0.9, 0.95]),
+                    ("i3_k3_o3-5_1", "unconstrained", [0.0, 1.0], 1.55),
+                    ("i3_k3_o3-5_2", "nominal_ontime", [0.9, 0.95], 1.70),
                 ],
             )
             _write_dataset(
@@ -65,8 +68,8 @@ class GNNDiagnosticsTests(unittest.TestCase):
             result = dataset_evaluation.run_dataset_evaluation(
                 dataset_directory=dataset,
                 output_directory=output,
-                expected_service_level=0.95,
-                boundary_width=0.03,
+                expected_service_level=0.50,
+                boundary_width=0.25,
                 histogram_bins=10,
             )
 
@@ -82,7 +85,7 @@ class GNNDiagnosticsTests(unittest.TestCase):
                 if row["split"] == "training"
             )
             self.assertAlmostEqual(
-                baseline["constant_probability"], 0.7125
+                baseline["constant_repair_buffer"], 0.7125
             )
             self.assertTrue(result["histogram_pdf"].read_bytes().startswith(
                 b"%PDF"
@@ -90,6 +93,16 @@ class GNNDiagnosticsTests(unittest.TestCase):
             self.assertGreater(result["histogram_png"].stat().st_size, 1000)
             self.assertTrue(result["distribution_csv"].exists())
             self.assertTrue(result["constant_baseline_csv"].exists())
+            self.assertTrue(result["due_factor_histogram_pdf"].exists())
+            self.assertTrue(result["due_factor_histogram_png"].exists())
+            factor_rows = [
+                row for row in result["distribution_rows"]
+                if row["split"] == "training"
+                and row["group_type"] == "effective_due_date_factor"
+            ]
+            self.assertEqual(
+                {row["group"] for row in factor_rows}, {"1.55", "1.70"}
+            )
 
     def test_prediction_metrics_and_calibration(self):
         rows = [
@@ -98,9 +111,8 @@ class GNNDiagnosticsTests(unittest.TestCase):
                 "model": "gnn_sage_layers1_hidden4",
                 "instance_name": "instance_1",
                 "job_id": str(index),
-                "internal_probability": prediction,
-                "mc_ontime_probability": observed,
-                "target_service_level": 0.95,
+                "internal_expected_repair_buffer": prediction,
+                "reference_expected_repair_buffer": observed,
                 "postsolve_evaluation_status": "evaluated",
             }
             for index, (prediction, observed) in enumerate([
@@ -121,7 +133,7 @@ class GNNDiagnosticsTests(unittest.TestCase):
             self.assertEqual(len(result["metric_rows"]), 1)
             metrics = result["metric_rows"][0]
             self.assertAlmostEqual(metrics["mae"], 0.075)
-            self.assertAlmostEqual(metrics["threshold_accuracy"], 0.75)
+            self.assertNotIn("threshold_accuracy", metrics)
             self.assertGreater(len(result["calibration_rows"]), 0)
             self.assertTrue(result["calibration_pdf"].read_bytes().startswith(
                 b"%PDF"
@@ -144,14 +156,13 @@ class GNNDiagnosticsTests(unittest.TestCase):
             "training": {
                 "data_generation": {
                     "output_directory": "gnn-dataset",
-                    "fixed_y": {"service_boundary_width": 0.03},
+                    "fixed_y": {
+                        "label_distribution_center": 0.50,
+                        "label_distribution_half_width": 0.25,
+                    },
                 }
             },
-            "constraint": {
-                "weibull": {
-                    "reliability_graph": {"service_level": 0.95}
-                }
-            },
+            "constraint": {"weibull": {"reliability_graph": {}}},
         }
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"

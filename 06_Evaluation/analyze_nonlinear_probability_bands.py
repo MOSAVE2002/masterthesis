@@ -214,12 +214,12 @@ def run_analysis(
         "pool_candidates": 1,
         "pool_search_mode": 0,
     })
-    ranges = source["reliability_ranges"]
+    ranges = source.get("reliability_ranges") or {}
     generation = {
         "random_seed": int(source.get("random_seed", 42)),
-        "alpha_range": ranges["alpha"],
-        "beta_range": ranges["beta"],
-        "repair_rate_range": ranges["repair_rate"],
+        "alpha_range": ranges.get("alpha"),
+        "beta_range": ranges.get("beta"),
+        "repair_rate_range": ranges.get("repair_rate"),
         "fixed_y": fixed,
     }
     graph_config = GENERATOR.normalize_reliability_graph_config(
@@ -236,7 +236,6 @@ def run_analysis(
         else _instance_names(jobs, machines, instance_count)
     )
     fix_ratio = float(fixed["fix_ratios"][0])
-    sequence_ratio = float(fixed["sequence_fix_ratios"][0])
     rows = []
     total = len(names) * len(BANDS)
     position = 0
@@ -255,7 +254,6 @@ def run_analysis(
                     graph_config,
                     simulation_config,
                     fix_ratio,
-                    sequence_ratio,
                     "nonlinear",
                     target_band,
                 )
@@ -342,7 +340,6 @@ def run_analysis(
         "service_level": graph_config.service_level,
         "boundary_width": fixed["service_boundary_width"],
         "fix_ratio": fix_ratio,
-        "sequence_fix_ratio": sequence_ratio,
         "summary": summaries,
     }, indent=2), encoding="utf-8")
     for path in (raw_path, summary_path, pdf_path, png_path, metadata_path):

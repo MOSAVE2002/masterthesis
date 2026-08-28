@@ -1,0 +1,34 @@
+Solution summary:
+Formulation: nonlinear_expected_repair_buffer_cost_v9
+Status: INFEASIBLE
+Objective definition: sum_{i,k} c_k*p_ik*Y_ik + c_B*C_max
+Objective: 
+Makespan: 
+Processing cost: 
+Operating cost: 
+Total cost: 
+Facility cost per time: 1.000000
+Objective mode: minimize_economic_cost
+Best bound: inf
+MIP gap: inf
+Runtime [s]: 0.005844
+Model build runtime [s]: 0.018181
+Optimizer wall runtime [s]: 0.005896
+Build plus optimizer runtime [s]: 0.024077
+Solution count: 0
+variables: 1154
+continuous: 733
+binary: 421
+integer: 0
+linear_constraints: 1000
+quadratic_constraints: 0
+general_constraints: 624
+nonlinear_constraints: 624
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Due dates: {1: 101.0, 2: 101.0, 3: 101.0, 4: 101.0, 5: 101.0}
+GNN convolution: 
+GNN layers: 
+GNN hidden channels: 

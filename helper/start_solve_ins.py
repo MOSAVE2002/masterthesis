@@ -1,4 +1,4 @@
-"""Small solver dispatcher for the per-job service-probability pipeline."""
+"""Small solver dispatcher for the cost/repair-buffer FJSP pipeline."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 import gurobipy as gp
+
+from helper.solution_plots import write_solution_plots
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -23,10 +25,11 @@ _architectures = importlib.import_module(
 
 
 BUILD_KEYS = {
-    "gurobi": set(),
+    "gurobi": {"facility_cost_per_time"},
     "gurobi_nonlinear": {
         "constraint_type",
         "reliability_graph_config",
+        "facility_cost_per_time",
     },
     "gurobi_gnn": {
         "model_path",
@@ -40,12 +43,21 @@ BUILD_KEYS = {
         "constraint_type",
         "reliability_graph_config",
         "analytic_bounds",
+        "facility_cost_per_time",
     },
 }
 
 BOOLEAN_BUILD_KEYS = {
     "add_schedule_upper_bounds",
     "analytic_bounds",
+}
+
+PLOT_KEYS = {
+    "plot_solution_schedule",
+    "plot_solution_graph",
+    "plot_candidate_graph",
+    "plot_solution_graph_style",
+    "plot_output_directory",
 }
 
 
@@ -57,9 +69,19 @@ def _as_bool(value):
     return bool(value)
 
 
+def _model_float(model, name):
+    try:
+        return float(getattr(model, name))
+    except (AttributeError, gp.GurobiError):
+        return None
+
+
 def _split_parameters(solver, values):
     build, gurobi = {}, {}
     write_solution = _as_bool(values.pop("write_solution", True))
+    plot_config = {
+        key: values.pop(key) for key in tuple(values) if key in PLOT_KEYS
+    }
     aliases = {"type": "constraint_type"}
     for raw_key, value in values.items():
         key = aliases.get(raw_key.lower(), raw_key)
@@ -71,7 +93,7 @@ def _split_parameters(solver, values):
             build[key] = value
         else:
             gurobi[raw_key] = value
-    return build, gurobi, write_solution
+    return build, gurobi, write_solution, plot_config
 
 
 def _apply_gurobi_parameters(model, parameters):
@@ -115,38 +137,6 @@ def _solution_path(solver, instance_name, variables):
     )
 
 
-def _minimum_service_slack(variables, instance):
-    probabilities = variables.get("job_ontime_probabilities")
-    if probabilities:
-        def probability_value(item):
-            value = (
-                float(item.X)
-                if hasattr(item, "X")
-                else float(item.getValue())
-                if hasattr(item, "getValue")
-                else float(item)
-            )
-            if variables.get("job_probability_postprocess") == (
-                "relu_clip_0_1_outside_model"
-            ):
-                return min(1.0, max(0.0, value))
-            return value
-
-        return min(
-            probability_value(probabilities[job])
-            - float(variables["service_levels"][job])
-            for job in instance.jobs
-        )
-    if not variables.get("service_buffers"):
-        return None
-    return min(
-        float(variables["due_dates"][job])
-        - float(variables["C"][instance.job_end_operations[job]].X)
-        - float(variables["service_buffers"][job].getValue())
-        for job in instance.jobs
-    )
-
-
 def solveModel(**kwargs):
     """Load and solve one instance with one active Gurobi formulation."""
     request_started = time.perf_counter()
@@ -165,14 +155,16 @@ def solveModel(**kwargs):
         instance_name, instance_directory=instance_directory
     )
     instance_loaded = time.perf_counter()
-    build_kwargs, gurobi_params, write_solution = _split_parameters(
+    build_kwargs, gurobi_params, write_solution, plot_config = _split_parameters(
         solver, values
     )
     build_started = time.perf_counter()
     model = gp.Model(f"{solver}:{instance_name}")
     _apply_gurobi_parameters(model, gurobi_params)
     if solver == "gurobi":
-        model, variables = _base.build_fjsp(model, instance)
+        model, variables = _base.build_fjsp(
+            model, instance, **build_kwargs
+        )
         writer = _base.write_solution_file
     elif solver == "gurobi_nonlinear":
         model, variables = _nonlinear.build_fjsp(
@@ -205,19 +197,43 @@ def solveModel(**kwargs):
     )
     if model.SolCount:
         print(f"  objective={model.ObjVal:.6f}")
-        service_slack = _minimum_service_slack(variables, instance)
-        if service_slack is not None:
-            print(f"  minimum alpha-service slack={service_slack:.6f}")
+        if variables.get("processing_cost") is not None:
+            print(
+                f"  processing cost={variables['processing_cost'].getValue():.6f} | "
+                f"operating cost={variables['operating_cost'].getValue():.6f}"
+            )
     if write_solution:
         path = _solution_path(solver, instance_name, variables)
         writer(model, variables, instance, path)
         print(f"  solution={path}")
+    plot_paths = write_solution_plots(
+        model,
+        variables,
+        instance,
+        instance_name=instance_name,
+        solver=solver,
+        output_directory=plot_config.get(
+            "plot_output_directory", "plots/fjsp_solution_plots"
+        ),
+        plot_solution_schedule_enabled=_as_bool(
+            plot_config.get("plot_solution_schedule", False)
+        ),
+        plot_solution_graph_enabled=_as_bool(
+            plot_config.get("plot_solution_graph", False)
+        ),
+        plot_candidate_graph_enabled=_as_bool(
+            plot_config.get("plot_candidate_graph", False)
+        ),
+        graph_style=plot_config.get(
+            "plot_solution_graph_style", "disjunctive"
+        ),
+    )
     result = {
         "status": int(model.Status),
         "solution_count": int(model.SolCount),
         "objective": float(model.ObjVal) if model.SolCount else None,
-        "best_bound": float(model.ObjBound),
-        "mip_gap": float(model.MIPGap) if model.SolCount else None,
+        "best_bound": _model_float(model, "ObjBound"),
+        "mip_gap": _model_float(model, "MIPGap") if model.SolCount else None,
         "runtime": float(model.Runtime),
         "model_build_runtime": float(build_seconds),
         "optimizer_wall_runtime": float(optimize_wall_seconds),
@@ -225,6 +241,7 @@ def solveModel(**kwargs):
         "variables": variables,
         "model": model,
         "instance": instance,
+        "plot_paths": plot_paths,
     }
     return result
 

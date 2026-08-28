@@ -1,5 +1,5 @@
 {
-  "schema_version": 19,
+  "schema_version": 30,
 
   "workflow": {
     "create_instances": false,
@@ -11,20 +11,46 @@
 
   "instances": {
     "generation": {
-      "num_jobs": [3,5,7],
-      "num_machines": [3,5],
+      "num_jobs": [3, 4, 5],
+      "num_machines": [3, 4, 5],
       "operations_per_job": [3, 5],
-      "instances_per_size": 100,
+      "instances_per_size": 35,
       "random_seed": 69,
       "processing_times": {
-        "base_range": [1, 10],
-        "relative_deviation": 0.20
+        "base_range": [5, 15]
       },
-      "machine_parameters": {
-        "hourly_cost": [1.0, 2.25],
-        "weibull_alpha": [24.0, 42.0],
-        "weibull_beta": [1.6, 3.0],
-        "repair_rate": [0.3, 0.7]
+      "machine_profiles": {
+        "profiles": {
+          "old": {
+            "cost_rate": 1.00,
+            "speed": 0.80,
+            "weibull_alpha": 60.0,
+            "weibull_beta": 3.0,
+            "repair_rate": 0.15
+          },
+          "new": {
+            "cost_rate": 1.60,
+            "speed": 1.25,
+            "weibull_alpha": 100.0,
+            "weibull_beta": 2.0,
+            "repair_rate": 0.40
+          }
+        },
+        "parameter_jitter": {
+          "cost_rate": 0.0,
+          "speed": 0.0,
+          "weibull_alpha": 0.0,
+          "repair_rate": 0.0
+        },
+        "operation_time_noise": [0.90, 1.10],
+        "minimum_profile_classes_per_operation": 2,
+        "all_profiles_probability": 0.0,
+        "additional_same_profile_machine_probability": 0.25
+      },
+      "due_dates": {
+        "method": "fjsp_lower_bound_factors",
+        "factors": [1.25, 1.30, 1.40, 1.55],
+        "assignment": "cyclic"
       },
       "split_ratios": {
         "train": 0.80,
@@ -34,26 +60,43 @@
     }
   },
 
+  "objective": {
+    "type": "minimize_processing_plus_operating_cost",
+    "facility_cost_per_time": 1.0
+  },
+
   "solve": {
-    "solvers": ["gurobi_nonlinear", "gurobi_gnn"],
+    "solvers": ["gurobi_nonlinear", "gurobi_gnn", "gurobi"],
     "evaluation": {
       "random_seed": 2026,
       "instance_directory": "02_data/fjsp_instances",
       "in_distribution": {
+        "enabled": false,
+        "instances_per_size": 2
+      },
+      "benchmark": {
         "enabled": true,
-        "instances_per_size": 5
+        "reuse_existing_instances": true,
+        "num_jobs": [5],
+        "num_machines": [3],
+        "instances_per_size": 5,
+        "due_date_factors": [1.60]
       },
       "extrapolation": {
-        "enabled": true,
+        "enabled": false,
+        "reuse_existing_instances": true,
         "num_jobs": [7],
         "num_machines": [4],
-        "instances_per_size": 1
+        "instances_per_size": 1,
+        "due_date_factor": 1.60
       },
       "stress": {
-        "enabled": true,
-        "num_jobs": [8],
+        "enabled": false,
+        "reuse_existing_instances": true,
+        "num_jobs": [10],
         "num_machines": [5],
-        "instances_per_size": 1
+        "instances_per_size": 1,
+        "due_date_factor": 1.60
       }
     }
   },
@@ -62,9 +105,12 @@
     "solutions_directory": "02_data/fjsp_solutions",
     "instances_directory": "02_data/fjsp_instances",
     "output_directory": "06_Evaluation/results",
-    "replications": 10000,
+    "replications": 2000,
     "random_seed": 900042,
     "wilson_confidence": 0.95,
+    "simulation": {
+      "random_seed": 900042
+    },
     "dataset_diagnostics": {
       "enabled": true,
       "dataset_directory": "02_data/gnn_dataset",
@@ -81,7 +127,6 @@
     "weibull": {
       "reliability_graph": {
         "quadrature_points": 12,
-        "service_level": 0.95,
         "service_scope": "job"
       }
     }
@@ -90,7 +135,7 @@
   "training": {
     "data_generation": {
       "method": "fix_and_optimize",
-      "samples_per_instance": 20,
+      "samples_per_instance": 4,
       "output_directory": "02_data/gnn_dataset",
       "generate_splits": {
         "training": true,
@@ -98,34 +143,31 @@
         "test": true
       },
       "random_seed": 42,
-      "reliability_ranges": {
-        "alpha": [24.0, 42.0],
-        "beta": [1.6, 3.0],
-        "repair_rate": [0.3, 0.7]
+      "weibull_scale_factors": [1.0],
+      "adaptive_due_dates": {
+        "enabled": true,
+        "relative_makespan_offsets": [0.02, 0.05, 0.10, 0.20],
+        "time_limit_seconds": 2,
+        "mip_gap": 0.01,
+        "output_flag": 0,
+        "seed": 42,
+        "maximum_candidate_pool_runs": 4
       },
-      "simulation": {
-        "pilot_replications": 256,
-        "label_replications": 1000,
-        "random_seed": 4242,
-        "failure_clock": "productive_time",
-        "repair_restoration": "as_good_as_new",
-        "interruption_policy": "preempt_resume",
-        "schedule_policy": "right_shift",
-        "initial_virtual_age_fraction": 0.0,
-        "max_failures_per_operation": 10000
+      "instance_failure_handling": {
+        "summary_filename": "generation_summary.json"
       },
       "fixed_y": {
-        "time_limit_seconds": 4,
+        "time_limit_seconds": 1,
         "output_flag": 0,
-        "pool_candidates": 30,
+        "pool_candidates": 10,
         "minimum_candidate_pool_runs": 4,
         "pool_search_mode": 2,
         "pool_gap": 1.0,
         "mip_gap": 0.05,
         "mip_focus": 1,
-        "fix_ratios": [0.25, 0.50],
-        "sequence_fix_ratios": [0.25, 0.50],
-        "service_boundary_width": 0.03,
+        "fix_ratios": [0.25, 0.50, 0.75],
+        "label_distribution_center": 0.50,
+        "label_distribution_half_width": 0.25,
         "candidate_generation_mode": "nonlinear_evaluated",
         "nonlinear_probability_bands": {
           "enabled": false,
@@ -146,13 +188,20 @@
             "structurally_diverse": 0.30
           },
           "job_probability_target_ratios": {
-            "low": 0.10,
-            "boundary_below": 0.40,
-            "boundary_above": 0.40,
-            "high": 0.10
+            "low": 0.25,
+            "boundary_below": 0.25,
+            "boundary_above": 0.25,
+            "high": 0.25
           },
           "probability_target_basis": "job_probabilities",
-          "maximum_candidate_pool_runs": 12
+          "maximum_candidate_pool_runs": 4,
+          "final_job_probability_coverage": {
+            "apply_to_splits": [],
+            "minimum_ratios": {
+              "boundary_below": 0.10,
+              "boundary_above": 0.10
+            }
+          }
         },
         "pool_selection_ratios": {
           "service_boundary_below": 0.25,
@@ -170,19 +219,39 @@
       "seed": 42,
       "model_directory": "04_GraphNeuralNetworks/trained_gnn_models",
       "combinations": [
-        {"convolution": "linear", "layers": [1,2,3], "hidden_channels": [4,6,8]},
-        {"convolution": "sage", "layers": [1,2,3], "hidden_channels": [4,6,8]}
+        {
+          "variant": "linear_baseline",
+          "convolution": "linear",
+          "layers": [1],
+          "hidden_channels": [4]
+        },
+        {
+          "variant": "fixed_job_graphsage",
+          "convolution": "job",
+          "layers": [1],
+          "hidden_channels": [4]
+        },
+        {
+          "variant": "decision_dependent_direct_machine_job_graphsage",
+          "convolution": "sage",
+          "layers": [1],
+          "hidden_channels": [4]
+        }
       ],
 
       "optimizer": {
-        "epochs": 3000,
+        "epochs": 1000,
         "batch_size": 64,
         "learning_rate": 0.001
       },
 
+      "loss": {
+        "name": "mse"
+      },
+
       "validation": {
-        "interval_epochs": 50,
-        "patience_epochs": 200,
+        "interval_epochs": 10,
+        "patience_epochs": 30,
         "enforce_graph_influence": false
       }
     }
@@ -192,9 +261,9 @@
     "gurobi": {
       "common": {
         "OutputFlag": 0,
-        "TimeLimit": 20,
-        "MIPGap": 0.00,
-        "Threads": 1,
+        "TimeLimit": 3600,
+        "MIPGap": 0.000,
+        "Threads": 0,
         "Seed": 42
       },
       "gnn": {
@@ -204,7 +273,15 @@
       },
 
       "nonlinear": {
-        "write_solution": true
+        "Presolve": 0,
+        "NumericFocus": 3,
+        "MIPFocus": 1,
+        "write_solution": true,
+        "plot_solution_schedule": false,
+        "plot_solution_graph": false,
+        "plot_candidate_graph": false,
+        "plot_solution_graph_style": "disjunctive",
+        "plot_output_directory": "plots/fjsp_solution_plots"
       }
     }
   }

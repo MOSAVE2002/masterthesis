@@ -1,4 +1,4 @@
-"""Architecture naming for the active linear and SAGE Pd models."""
+"""Architecture naming for the active reliability-surrogate models."""
 
 from itertools import product
 from pathlib import Path
@@ -7,15 +7,18 @@ from pathlib import Path
 GRAPH_FIXED = "fixed_candidate"
 CONV_LINEAR = "linear"
 CONV_SAGE = "sage"
-MESSAGE_PASSING_CONVOLUTIONS = {CONV_SAGE}
+CONV_JOB = "job"
+MESSAGE_PASSING_CONVOLUTIONS = {CONV_SAGE, CONV_JOB}
 POOL_ADD = "global_add"
 VALID_LAYER_COUNTS = {1, 2, 3}
 
 
 def normalize_convolution(value):
     convolution = str(value).strip().lower()
-    if convolution not in {CONV_LINEAR, CONV_SAGE}:
-        raise ValueError("convolution must be 'linear' or 'sage'.")
+    if convolution not in {CONV_LINEAR, CONV_SAGE, CONV_JOB}:
+        raise ValueError(
+            "convolution must be 'linear', 'sage' or 'job'."
+        )
     return convolution
 
 
@@ -34,7 +37,9 @@ def normalize_aggregation(value, convolution):
         return "none"
     aggregation = str(value or "sum").strip().lower()
     if aggregation != "sum":
-        raise ValueError("sage requires aggregation='sum'.")
+        raise ValueError(
+            f"{convolution} requires aggregation='sum'."
+        )
     return aggregation
 
 

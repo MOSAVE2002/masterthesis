@@ -7,6 +7,10 @@ from pathlib import Path
 import gurobipy as gp
 from gurobipy import GRB
 from helper.gurobi_solution_writer import write_comparable_solution
+from helper.economic_objective import (
+    add_economic_cost_objective,
+    add_robust_due_date_constraints,
+)
 import torch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -39,6 +43,7 @@ _gnn_architecture = importlib.import_module(
 )
 CONV_LINEAR = _gnn_architecture.CONV_LINEAR
 CONV_SAGE = _gnn_architecture.CONV_SAGE
+CONV_JOB = _gnn_architecture.CONV_JOB
 POOL_ADD = _gnn_architecture.POOL_ADD
 VALID_LAYER_COUNTS = _gnn_architecture.VALID_LAYER_COUNTS
 validate_architecture = _gnn_architecture.validate_architecture
@@ -73,38 +78,60 @@ def _load_metadata(metadata_path):
             "GNN model for direct MILP embedding."
         )
 
-    validate_architecture(
+    architecture = validate_architecture(
         GRAPH_MODE_FIXED_CANDIDATE,
         metadata.get("convolution", CONV_SAGE),
         metadata.get("aggregation", "sum"),
         metadata.get("pooling", "global_add"),
     )
+    convolution = architecture["convolution"]
     if metadata.get("output_head") != EXPECTED_OUTPUT_HEAD:
         raise ValueError(
-            "The embedded job-probability GNN requires output_head="
+            "The embedded repair-buffer GNN requires output_head="
             f"{EXPECTED_OUTPUT_HEAD!r}."
         )
-    if metadata.get("target_column") != "job_ontime_probabilities":
+    if metadata.get("target_column") != target_column(CONSTRAINT_WEIBULL):
         raise ValueError(
-            "The embedded GNN requires jobspecific on-time probabilities."
+            "The embedded GNN requires jobspecific expected repair buffers."
         )
-    if metadata.get("job_target") not in {
-        "job_ontime_probability",
-        "job_ontime_probability_lower_bound",
-    }:
-        raise ValueError("The embedded GNN requires one probability per job.")
-    if not metadata.get("include_job_precedence_edges", False):
+    if metadata.get("job_target") != "job_expected_repair_buffer":
+        raise ValueError("The embedded GNN requires one repair buffer per job.")
+    if (
+        convolution in {CONV_SAGE, CONV_JOB}
+        and not metadata.get("include_job_precedence_edges", False)
+    ):
         raise ValueError("The job-probability GNN requires fixed job edges.")
-    if not metadata.get("include_machine_predecessor_edges", True):
-        raise ValueError("The active GNN pipeline requires U machine edges.")
+    if (
+        convolution == CONV_SAGE
+        and not metadata.get("include_machine_predecessor_edges", False)
+    ):
+        raise ValueError("The active GNN pipeline requires machine edges.")
+    if (
+        convolution != CONV_SAGE
+        and metadata.get("include_machine_predecessor_edges", False)
+    ):
+        raise ValueError(
+            f"{convolution} metadata must not enable machine messages."
+        )
+    expected_machine_scope = "direct" if convolution == CONV_SAGE else "none"
+    if metadata.get("machine_predecessor_edge_scope") != expected_machine_scope:
+        raise ValueError(
+            f"The embedded {convolution} model requires "
+            "machine_predecessor_edge_scope="
+            f"{expected_machine_scope!r}."
+        )
     if metadata.get("graph_schema") != EXPECTED_GRAPH_SCHEMA:
         raise ValueError(
             "The embedded GNN requires graph_schema="
             f"{EXPECTED_GRAPH_SCHEMA!r}."
         )
-    if metadata.get("message_passing") != "source_node_states_only":
+    expected_message_passing = (
+        "none" if convolution == CONV_LINEAR else "source_node_states_only"
+    )
+    if metadata.get("message_passing") != expected_message_passing:
         raise ValueError(
-            "The embedded GNN requires node-only message passing."
+            f"The embedded {convolution} model requires message_passing="
+            f"{expected_message_passing!r}."
         )
 
     return metadata
@@ -120,13 +147,13 @@ def _load_state_dict(model_path):
     }
 
 
-def _add_reliability_graph_state(
+def _add_stochastic_machine_state(
     model,
     variables,
     instance,
     reliability_graph_config=None,
 ):
-    """Create U_ijk and attach the shared Pd machine parameters."""
+    """Attach the machine parameters used by every surrogate feature set."""
     graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
     ensure_stochastic_parameters(instance)
     parameters = stochastic_parameters(instance)
@@ -140,12 +167,28 @@ def _add_reliability_graph_state(
         {
             "machine_modernity": parameters["theta"],
             "machine_speed": parameters["speed"],
-            "machine_cost": parameters["cost"],
             "weibull_alpha": alpha,
             "weibull_beta": beta,
             "repair_rate": parameters["repair_rate"],
             "repair_durations": repair_durations,
+            "reliability_graph_config": reliability_graph_config_dict(
+                graph_cfg
+            ),
         }
+    )
+    return variables
+
+
+def _add_reliability_graph_state(
+    model,
+    variables,
+    instance,
+    reliability_graph_config=None,
+):
+    """Create direct U_ijk edges for SAGE and shared machine parameters."""
+    graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
+    _add_stochastic_machine_state(
+        model, variables, instance, graph_cfg
     )
     add_reliability_graph_variables(
         model,
@@ -439,32 +482,35 @@ def _add_job_time_bounds(variables, instance):
 def _relational_incoming_edges(
     instance,
     variables,
+    convolution,
 ):
     operations = list(variables["real_operations"])
     operation_to_idx = {
         operation: index for index, operation in enumerate(operations)
     }
     incoming = {index: [] for index in range(len(operations))}
-    for source, target, machine in variables["U_index"]:
-        source_idx = operation_to_idx[source]
-        target_idx = operation_to_idx[target]
-        gate = variables["U"][source, target, machine]
-        incoming[target_idx].append(
-            (source_idx, gate, source, target, machine)
-        )
-    for target in operations:
-        for source in instance.predecessors.get(target, []):
-            if source not in operation_to_idx:
-                continue
-            incoming[operation_to_idx[target]].append(
-                (
-                    operation_to_idx[source],
-                    1.0,
-                    source,
-                    target,
-                    -1,
-                )
+    if convolution == CONV_SAGE:
+        for source, target, machine in variables["U_index"]:
+            source_idx = operation_to_idx[source]
+            target_idx = operation_to_idx[target]
+            gate = variables["U"][source, target, machine]
+            incoming[target_idx].append(
+                (source_idx, gate, source, target, machine)
             )
+    if convolution in {CONV_SAGE, CONV_JOB}:
+        for target in operations:
+            for source in instance.predecessors.get(target, []):
+                if source not in operation_to_idx:
+                    continue
+                incoming[operation_to_idx[target]].append(
+                    (
+                        operation_to_idx[source],
+                        1.0,
+                        source,
+                        target,
+                        -1,
+                    )
+                )
     return incoming
 
 
@@ -521,7 +567,7 @@ def _add_relational_node_layer(
         return _add_linear_layer(
             model, state_dict, layer_name, inputs, input_bounds
         )
-    if convolution != CONV_SAGE:
+    if convolution not in {CONV_SAGE, CONV_JOB}:
         raise ValueError(f"Unsupported convolution: {convolution}")
     root_weight = state_dict[f"{layer_name}.lin_root.weight"]
     message_weight = state_dict[f"{layer_name}.lin_message.weight"]
@@ -535,8 +581,7 @@ def _add_relational_node_layer(
         for feature_idx in range(input_size):
             gated_values = []
             fixed_lower = fixed_upper = 0.0
-            lower_candidates = [0.0]
-            upper_candidates = [0.0]
+            gated_lower = gated_upper = 0.0
             for (
                 source_idx,
                 gate,
@@ -562,15 +607,15 @@ def _add_relational_node_layer(
                     fixed_lower += lower
                     fixed_upper += upper
                 else:
-                    lower_candidates.append(lower)
-                    upper_candidates.append(upper)
+                    gated_lower += min(0.0, lower)
+                    gated_upper += max(0.0, upper)
             aggregated.append(
                 gp.quicksum(gated_values) if gated_values else 0.0
             )
             aggregated_bounds.append(
                 (
-                    fixed_lower + min(lower_candidates),
-                    fixed_upper + max(upper_candidates),
+                    fixed_lower + gated_lower,
+                    fixed_upper + gated_upper,
                 )
             )
         node_outputs, node_output_bounds = [], []
@@ -625,7 +670,6 @@ def _add_relational_gnn_output(
         instance, variables, constraint_type
     )
     local_features, local_bounds = node_features, node_bounds
-    incoming = _relational_incoming_edges(instance, variables)
     architecture = validate_architecture(
         GRAPH_MODE_FIXED_CANDIDATE,
         metadata.get("convolution", CONV_SAGE),
@@ -633,6 +677,9 @@ def _add_relational_gnn_output(
         metadata.get("pooling", POOL_ADD),
     )
     convolution = architecture["convolution"]
+    incoming = _relational_incoming_edges(
+        instance, variables, convolution
+    )
 
     hidden, hidden_bounds = (
         _add_relational_node_layer(
@@ -671,7 +718,7 @@ def _add_relational_gnn_output(
     operation_to_index = {
         operation: index for index, operation in enumerate(operations)
     }
-    output_expressions = {}
+    output_expressions, raw_outputs = {}, {}
     for job in sorted(instance.jobs):
         node_indices = [
             operation_to_index[operation]
@@ -692,11 +739,24 @@ def _add_relational_gnn_output(
             expression += _linear_expr(
                 skip_weight[0], pooled_local, bias=skip_bias[0]
             )
-        output_expressions[job] = expression
+        raw = model.addVar(
+            lb=-GRB.INFINITY, name=f"gnn_raw_job_repair_buffer[{job}]"
+        )
+        buffer = model.addVar(
+            lb=0.0, name=f"gnn_job_expected_repair_buffer[{job}]"
+        )
+        model.addConstr(raw == expression, name=f"gnn_raw_output_def[{job}]")
+        model.addGenConstrMax(
+            buffer, [raw], constant=0.0,
+            name=f"gnn_repair_buffer_relu[{job}]",
+        )
+        raw_outputs[job] = raw
+        output_expressions[job] = buffer
     variables.update({
         "gnn_job_output_expressions": output_expressions,
-        "job_ontime_probabilities": output_expressions,
-        "job_probability_postprocess": "relu_clip_0_1_outside_model",
+        "gnn_raw_job_outputs": raw_outputs,
+        "job_expected_delays": output_expressions,
+        "job_repair_buffer_postprocess": "relu_inside_model",
     })
     return output_expressions
 
@@ -755,43 +815,17 @@ def _service_operations(instance, job, scope):
     )
 
 
-def _add_gnn_service_constraints(
+def _add_gnn_service_metadata(
     model, variables, instance, graph_cfg, metadata
 ):
-    constraints, levels = {}, {}
-    for job in instance.jobs:
-        service_level = float(
-            getattr(instance, "service_levels", {}).get(
-                job, graph_cfg.service_level
-            )
-        )
-        levels[job] = service_level
-        constraints[job] = model.addConstr(
-            variables["gnn_job_output_expressions"][job]
-            >= service_level,
-            name=f"gnn_alpha_service_level[{job}]",
-        )
     variables.update({
-        "service_constraints": constraints,
+        "service_constraints": {},
         "service_scope": graph_cfg.service_scope,
-        "service_levels": levels,
         "due_dates": dict(instance.due_dates),
-        "job_probability_label_method": metadata.get(
-            "job_probability_label_method"
+        "job_repair_buffer_label_method": metadata.get(
+            "job_repair_buffer_label_method"
         ),
     })
-
-
-def _set_modernity_cost_objective(model, variables, instance):
-    assignment_cost = gp.quicksum(
-        variables["machine_cost"][machine]
-        * float(instance.processing_times[operation, machine])
-        * variables["Y"][operation, machine]
-        for operation, machine in variables["Y_index"]
-    )
-    model.setObjective(assignment_cost, GRB.MINIMIZE)
-    variables["assignment_cost"] = assignment_cost
-    variables["objective_definition"] = "machine_assignment_cost"
 
 
 def build_fjsp(
@@ -808,6 +842,7 @@ def build_fjsp(
     constraint_type=CONSTRAINT_WEIBULL,
     reliability_graph_config=None,
     analytic_bounds=True,
+    facility_cost_per_time=1.0,
 ):
     """Build the ReLU-GNN MILP with one on-time probability per job."""
     model = fjsp
@@ -898,6 +933,9 @@ def build_fjsp(
         model,
         instance,
         include_makespan=False,
+        horizon_upper_bound=max(instance.due_dates.values()),
+        enforce_due_dates=True,
+        economic_objective=False,
     )
     for operation in variables["real_operations"]:
         variables["C"][operation].ub = float(variables["H"])
@@ -905,21 +943,29 @@ def build_fjsp(
     variables["service_horizon"] = max(
         float(value) for value in instance.due_dates.values()
     )
-    _add_reliability_graph_state(
-        model,
-        variables,
-        instance,
-        graph_cfg,
-    )
+    if requested_architecture["convolution"] == CONV_SAGE:
+        _add_reliability_graph_state(
+            model,
+            variables,
+            instance,
+            graph_cfg,
+        )
+    else:
+        _add_stochastic_machine_state(
+            model,
+            variables,
+            instance,
+            graph_cfg,
+        )
     if add_schedule_upper_bounds:
         _add_schedule_upper_bounds(variables)
         if analytic_bounds:
             _add_job_time_bounds(variables, instance)
-    _add_relational_gnn_output(
+    job_repair_buffers = _add_relational_gnn_output(
         model, variables, instance, state_dict, metadata,
         constraint_type,
     )
-    _add_gnn_service_constraints(
+    _add_gnn_service_metadata(
         model, variables, instance, graph_cfg, metadata
     )
     variables.update(
@@ -928,10 +974,24 @@ def build_fjsp(
             "gnn_metadata_path": str(metadata_path),
             "gnn_metadata": metadata,
             "constraint_type": constraint_type,
-            "formulation": "gnn_direct_output_service_node_messages_v5",
         }
     )
-    _set_modernity_cost_objective(model, variables, instance)
+    add_robust_due_date_constraints(
+        model,
+        variables,
+        instance,
+        job_repair_buffers,
+    )
+    add_economic_cost_objective(
+        model,
+        variables,
+        instance,
+        facility_cost_per_time=facility_cost_per_time,
+    )
+    formulation = "gnn_expected_repair_buffer_cost_v12"
+    variables.update({
+        "formulation": formulation,
+    })
 
     model.update()
     return model, variables

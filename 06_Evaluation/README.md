@@ -1,5 +1,24 @@
 # Standalone post-solve evaluation
 
+## Controlled base-model versus nonlinear-model comparison
+
+Calibrate a nominal makespan for each physical instance, derive the common
+due dates as `ceil((1 + offset) * nominal_makespan)`, solve both formulations,
+and evaluate both schedules with common-random-number Monte Carlo simulation:
+
+```bash
+python3 06_Evaluation/compare_base_nonlinear.py \
+  --instances 4 \
+  --num-jobs 3 \
+  --num-machines 3 \
+  --replications 2000
+```
+
+The default offsets are read from `training.data_generation.adaptive_due_dates`
+and currently equal 0.02, 0.05, 0.10 and 0.20. The analysis writes raw
+schedule comparisons, per-job observations, offset summaries, repair-buffer
+calibration summaries and JSON metadata to `06_Evaluation/results`.
+
 The evaluator reconstructs the schedules stored in existing solution text
 files, labels them with fresh Monte-Carlo replications, and writes comparison
 tables. Both direct execution and the final phase of `main.py` require
@@ -141,11 +160,9 @@ python3 06_Evaluation/analyze_two_stage_candidate_generation.py \
   --instances 5 --samples-per-instance 15
 ```
 
-The script generates candidates with the linear Gurobi solution pool,
-left-shifts each fixed job/machine predecessor graph to its canonical
-earliest-start timing,
-evaluates the nonlinear midpoint/Weibull/Markov expression on every fixed
-schedule, selects candidates using pilot Monte Carlo probabilities, and uses
-the configured final Monte Carlo replication count for the labels. Raw and
-summary CSV files, JSON metadata, PDF, and PNG are written to
-`06_Evaluation/results`.
+The script generates candidates with the linear Gurobi solution pool, keeps
+the optimized Gurobi start and completion times, evaluates the nonlinear
+midpoint/Weibull/Markov expression on every fixed schedule, selects candidates
+using pilot Monte Carlo probabilities, and uses the configured final Monte
+Carlo replication count for the labels. Raw and summary CSV files, JSON
+metadata, PDF, and PNG are written to `06_Evaluation/results`.

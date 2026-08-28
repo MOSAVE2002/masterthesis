@@ -25,7 +25,7 @@ def _generation_from_project_config(config):
         for jobs in instance_generation["num_jobs"]
         for machines in instance_generation["num_machines"]
     ]
-    ranges = source["reliability_ranges"]
+    ranges = source.get("reliability_ranges") or {}
     return {
         "method": source["method"],
         "instance_splits": _instances.configured_instance_names_by_split(
@@ -41,18 +41,25 @@ def _generation_from_project_config(config):
             machine_parameter_ranges=instance_generation.get(
                 "machine_parameters"
             ),
+            machine_profile_config=instance_generation.get(
+                "machine_profiles"
+            ),
         ),
         "generate_splits": source.get("generate_splits"),
         "output_directory": source["output_directory"],
         "random_seed": int(source.get("random_seed", 42)),
         "samples_per_instance": int(source["samples_per_instance"]),
-        "alpha_range": ranges["alpha"],
-        "beta_range": ranges["beta"],
-        "repair_rate_range": ranges["repair_rate"],
+        "instance_failure_handling": source.get(
+            "instance_failure_handling"
+        ),
+        "alpha_range": ranges.get("alpha"),
+        "beta_range": ranges.get("beta"),
+        "repair_rate_range": ranges.get("repair_rate"),
         "reliability_graph": config["constraint"]["weibull"][
             "reliability_graph"
         ],
-        "simulation": source["simulation"],
+        "weibull_scale_factors": source.get("weibull_scale_factors"),
+        "adaptive_due_dates": source.get("adaptive_due_dates"),
         "fixed_y": source["fixed_y"],
     }
 
@@ -63,7 +70,7 @@ def generate_from_config(generation=None):
             generation = _generation_from_project_config(json.load(file))
     if str(generation.get("method", "")).lower() != "fix_and_optimize":
         raise ValueError(
-            "The per-job probability pipeline supports only fix_and_optimize."
+            "The repair-buffer pipeline supports only fix_and_optimize."
         )
     generator = importlib.import_module(
         "04_GraphNeuralNetworks.models."

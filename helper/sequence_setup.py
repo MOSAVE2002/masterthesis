@@ -8,12 +8,12 @@ import gurobipy as gp
 from gurobipy import GRB
 
 
-RELIABILITY_GRAPH_SCHEMA = "job_ontime_probability_lower_bound_v3"
+RELIABILITY_GRAPH_SCHEMA = "job_expected_repair_buffer_v5"
 RELIABILITY_GNN_GRAPH_SCHEMA = (
-    "machine_and_job_predecessor_node_messages_v5"
+    "direct_machine_and_job_predecessor_node_messages_v8"
 )
 RELIABILITY_GNN_OUTPUT_HEAD = (
-    "per_job_ontime_probability_relu_clipped_to_one_v3"
+    "per_job_expected_repair_buffer_relu_v4"
 )
 RELIABILITY_NODE_FEATURE_NAMES = [
     "nominal_start_over_horizon",
@@ -27,8 +27,7 @@ RELIABILITY_NODE_FEATURE_NAMES = [
 @dataclass(frozen=True)
 class ReliabilityGraphConfig:
     quadrature_points: int = 12
-    service_level: float = 0.95
-    service_scope: str = "all"
+    service_scope: str = "job"
     gnn_safety_margin: float = 0.0
 
 
@@ -50,8 +49,6 @@ def normalize_reliability_graph_config(
     result = ReliabilityGraphConfig(**values)
     if int(result.quadrature_points) < 4:
         raise ValueError("quadrature_points must be at least 4.")
-    if not 0.0 < float(result.service_level) < 1.0:
-        raise ValueError("service_level must lie strictly between 0 and 1.")
     service_scope = str(result.service_scope).strip().lower()
     if service_scope not in {"all", "job"}:
         raise ValueError("service_scope must be 'all' or 'job'.")
@@ -59,7 +56,6 @@ def normalize_reliability_graph_config(
         raise ValueError("gnn_safety_margin must be nonnegative.")
     return ReliabilityGraphConfig(
         quadrature_points=int(result.quadrature_points),
-        service_level=float(result.service_level),
         service_scope=service_scope,
         gnn_safety_margin=float(result.gnn_safety_margin),
     )
@@ -89,7 +85,8 @@ def fixed_machine_multiedges(instance, operations):
     ]
 
 
-def _directed_order(A_plus, A_minus, source, target, machine):
+def directed_machine_order(A_plus, A_minus, source, target, machine):
+    """Return the active precedence gate for one directed machine pair."""
     if source < target:
         return A_plus[source, target, machine]
     return A_minus[target, source, machine]
@@ -173,7 +170,7 @@ def add_reliability_graph_variables(
     for source, target, machine in U_index:
         model.addConstr(
             U[source, target, machine]
-            <= _directed_order(
+            <= directed_machine_order(
                 A_plus, A_minus, source, target, machine
             ),
             name=f"direct_predecessor_order[{source},{target},{machine}]",
@@ -217,6 +214,8 @@ def add_reliability_graph_variables(
             name=f"one_machine_last[{machine}]",
         )
     variables.update({
+        "A_plus": A_plus,
+        "A_minus": A_minus,
         "U": U,
         "U_index": U_index,
         "reliability_graph_config": reliability_graph_config_dict(cfg),

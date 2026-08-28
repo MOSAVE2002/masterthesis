@@ -263,6 +263,7 @@ def run_analysis(
                 instance_name,
                 generation,
                 count=int(samples_per_instance),
+                include_diagnostics=True,
             )
         except Exception as exc:
             failures.append({
@@ -273,9 +274,9 @@ def run_analysis(
         wall_seconds = time.perf_counter() - started
         instance_rows = []
         for graph_number, row in enumerate(generated, start=1):
-            mc_probabilities = json.loads(row["job_ontime_probabilities"])
+            mc_probabilities = json.loads(row[GENERATOR.TARGET_COLUMN])
             nonlinear_probabilities = json.loads(
-                row["nonlinear_job_ontime_probability_lbs"]
+                row["_nonlinear_job_probabilities"]
             )
             mc_p_min = min(mc_probabilities)
             nonlinear_p_min = min(nonlinear_probabilities)
@@ -303,19 +304,18 @@ def run_analysis(
                 ),
                 "absolute_gap": abs(mc_p_min - nonlinear_p_min),
                 "mc_minus_nonlinear": mc_p_min - nonlinear_p_min,
-                "mc_job_probabilities": row["job_ontime_probabilities"],
+                "mc_job_probabilities": row[GENERATOR.TARGET_COLUMN],
                 "nonlinear_job_probability_lbs": row[
-                    "nonlinear_job_ontime_probability_lbs"
+                    "_nonlinear_job_probabilities"
                 ],
                 "selection_category": row["pool_selection_category"],
                 "optimization_run": row["optimization_run"],
                 "pool_solution_number": row["pool_solution_number"],
                 "pool_objective": row["pool_objective"],
                 "fix_ratio": row["fix_ratio"],
-                "sequence_fix_ratio": row["sequence_fix_ratio"],
                 "solver_runtime_seconds": row["solver_runtime_seconds"],
                 "instance_wall_seconds": wall_seconds,
-                "label_replications": row["simulation_replications"],
+                "label_replications": row["_label_replications"],
             }
             instance_rows.append(item)
             rows.append(item)

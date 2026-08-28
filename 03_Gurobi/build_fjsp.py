@@ -6,6 +6,10 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from helper.gurobi_solution_writer import write_model_structure
+from helper.economic_objective import (
+    add_economic_cost_objective,
+    add_nominal_due_date_constraints,
+)
 
 
 STATUS_NAMES = {
@@ -20,21 +24,45 @@ STATUS_NAMES = {
 }
 
 
-def build_fjsp(model, instance, *, include_makespan=True):
+def build_fjsp(
+    model,
+    instance,
+    *,
+    include_makespan=True,
+    horizon_upper_bound=None,
+    enforce_due_dates=None,
+    economic_objective=None,
+    facility_cost_per_time=1.0,
+):
     operations = list(instance.real_operations)
     machines = list(range(instance.num_machines))
-    horizon = sum(
+    serial_horizon = sum(
         max(
             float(instance.processing_times[operation, machine])
             for machine in instance.eligible_machines[operation]
         )
         for operation in operations
     )
+    horizon = serial_horizon
+    if horizon_upper_bound is not None:
+        horizon_upper_bound = float(horizon_upper_bound)
+        if horizon_upper_bound <= 0.0:
+            raise ValueError("horizon_upper_bound must be positive.")
+        horizon = min(horizon, horizon_upper_bound)
     completion = model.addVars(
-        operations, lb=0.0, vtype=GRB.CONTINUOUS, name="C"
+        operations,
+        lb=0.0,
+        ub=horizon,
+        vtype=GRB.CONTINUOUS,
+        name="C",
     )
     makespan = (
-        model.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name="C_max")
+        model.addVar(
+            lb=0.0,
+            ub=horizon,
+            vtype=GRB.CONTINUOUS,
+            name="C_max",
+        )
         if include_makespan
         else None
     )
@@ -105,7 +133,6 @@ def build_fjsp(model, instance, *, include_makespan=True):
                 makespan >= completion[end_operation],
                 name=f"makespan[{job}]",
             )
-        model.setObjective(makespan, GRB.MINIMIZE)
     model.update()
     variables = {
         "C": completion,
@@ -123,6 +150,22 @@ def build_fjsp(model, instance, *, include_makespan=True):
     }
     if include_makespan:
         variables["C_max"] = makespan
+    if enforce_due_dates is None:
+        enforce_due_dates = hasattr(instance, "due_dates")
+    if economic_objective is None:
+        economic_objective = hasattr(instance, "due_dates")
+    if enforce_due_dates:
+        add_nominal_due_date_constraints(model, variables, instance)
+    if economic_objective:
+        add_economic_cost_objective(
+            model,
+            variables,
+            instance,
+            facility_cost_per_time=facility_cost_per_time,
+        )
+    elif include_makespan:
+        model.setObjective(makespan, GRB.MINIMIZE)
+    model.update()
     return model, variables
 
 
@@ -133,8 +176,24 @@ def write_solution_file(model, variables, instance, filename="solution.txt"):
     with path.open("w", encoding="utf-8") as file:
         file.write(f"Status: {STATUS_NAMES.get(model.Status, model.Status)}\n")
         file.write(
-            f"Makespan: {model.ObjVal:.4f}\n" if model.SolCount else "Makespan:\n"
+            f"Objective: {model.ObjVal:.4f}\n" if model.SolCount else "Objective:\n"
         )
+        file.write(
+            f"Makespan: {variables['C_max'].X:.4f}\n"
+            if model.SolCount and variables.get("C_max") is not None
+            else "Makespan:\n"
+        )
+        for label, key in (
+            ("Processing cost", "processing_cost"),
+            ("Operating cost", "operating_cost"),
+            ("Total cost", "total_cost"),
+        ):
+            value = variables.get(key)
+            file.write(
+                f"{label}: {value.getValue():.4f}\n"
+                if model.SolCount and value is not None
+                else f"{label}:\n"
+            )
         file.write(f"Big M: {float(variables['H']):.4f}\n")
         file.write(f"Runtime [s]: {float(model.Runtime):.4f}\n")
         file.write(f"Solution count: {int(model.SolCount)}\n")

@@ -1,36 +1,33 @@
-"""Event-based Weibull breakdown simulation for fixed FJSP schedules.
+"""Constraint-consistent Monte-Carlo simulation for fixed FJSP schedules.
 
-The optimizer supplies a fixed assignment and a fixed immediate-predecessor
-graph.  This module executes that predictive schedule repeatedly.  Failures
-interrupt an operation, an exponentially distributed repair is performed, and
-the remaining processing time resumes on the same machine.  Planned idle time
-is preserved and all disruption delays propagate through the fixed job and
-machine arcs (right shift).
+For every operation, the simulator evaluates the same nonlinear machine-down
+probability at the nominal operation midpoint as the reference MINLP. A single
+Bernoulli snapshot decides whether the operation is disrupted. Conditional on
+a disruption, the remaining exponential repair duration is added to the
+operation and propagated over all fixed job and machine arcs by right shift.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from typing import Hashable, Mapping, Sequence
+from typing import Hashable, Mapping
 
 import numpy as np
 
+from helper.stochastic_fjsp import weibull_down_probability
 
-LABEL_METHOD = "monte_carlo_weibull_preempt_resume_right_shift_v1"
+
+LABEL_METHOD = (
+    "monte_carlo_weibull_midpoint_snapshot_exponential_repair_"
+    "preempt_resume_right_shift_v1"
+)
 
 
 @dataclass(frozen=True)
 class SimulationConfig:
-    pilot_replications: int = 64
-    label_replications: int = 512
+    pilot_replications: int = 256
+    label_replications: int = 10_000
     random_seed: int = 42
-    failure_clock: str = "productive_time"
-    repair_restoration: str = "as_good_as_new"
-    interruption_policy: str = "preempt_resume"
-    schedule_policy: str = "right_shift"
-    initial_virtual_age_fraction: float = 0.0
-    max_failures_per_operation: int = 10_000
 
 
 @dataclass(frozen=True)
@@ -60,6 +57,7 @@ class SimulationResult:
     operation_mean_repair_delays: tuple[float, ...]
     operation_mean_repair_durations: tuple[float, ...]
     mean_total_repair_delay: float
+    mean_total_repair_duration: float
     mean_failures: float
     label_method: str = LABEL_METHOD
 
@@ -79,28 +77,10 @@ def normalize_simulation_config(config=None, **overrides) -> SimulationConfig:
         raise ValueError("pilot_replications must be positive.")
     if int(result.label_replications) <= 0:
         raise ValueError("label_replications must be positive.")
-    if str(result.failure_clock).lower() != "productive_time":
-        raise ValueError("Only failure_clock='productive_time' is supported.")
-    if str(result.repair_restoration).lower() != "as_good_as_new":
-        raise ValueError("Only repair_restoration='as_good_as_new' is supported.")
-    if str(result.interruption_policy).lower() != "preempt_resume":
-        raise ValueError("Only interruption_policy='preempt_resume' is supported.")
-    if str(result.schedule_policy).lower() != "right_shift":
-        raise ValueError("Only schedule_policy='right_shift' is supported.")
-    if float(result.initial_virtual_age_fraction) < 0.0:
-        raise ValueError("initial_virtual_age_fraction must be nonnegative.")
-    if int(result.max_failures_per_operation) <= 0:
-        raise ValueError("max_failures_per_operation must be positive.")
     return SimulationConfig(
         pilot_replications=int(result.pilot_replications),
         label_replications=int(result.label_replications),
         random_seed=int(result.random_seed),
-        failure_clock="productive_time",
-        repair_restoration="as_good_as_new",
-        interruption_policy="preempt_resume",
-        schedule_policy="right_shift",
-        initial_virtual_age_fraction=float(result.initial_virtual_age_fraction),
-        max_failures_per_operation=int(result.max_failures_per_operation),
     )
 
 
@@ -163,52 +143,11 @@ def _validated_topology(schedule: FixedSchedule):
     }
 
 
-def _remaining_weibull_life(rng, age, scale, shape):
-    uniform = max(float(rng.random()), np.finfo(float).tiny)
-    accumulated_hazard = (age / scale) ** shape - math.log(uniform)
-    return max(0.0, scale * accumulated_hazard ** (1.0 / shape) - age)
-
-
-def _execute_operation(
-    rng,
-    processing_time,
-    virtual_age,
-    weibull_scale,
-    weibull_shape,
-    repair_rate,
-    max_failures,
-):
-    remaining = float(processing_time)
-    elapsed = 0.0
-    repair_delay = 0.0
-    repair_sum = 0.0
-    failures = 0
-    tolerance = 1e-12
-    while remaining > tolerance:
-        life = _remaining_weibull_life(
-            rng, virtual_age, weibull_scale, weibull_shape
-        )
-        if life >= remaining - tolerance:
-            elapsed += remaining
-            virtual_age += remaining
-            remaining = 0.0
-            break
-        productive_slice = max(0.0, life)
-        elapsed += productive_slice
-        remaining -= productive_slice
-        virtual_age += productive_slice
-        repair = float(rng.exponential(1.0 / repair_rate))
-        elapsed += repair
-        repair_delay += repair
-        repair_sum += repair
-        failures += 1
-        virtual_age = 0.0
-        if failures > max_failures:
-            raise RuntimeError(
-                "Simulation exceeded max_failures_per_operation; check the "
-                "Weibull scale and processing-time units."
-            )
-    return elapsed, virtual_age, failures, repair_delay, repair_sum
+def _midpoint_disruption(rng, probability, repair_rate):
+    """Draw one midpoint disruption and its remaining repair duration."""
+    if float(rng.random()) >= float(probability):
+        return 0, 0.0
+    return 1, float(rng.exponential(1.0 / float(repair_rate)))
 
 
 def simulate_fixed_schedule(
@@ -218,29 +157,47 @@ def simulate_fixed_schedule(
     seed: int,
     config=None,
 ) -> SimulationResult:
-    cfg = normalize_simulation_config(config)
+    """Evaluate one fixed schedule under midpoint-snapshot disruptions."""
+    normalize_simulation_config(config)
     replications = int(replications)
     if replications <= 0:
         raise ValueError("replications must be positive.")
     topology, predecessors = _validated_topology(schedule)
     operations = tuple(schedule.operations)
-    operation_index = {operation: index for index, operation in enumerate(operations)}
+    operation_index = {
+        operation: index for index, operation in enumerate(operations)
+    }
+    stable_operation_order = sorted(operations, key=repr)
+    operation_stream = {
+        operation: index
+        for index, operation in enumerate(stable_operation_order)
+    }
     job_ids = tuple(sorted(schedule.jobs))
     job_index = {job: index for index, job in enumerate(job_ids)}
-    machines = sorted(set(schedule.selected_machines.values()))
+
+    disruption_probabilities = {}
     for operation in operations:
         machine = schedule.selected_machines[operation]
-        if float(schedule.processing_times[operation]) <= 0.0:
+        processing_time = float(schedule.processing_times[operation])
+        planned_start = float(schedule.planned_starts[operation])
+        if processing_time <= 0.0:
             raise ValueError("Processing times must be positive.")
+        if planned_start < 0.0:
+            raise ValueError("Planned start times must be nonnegative.")
         if float(schedule.weibull_scale[machine]) <= 0.0:
             raise ValueError("Weibull scales must be positive.")
         if float(schedule.weibull_shape[machine]) <= 1.0:
             raise ValueError("Weibull shapes must exceed one.")
         if float(schedule.repair_rate[machine]) <= 0.0:
             raise ValueError("Repair rates must be positive.")
+        midpoint = planned_start + 0.5 * processing_time
+        disruption_probabilities[operation] = weibull_down_probability(
+            midpoint,
+            schedule.weibull_scale[machine],
+            schedule.weibull_shape[machine],
+            schedule.repair_rate[machine],
+        )
 
-    root = np.random.SeedSequence(int(seed))
-    replication_seeds = root.spawn(replications)
     ontime = np.zeros(len(job_ids), dtype=np.int64)
     completion_sum = np.zeros(len(job_ids), dtype=float)
     operation_failure_runs = np.zeros(len(operations), dtype=np.int64)
@@ -248,51 +205,50 @@ def simulate_fixed_schedule(
     operation_repair_delay = np.zeros(len(operations), dtype=float)
     operation_repair_sum = np.zeros(len(operations), dtype=float)
     total_failures = 0
+    total_repair_delay = 0.0
 
-    for replication_seed in replication_seeds:
-        rng = np.random.default_rng(replication_seed)
-        virtual_age = {
-            machine: cfg.initial_virtual_age_fraction
-            * float(schedule.weibull_scale[machine])
-            for machine in machines
-        }
+    for replication_index in range(replications):
         completion = {}
         for operation in topology:
             machine = schedule.selected_machines[operation]
-            start = max(
-                float(schedule.planned_starts[operation]),
-                *(completion[source] for source in predecessors[operation]),
-            ) if predecessors[operation] else float(
-                schedule.planned_starts[operation]
-            )
-            (
-                elapsed,
-                virtual_age[machine],
-                failures,
-                repair_delay,
-                repair_sum,
-            ) = _execute_operation(
-                rng,
-                schedule.processing_times[operation],
-                virtual_age[machine],
-                float(schedule.weibull_scale[machine]),
-                float(schedule.weibull_shape[machine]),
-                float(schedule.repair_rate[machine]),
-                cfg.max_failures_per_operation,
-            )
-            completion[operation] = start + elapsed
             index = operation_index[operation]
-            operation_failure_runs[index] += int(failures > 0)
-            operation_failure_counts[index] += failures
+            rng = np.random.default_rng(np.random.SeedSequence([
+                int(seed),
+                int(replication_index),
+                int(operation_stream[operation]),
+            ]))
+            failed, repair_delay = _midpoint_disruption(
+                rng,
+                disruption_probabilities[operation],
+                schedule.repair_rate[machine],
+            )
+            start = (
+                max(
+                    float(schedule.planned_starts[operation]),
+                    *(completion[source] for source in predecessors[operation]),
+                )
+                if predecessors[operation]
+                else float(schedule.planned_starts[operation])
+            )
+            completion[operation] = (
+                start
+                + float(schedule.processing_times[operation])
+                + repair_delay
+            )
+            operation_failure_runs[index] += failed
+            operation_failure_counts[index] += failed
             operation_repair_delay[index] += repair_delay
-            operation_repair_sum[index] += repair_sum
-            total_failures += failures
+            operation_repair_sum[index] += repair_delay
+            total_failures += failed
+            total_repair_delay += repair_delay
 
         for job in job_ids:
             value = completion[schedule.job_end_operations[job]]
             index = job_index[job]
             completion_sum[index] += value
-            ontime[index] += int(value <= float(schedule.due_dates[job]) + 1e-12)
+            ontime[index] += int(
+                value <= float(schedule.due_dates[job]) + 1e-12
+            )
 
     probabilities = ontime.astype(float) / replications
     standard_errors = np.sqrt(
@@ -319,7 +275,8 @@ def simulate_fixed_schedule(
             float(total / count)
             for total, count in zip(operation_repair_sum, failure_counts_safe)
         ),
-        mean_total_repair_delay=float(operation_repair_delay.sum() / replications),
+        mean_total_repair_delay=float(total_repair_delay / replications),
+        mean_total_repair_duration=float(total_repair_delay / replications),
         mean_failures=float(total_failures / replications),
+        label_method=LABEL_METHOD,
     )
-

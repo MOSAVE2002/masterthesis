@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import importlib
+import math
 
 import gurobipy as gp
 from gurobipy import GRB
 
 from helper.gurobi_solution_writer import write_comparable_solution
+from helper.economic_objective import (
+    add_economic_cost_objective,
+    add_robust_due_date_constraints,
+)
 from helper.sequence_setup import (
     normalize_reliability_graph_config,
     reliability_graph_config_dict,
@@ -59,22 +64,52 @@ def _add_pd_quadrature(model, variables, instance, graph_cfg):
     probability, selected_probability = {}, {}
     for operation, machine in variables["Y_index"]:
         t = variables["T"][operation]
-        alpha = variables["weibull_alpha"][machine]
-        beta = variables["weibull_beta"][machine]
-        repair_rate = variables["repair_rate"][machine]
+        alpha = float(variables["weibull_alpha"][machine])
+        beta = float(variables["weibull_beta"][machine])
+        repair_rate = float(variables["repair_rate"][machine])
+        if math.isclose(beta, 2.0, rel_tol=0.0, abs_tol=1e-12):
+            beta_degree = 2
+        elif math.isclose(beta, 3.0, rel_tol=0.0, abs_tol=1e-12):
+            beta_degree = 3
+        else:
+            raise ValueError(
+                "The nonlinear reference model supports only the configured "
+                "integer Weibull beta values 2 (new) and 3 (old); received "
+                f"beta={beta:g} for machine {machine}."
+            )
+
+        horizon = float(variables["H"])
         terms = []
-        for node, weight in zip(nodes, weights):
-            x = 0.5 * (node + 1.0) * t
-            scaled = x / alpha
-            exponent = -(scaled ** beta) - repair_rate * (t - x)
+        for node_index, (node, weight) in enumerate(zip(nodes, weights)):
+            fraction = 0.5 * (node + 1.0)
+            scaled = fraction * t / alpha
+            scaled_squared = scaled * scaled
+            if beta_degree == 3:
+                weibull_power = scaled_squared * scaled
+                density_power = scaled_squared
+            else:
+                weibull_power = scaled_squared
+                density_power = scaled
+            exponent_argument = (
+                -weibull_power - repair_rate * (1.0 - fraction) * t
+            )
+            integrand = model.addVar(
+                lb=0.0,
+                ub=(fraction * horizon / alpha) ** (beta_degree - 1),
+                name=f"pd_integrand[{operation},{machine},{node_index}]",
+            )
+            model.addGenConstrNL(
+                integrand,
+                density_power * gp.nlfunc.exp(exponent_argument),
+                name=f"pd_integrand_def[{operation},{machine},{node_index}]",
+            )
             terms.append(
-                weight * beta / alpha * (scaled ** (beta - 1.0))
-                * gp.nlfunc.exp(exponent)
+                weight * beta_degree / alpha * integrand
             )
         p = model.addVar(lb=0.0, ub=1.0, name=f"Pd[{operation},{machine}]")
         model.addGenConstrNL(
             p,
-            0.5 * t * sum(terms[1:], terms[0]),
+            0.5 * t * sum(terms),
             name=f"pd_weibull_quadrature[{operation},{machine}]",
         )
         w = model.addVar(
@@ -102,137 +137,33 @@ def _service_operations(instance, job, scope):
     return list(instance.jobs[job]) if scope == "job" else list(instance.real_operations)
 
 
-def _add_service_constraints(
+def _add_expected_repair_buffers(
     model,
     variables,
     instance,
     graph_cfg,
-    *,
-    enforce_service_level=True,
 ):
-    buffers, constraints, resolved_levels = {}, {}, {}
-    probabilities, clipping_excesses, slacks, expected_delays = {}, {}, {}, {}
+    expected_delays = {}
     for job in instance.jobs:
-        alpha_target = float(
-            getattr(instance, "service_levels", {}).get(job, graph_cfg.service_level)
-        )
-        resolved_levels[job] = alpha_target
         expected_disruption = gp.quicksum(
             variables["pi_fail"][operation, machine]
             / variables["repair_rate"][machine]
             for operation in _service_operations(instance, job, graph_cfg.service_scope)
             for machine in instance.eligible_machines[operation]
         )
-        due_date = float(instance.due_dates[job])
-        slack = model.addVar(
-            lb=1e-6,
-            ub=due_date,
-            name=f"nominal_due_date_slack[{job}]",
-        )
-        disruption_upper_bound = sum(
-            1.0 / float(variables["repair_rate"][machine])
-            for operation in _service_operations(
-                instance, job, graph_cfg.service_scope
-            )
-            for machine in instance.eligible_machines[operation]
-        )
-        probability = model.addVar(
-            lb=0.0,
-            ub=1.0,
-            name=f"job_ontime_probability_lb[{job}]",
-        )
-        clipping_excess = model.addVar(
-            lb=0.0,
-            ub=disruption_upper_bound,
-            name=f"job_probability_clipping_excess[{job}]",
-        )
-        model.addConstr(
-            slack == due_date - variables["C"][instance.job_end_operations[job]],
-            name=f"nominal_due_date_slack_def[{job}]",
-        )
-        model.addQConstr(
-            (1.0 - probability) * slack + clipping_excess
-            == expected_disruption,
-            name=f"markov_job_probability_clipped_def[{job}]",
-        )
-        model.addQConstr(
-            probability * clipping_excess == 0.0,
-            name=f"markov_job_probability_complementarity[{job}]",
-        )
-        buffers[job] = expected_disruption / (1.0 - alpha_target)
-        if enforce_service_level:
-            constraints[job] = model.addConstr(
-                probability >= alpha_target,
-                name=f"alpha_service_level[{job}]",
-            )
-        probabilities[job] = probability
-        clipping_excesses[job] = clipping_excess
-        slacks[job] = slack
         expected_delays[job] = expected_disruption
+    add_robust_due_date_constraints(
+        model,
+        variables,
+        instance,
+        expected_delays,
+    )
     variables.update({
-        "service_buffers": buffers,
-        "service_constraints": constraints,
         "service_scope": graph_cfg.service_scope,
         "due_dates": dict(instance.due_dates),
-        "service_levels": resolved_levels,
-        "job_ontime_probabilities": probabilities,
-        "job_probability_clipping_excesses": clipping_excesses,
-        "job_probability_slacks": slacks,
         "job_expected_delays": expected_delays,
-        "job_probability_label_method": (
-            "clipped_markov_expected_delay_lower_bound_v2"
-        ),
+        "job_repair_buffer_label_method": "weibull_expected_repair_buffer_v1",
     })
-
-
-def _add_min_probability_band(model, variables, probability_band):
-    if probability_band is None:
-        return
-    lower, upper = map(float, probability_band)
-    if not 0.0 <= lower <= upper <= 1.0:
-        raise ValueError(
-            "service_probability_band must satisfy "
-            "0 <= lower <= upper <= 1."
-        )
-    probabilities = list(variables["job_ontime_probabilities"].values())
-    minimum = model.addVar(
-        lb=0.0,
-        ub=1.0,
-        name="minimum_job_ontime_probability_lb",
-    )
-    model.addGenConstrMin(
-        minimum,
-        probabilities,
-        name="minimum_job_ontime_probability_def",
-    )
-    lower_constraint = model.addConstr(
-        minimum >= lower,
-        name="candidate_probability_band_lb",
-    )
-    upper_constraint = model.addConstr(
-        minimum <= upper,
-        name="candidate_probability_band_ub",
-    )
-    variables.update({
-        "minimum_job_ontime_probability": minimum,
-        "candidate_probability_band": (lower, upper),
-        "candidate_probability_band_constraints": (
-            lower_constraint,
-            upper_constraint,
-        ),
-    })
-
-
-def _set_cost_objective(model, variables, instance):
-    assignment_cost = gp.quicksum(
-        variables["machine_cost"][machine]
-        * float(instance.processing_times[operation, machine])
-        * variables["Y"][operation, machine]
-        for operation, machine in variables["Y_index"]
-    )
-    model.setObjective(assignment_cost, GRB.MINIMIZE)
-    variables["assignment_cost"] = assignment_cost
-    variables["objective_definition"] = "machine_assignment_cost"
 
 
 def build_fjsp(
@@ -241,16 +172,25 @@ def build_fjsp(
     constraint_type=CONSTRAINT_WEIBULL,
     reliability_graph_config=None,
     service_probability_band=None,
+    facility_cost_per_time=1.0,
 ):
     """Build the nonlinear stochastic reference formulation."""
     validate_constraint_type(constraint_type)
     graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
+    if service_probability_band is not None:
+        raise ValueError(
+            "service_probability_band was removed; alpha is evaluated only "
+            "by post-optimization Monte Carlo simulation."
+        )
     ensure_stochastic_parameters(instance)
     parameters = stochastic_parameters(instance)
     model, variables = _base_fjsp.build_fjsp(
         fjsp,
         instance,
         include_makespan=False,
+        horizon_upper_bound=max(instance.due_dates.values()),
+        enforce_due_dates=True,
+        economic_objective=False,
     )
     model.Params.NonConvex = 2
     for operation in variables["real_operations"]:
@@ -258,7 +198,6 @@ def build_fjsp(
     variables.update({
         "machine_modernity": parameters["theta"],
         "machine_speed": parameters["speed"],
-        "machine_cost": parameters["cost"],
         "weibull_alpha": parameters["alpha"],
         "weibull_beta": parameters["beta"],
         "repair_rate": parameters["repair_rate"],
@@ -286,24 +225,21 @@ def build_fjsp(
         "Delta": delta,
         "total_failure_delay": gp.quicksum(delta.values()),
     })
-    _add_service_constraints(
+    _add_expected_repair_buffers(
         model,
         variables,
         instance,
         graph_cfg,
-        enforce_service_level=service_probability_band is None,
     )
-    _add_min_probability_band(
-        model, variables, service_probability_band
+    add_economic_cost_objective(
+        model,
+        variables,
+        instance,
+        facility_cost_per_time=facility_cost_per_time,
     )
-    _set_cost_objective(model, variables, instance)
     variables.update({
         "constraint_type": constraint_type,
-        "formulation": (
-            "nonlinear_per_job_ontime_probability_band_v3"
-            if service_probability_band is not None
-            else "nonlinear_per_job_ontime_probability_lb_v3"
-        ),
+        "formulation": "nonlinear_expected_repair_buffer_cost_v9",
     })
     model.update()
     return model, variables

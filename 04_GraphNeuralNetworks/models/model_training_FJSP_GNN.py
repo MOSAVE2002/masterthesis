@@ -1,4 +1,4 @@
-"""Train one jobspecific on-time probability for every job in each graph."""
+"""Train one jobspecific expected repair buffer for every graph."""
 
 from __future__ import annotations
 
@@ -38,9 +38,7 @@ _instances = importlib.import_module("01_generator.instance_generator")
 _architectures = importlib.import_module(
     "04_GraphNeuralNetworks.models.gnn_architecture"
 )
-MONTE_CARLO_LABEL_METHOD = importlib.import_module(
-    "05_Simulation.preempt_resume"
-).LABEL_METHOD
+NONLINEAR_LABEL_METHOD = "weibull_expected_repair_buffer_v1"
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
 SPLIT_CSV_FILENAMES = _instances.SPLIT_CSV_FILENAMES
@@ -48,6 +46,10 @@ load_generated_instance = _instances.load_generated_instance
 
 CONV_LINEAR = _architectures.CONV_LINEAR
 CONV_SAGE = _architectures.CONV_SAGE
+CONV_JOB = _architectures.CONV_JOB
+MESSAGE_PASSING_CONVOLUTIONS = (
+    _architectures.MESSAGE_PASSING_CONVOLUTIONS
+)
 GRAPH_FIXED = _architectures.GRAPH_FIXED
 POOL_ADD = _architectures.POOL_ADD
 VALID_LAYER_COUNTS = _architectures.VALID_LAYER_COUNTS
@@ -94,11 +96,73 @@ def _release_memory():
         torch.mps.empty_cache()
 
 
+def _edge_index(edges) -> torch.Tensor:
+    return torch.tensor(
+        [
+            [source for source, _target in edges],
+            [target for _source, target in edges],
+        ],
+        dtype=torch.long,
+    ).reshape(2, -1)
+
+
+def _job_precedence_edges(job_membership) -> list[tuple[int, int]]:
+    """Return the fixed within-job chain edges in operation order."""
+    nodes_by_job = {}
+    for node_index, job_index in enumerate(job_membership):
+        nodes_by_job.setdefault(int(job_index), []).append(node_index)
+    return [
+        (source, target)
+        for nodes in nodes_by_job.values()
+        for source, target in zip(nodes, nodes[1:])
+    ]
+
+
+def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
+    """Validate dataset-level label and direct-machine graph definitions."""
+    summary_path = csv_path.parent.parent / "generation_summary.json"
+    if not summary_path.exists():
+        raise FileNotFoundError(
+            "Dataset label metadata not found: "
+            f"{summary_path}. Regenerate the dataset with schema_version >= 3."
+        )
+    with summary_path.open(encoding="utf-8") as file:
+        summary = json.load(file)
+    label = summary.get("label") or {}
+    if label.get("target_column") != target_name:
+        raise ValueError(
+            f"Dataset target is {label.get('target_column')!r}, expected "
+            f"{target_name!r}."
+        )
+    label_method = label.get("label_method")
+    if label_method != NONLINEAR_LABEL_METHOD:
+        raise ValueError(
+            "The active GNN pipeline requires nonlinear Weibull/Markov "
+            f"labels, got {label_method!r}."
+        )
+    graph = summary.get("graph") or {}
+    expected_graph = {
+        "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
+        "include_machine_predecessor_edges": True,
+        "machine_predecessor_edge_scope": "direct",
+        "include_job_precedence_edges": True,
+    }
+    if any(graph.get(key) != value for key, value in expected_graph.items()):
+        raise ValueError(
+            "The active GNN pipeline requires direct U machine edges and "
+            "fixed job edges. Regenerate the dataset with schema_version >= 3."
+        )
+    return label_method, {"source": label.get("source")}
+
+
 def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
     """Load node-feature graphs written by the data generator."""
     csv_path = Path(csv_path)
     if not csv_path.exists():
         raise FileNotFoundError(f"Dataset not found: {csv_path}")
+    label_method, _simulation_parameters = _load_label_metadata(
+        csv_path, target_name
+    )
     required = {
         "instance_name",
         target_name,
@@ -107,15 +171,10 @@ def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
         "gnn_active_edges",
         "job_ids",
         "operation_job_indices",
-        "job_probability_label_method",
-        "job_probability_standard_errors",
-        "simulation_replications",
-        "simulation_parameters",
         "reliability_graph_parameters",
     }
     graphs, feature_names = [], None
     graph_config = None
-    label_method = None
     with csv_path.open(newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         missing = required - set(reader.fieldnames or [])
@@ -131,19 +190,6 @@ def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
                 graph_config = row_config
             elif graph_config != row_config:
                 raise ValueError("Reliability parameters differ inside one CSV.")
-            row_label_method = row["job_probability_label_method"]
-            if row_label_method != MONTE_CARLO_LABEL_METHOD:
-                raise ValueError(
-                    "The active GNN pipeline requires Monte-Carlo "
-                    f"Preempt-Resume labels, got {row_label_method!r}."
-                )
-            if int(row["simulation_replications"]) <= 0:
-                raise ValueError("Simulation replications must be positive.")
-            if label_method is None:
-                label_method = row_label_method
-            elif label_method != row_label_method:
-                raise ValueError("Job probability label methods differ.")
-
             names = json.loads(row["gnn_feature_names"])
             if names != reliability_node_feature_names():
                 raise ValueError(f"Unexpected node feature order: {names}")
@@ -153,25 +199,21 @@ def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
                 raise ValueError("Node feature order differs between rows.")
 
             active_edges = json.loads(row["gnn_active_edges"])
-            edge_index = torch.tensor(
-                [
-                    [source for source, _target in active_edges],
-                    [target for _source, target in active_edges],
-                ],
-                dtype=torch.long,
-            ).reshape(2, -1)
+            job_membership = json.loads(row["operation_job_indices"])
+            job_edges = _job_precedence_edges(job_membership)
             x = torch.tensor(
                 json.loads(row["gnn_node_features"]), dtype=torch.float32
             )
             graphs.append(Data(
                 x=x,
-                edge_index=edge_index,
+                edge_index=_edge_index(active_edges),
+                job_edge_index=_edge_index(job_edges),
                 job_y=torch.tensor(
                     json.loads(row[target_name]),
                     dtype=torch.float32,
                 ),
                 job_membership=torch.tensor(
-                    json.loads(row["operation_job_indices"]),
+                    job_membership,
                     dtype=torch.long,
                 ),
                 num_jobs_tensor=torch.tensor(
@@ -200,7 +242,7 @@ class NodeGraphSAGEConv(nn.Module):
 
 
 class FJSPGraphSAGE(nn.Module):
-    """Linear baseline or relational SAGE predictor with one output per job."""
+    """Linear, direct-U SAGE or job-precedence repair-buffer predictor."""
 
     def __init__(
         self,
@@ -208,21 +250,19 @@ class FJSPGraphSAGE(nn.Module):
         hidden_channels,
         num_graphsage_layers,
         convolution,
-        initial_probability=0.95,
+        initial_repair_buffer=0.50,
     ):
         super().__init__()
-        if convolution not in {CONV_LINEAR, CONV_SAGE}:
-            raise ValueError("Only linear and sage are supported.")
+        if convolution not in {CONV_LINEAR, CONV_SAGE, CONV_JOB}:
+            raise ValueError("Only linear, sage and job are supported.")
         if num_graphsage_layers not in VALID_LAYER_COUNTS:
             choices = ", ".join(map(str, sorted(VALID_LAYER_COUNTS)))
             raise ValueError(
                 f"The active pipeline supports {choices} layers."
             )
-        initial_probability = float(initial_probability)
-        if not 0.0 < initial_probability < 1.0:
-            raise ValueError(
-                "initial_probability must lie strictly between 0 and 1."
-            )
+        initial_repair_buffer = float(initial_repair_buffer)
+        if initial_repair_buffer < 0.0:
+            raise ValueError("The initial repair buffer must be nonnegative.")
         self.convolution = convolution
 
         def layer(input_channels):
@@ -240,7 +280,7 @@ class FJSPGraphSAGE(nn.Module):
         self.out = nn.Linear(hidden_channels, 1)
         self.out_input = nn.Linear(input_size, 1)
         nn.init.constant_(self.out.weight, 0.001)
-        nn.init.constant_(self.out.bias, initial_probability)
+        nn.init.constant_(self.out.bias, initial_repair_buffer)
         nn.init.zeros_(self.out_input.weight)
         nn.init.zeros_(self.out_input.bias)
 
@@ -251,11 +291,16 @@ class FJSPGraphSAGE(nn.Module):
 
     def forward(self, data, return_nodes=False):
         x_input = data.x
-        x = F.relu(self._layer(self.conv1, x_input, data.edge_index))
+        edge_index = (
+            data.job_edge_index
+            if self.convolution == CONV_JOB
+            else data.edge_index
+        )
+        x = F.relu(self._layer(self.conv1, x_input, edge_index))
         if self.conv2 is not None:
-            x = F.relu(self._layer(self.conv2, x, data.edge_index))
+            x = F.relu(self._layer(self.conv2, x, edge_index))
         if self.conv3 is not None:
-            x = F.relu(self._layer(self.conv3, x, data.edge_index))
+            x = F.relu(self._layer(self.conv3, x, edge_index))
         job_counts = data.num_jobs_tensor.view(-1).long()
         job_offsets = torch.cat((
             job_counts.new_zeros(1), job_counts.cumsum(0)[:-1]
@@ -266,16 +311,14 @@ class FJSPGraphSAGE(nn.Module):
         pooled_input = global_add_pool(
             x_input, node_job, size=total_jobs
         )
-        raw_probability = F.relu(
+        repair_buffer = F.relu(
             self.out(pooled).view(-1)
             + self.out_input(pooled_input).view(-1)
         )
-        clipped = raw_probability.clamp(0.0, 1.0)
-        probability = (
-            raw_probability + (clipped - raw_probability).detach()
-            if self.training else clipped
+        return (
+            (repair_buffer, repair_buffer)
+            if return_nodes else repair_buffer
         )
-        return (probability, probability) if return_nodes else probability
 
 
 def _loss(
@@ -284,13 +327,13 @@ def _loss(
     batch,
     *,
     loss_name=LOSS_ASYMMETRIC_MSE,
-    service_level=0.95,
+    label_distribution_center=0.50,
     boundary_width=0.03,
     boundary_weight=4.0,
     overestimation_weight=2.0,
     huber_delta=0.05,
 ):
-    """Return a job-level probability loss for one mini-batch."""
+    """Return a job-level repair-buffer regression loss."""
     if loss_name not in SUPPORTED_LOSSES:
         raise ValueError(
             f"Unknown loss {loss_name!r}; expected one of "
@@ -331,7 +374,7 @@ def _loss(
         LOSS_BOUNDARY_WEIGHTED_ASYMMETRIC_MSE,
     }:
         boundary = (
-            (target - float(service_level)).abs()
+            (target - float(label_distribution_center)).abs()
             <= float(boundary_width) + 1e-12
         )
         per_job = torch.where(
@@ -362,10 +405,6 @@ def _evaluate(
     model,
     loader,
     zero_edges=False,
-    *,
-    service_level=0.95,
-    boundary_width=0.03,
-    calibration_bins=10,
 ):
     model.eval()
     job_errors, predictions, targets = [], [], []
@@ -374,6 +413,7 @@ def _evaluate(
             batch = batch.to(next(model.parameters()).device)
             if zero_edges:
                 batch.edge_index = batch.edge_index.new_empty((2, 0))
+                batch.job_edge_index = batch.job_edge_index.new_empty((2, 0))
             job_prediction, _ = model(batch, return_nodes=True)
             target = batch.job_y.view(-1)
             job_errors.append(job_prediction - target)
@@ -382,60 +422,22 @@ def _evaluate(
     job_error = torch.cat(job_errors)
     prediction = torch.cat(predictions)
     target = torch.cat(targets)
-    boundary = (
-        (target - float(service_level)).abs()
-        <= float(boundary_width) + 1e-12
-    )
-    predicted_feasible = prediction >= float(service_level)
-    actual_feasible = target >= float(service_level)
-    true_positive = int((predicted_feasible & actual_feasible).sum())
-    true_negative = int((~predicted_feasible & ~actual_feasible).sum())
-    false_positive = int((predicted_feasible & ~actual_feasible).sum())
-    false_negative = int((~predicted_feasible & actual_feasible).sum())
-
-    def divide(numerator, denominator):
-        return float(numerator) / float(denominator) if denominator else 0.0
-
-    recall = divide(true_positive, true_positive + false_negative)
-    specificity = divide(true_negative, true_negative + false_positive)
-    ece = 0.0
-    for index in range(int(calibration_bins)):
-        lower = index / int(calibration_bins)
-        upper = (index + 1) / int(calibration_bins)
-        mask = (prediction >= lower) & (
-            prediction <= upper if index == int(calibration_bins) - 1
-            else prediction < upper
-        )
-        count = int(mask.sum())
-        if count:
-            ece += count * abs(
-                float(prediction[mask].mean()) - float(target[mask].mean())
-            )
-    ece /= int(target.numel())
+    target_mean = float(target.mean())
+    total_variation = float((target - target_mean).square().sum())
+    residual_variation = float(job_error.square().sum())
     return {
         "mae": float(job_error.abs().mean()),
         "rmse": math.sqrt(float(job_error.square().mean())),
-        "soft_brier_score": float(job_error.square().mean()),
         "mean_error_bias": float(job_error.mean()),
-        "boundary_labels": int(boundary.sum()),
-        "boundary_mae": (
-            float(job_error[boundary].abs().mean())
-            if bool(boundary.any()) else None
+        "r_squared": (
+            1.0 - residual_variation / total_variation
+            if total_variation > 1e-12 else None
         ),
-        "expected_calibration_error": ece,
+        "mean_target_buffer": target_mean,
+        "mean_predicted_buffer": float(prediction.mean()),
         "job_overestimation_max": float(F.relu(job_error).max()),
         "overestimation_rate": float((job_error > 0.0).float().mean()),
-        "threshold_accuracy": divide(
-            true_positive + true_negative, int(target.numel())
-        ),
-        "threshold_balanced_accuracy": 0.5 * (recall + specificity),
-        "threshold_recall": recall,
-        "threshold_specificity": specificity,
-        "false_positive": false_positive,
-        "false_negative": false_negative,
-        "unsafe_acceptance_rate": divide(
-            false_positive, true_negative + false_positive
-        ),
+        "underestimation_rate": float((job_error < 0.0).float().mean()),
     }
 
 
@@ -464,8 +466,8 @@ def train_from_file(
     validation_interval=10,
     early_stopping_patience=100,
     enforce_graph_influence=False,
-    expected_service_level=None,
     loss_name=LOSS_ASYMMETRIC_MSE,
+    label_distribution_center=0.50,
     boundary_width=0.03,
     boundary_weight=4.0,
     overestimation_weight=2.0,
@@ -498,23 +500,8 @@ def train_from_file(
         raise ValueError("Feature names differ between data splits.")
     if graph_config != valid_config or graph_config != test_config:
         raise ValueError("Reliability parameters differ between data splits.")
-    if (
-        expected_service_level is not None
-        and not math.isclose(
-            graph_config.service_level,
-            float(expected_service_level),
-            rel_tol=0.0,
-            abs_tol=1e-12,
-        )
-    ):
-        raise ValueError(
-            "Dataset service_level="
-            f"{graph_config.service_level} differs from configured "
-            f"service_level={float(expected_service_level)}. Regenerate the "
-            "GNN dataset before training."
-        )
     if label_method != valid_label_method or label_method != test_label_method:
-        raise ValueError("Job probability label methods differ between splits.")
+        raise ValueError("Repair-buffer label methods differ between splits.")
 
     device = _device()
     train_loader = DataLoader(
@@ -526,17 +513,20 @@ def train_from_file(
     test_loader = DataLoader(
         test_graphs, batch_size=min(batch_size, len(test_graphs))
     )
+    initial_repair_buffer = float(torch.cat([
+        graph.job_y.view(-1) for graph in train_graphs
+    ]).mean())
     model = FJSPGraphSAGE(
         input_size=len(feature_names),
         hidden_channels=int(hidden_channels),
         num_graphsage_layers=int(num_graphsage_layers),
         convolution=architecture["convolution"],
-        initial_probability=graph_config.service_level,
+        initial_repair_buffer=initial_repair_buffer,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(learning_rate))
     loss_parameters = {
         "loss_name": loss_name,
-        "service_level": graph_config.service_level,
+        "label_distribution_center": float(label_distribution_center),
         "boundary_width": float(boundary_width),
         "boundary_weight": float(boundary_weight),
         "overestimation_weight": float(overestimation_weight),
@@ -549,12 +539,7 @@ def train_from_file(
             model, train_loader, optimizer, **loss_parameters
         )
         if epoch == 1 or epoch % int(validation_interval) == 0 or epoch == epochs:
-            valid_metrics = _evaluate(
-                model,
-                valid_loader,
-                service_level=graph_config.service_level,
-                boundary_width=boundary_width,
-            )
+            valid_metrics = _evaluate(model, valid_loader)
             selection_loss = valid_metrics["mae"]
             print(
                 f"epoch={epoch:04d} train_loss={training_loss:.6g} "
@@ -577,34 +562,22 @@ def train_from_file(
                 break
     elapsed = time.perf_counter() - started
     model.load_state_dict(best_state)
-    valid_metrics = _evaluate(
-        model,
-        valid_loader,
-        service_level=graph_config.service_level,
-        boundary_width=boundary_width,
-    )
-    test_metrics = _evaluate(
-        model,
-        test_loader,
-        service_level=graph_config.service_level,
-        boundary_width=boundary_width,
-    )
+    valid_metrics = _evaluate(model, valid_loader)
+    test_metrics = _evaluate(model, test_loader)
     zero_edge_metrics = (
-        _evaluate(
-            model,
-            test_loader,
-            zero_edges=True,
-            service_level=graph_config.service_level,
-            boundary_width=boundary_width,
-        )
-        if architecture["convolution"] == CONV_SAGE else None
+        _evaluate(model, test_loader, zero_edges=True)
+        if architecture["convolution"] in MESSAGE_PASSING_CONVOLUTIONS
+        else None
     )
     if (
         enforce_graph_influence
         and zero_edge_metrics is not None
         and test_metrics["mae"] >= zero_edge_metrics["mae"]
     ):
-        raise RuntimeError("SAGE did not outperform its zero-edge ablation.")
+        raise RuntimeError(
+            f"{architecture['convolution']} did not outperform its "
+            "zero-edge ablation."
+        )
 
     model_dir = Path(model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -630,12 +603,23 @@ def train_from_file(
         "num_graphsage_layers": int(num_graphsage_layers),
         "hidden_channels": int(hidden_channels),
         "output_head": RELIABILITY_GNN_OUTPUT_HEAD,
-        "job_target": "job_ontime_probability",
-        "job_probability_label_method": label_method,
+        "job_target": "job_expected_repair_buffer",
+        "job_repair_buffer_label_method": label_method,
         "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
-        "message_passing": "source_node_states_only",
-        "include_machine_predecessor_edges": True,
-        "include_job_precedence_edges": True,
+        "message_passing": (
+            "none"
+            if architecture["convolution"] == CONV_LINEAR
+            else "source_node_states_only"
+        ),
+        "include_machine_predecessor_edges": (
+            architecture["convolution"] == CONV_SAGE
+        ),
+        "machine_predecessor_edge_scope": (
+            "direct" if architecture["convolution"] == CONV_SAGE else "none"
+        ),
+        "include_job_precedence_edges": (
+            architecture["convolution"] in {CONV_SAGE, CONV_JOB}
+        ),
         "reliability_graph_config": reliability_graph_config_dict(graph_config),
         "seed": int(seed),
         "loss": loss_parameters,
@@ -725,16 +709,17 @@ def train_from_config(seed=42, csv_path=None):
                     enforce_graph_influence=bool(
                         validation.get("enforce_graph_influence", False)
                     ),
-                    expected_service_level=config["constraint"]["weibull"][
-                        "reliability_graph"
-                    ]["service_level"],
                     loss_name=loss_config.get(
                         "name", LOSS_ASYMMETRIC_MSE
+                    ),
+                    label_distribution_center=float(
+                        config["training"]["data_generation"]["fixed_y"]
+                        ["label_distribution_center"]
                     ),
                     boundary_width=float(loss_config.get(
                         "boundary_width",
                         config["training"]["data_generation"]["fixed_y"][
-                            "service_boundary_width"
+                            "label_distribution_half_width"
                         ],
                     )),
                     boundary_weight=float(

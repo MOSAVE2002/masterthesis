@@ -1,4 +1,4 @@
-"""Fix-and-optimize graphs with Monte-Carlo job probabilities per row."""
+"""Fix-and-optimize graphs labelled by nonlinear expected repair buffers."""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ import importlib
 import json
 import math
 import random
-from collections import Counter, deque
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import gurobipy as gp
 from gurobipy import GRB
 
 from helper.sequence_setup import (
+    RELIABILITY_GNN_GRAPH_SCHEMA,
     add_reliability_graph_variables,
     normalize_reliability_graph_config,
     reliability_graph_config_dict,
@@ -25,6 +27,10 @@ from helper.stochastic_fjsp import (
     ensure_stochastic_parameters,
     stochastic_parameters,
     weibull_down_probability,
+)
+from helper.surrogate_constraint import (
+    configured_constraint_type,
+    target_column,
 )
 
 
@@ -37,6 +43,7 @@ FixedSchedule = _simulation.FixedSchedule
 normalize_simulation_config = _simulation.normalize_simulation_config
 simulate_fixed_schedule = _simulation.simulate_fixed_schedule
 simulation_config_dict = _simulation.simulation_config_dict
+TARGET_COLUMN = target_column(configured_constraint_type())
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
 SPLIT_CSV_FILENAMES = _instances.SPLIT_CSV_FILENAMES
@@ -45,36 +52,29 @@ selected_instance_splits = _instances.selected_instance_splits
 
 FIELDNAMES = [
     "instance_name",
+    "due_date_factor",
+    "training_due_date_scale",
+    "nominal_makespan_calibration",
+    "nominal_due_date_factor",
+    "training_due_date_delta",
+    "training_effective_due_date_factor",
+    "training_common_due_date",
+    "training_weibull_scale_factor",
     "candidate_generation_mode",
     "schedule_timing_method",
     "candidate_probability_band",
     "job_ids",
-    "nonlinear_job_ontime_probability_lbs",
-    "nonlinear_min_job_ontime_probability_lb",
-    "job_ontime_probabilities",
-    "job_probability_standard_errors",
-    "job_mean_completion_times",
-    "job_probability_label_method",
+    TARGET_COLUMN,
     "operation_job_indices",
-    "total_failure_delay",
     "gnn_feature_names",
     "gnn_node_features",
     "gnn_active_edges",
     "reliability_graph_parameters",
     "fix_ratio",
-    "sequence_fix_ratio",
     "fixed_operations",
-    "fixed_predecessor_edges",
     "optimization_run",
     "pool_solution_number",
     "pool_objective",
-    "effective_objective",
-    "operation_failure_delays",
-    "operation_failure_probabilities",
-    "operation_repair_durations",
-    "simulation_replications",
-    "simulation_mean_failures",
-    "simulation_parameters",
     "pool_selection_category",
     "solver_runtime_seconds",
 ]
@@ -114,6 +114,19 @@ DEFAULT_JOB_PROBABILITY_TARGET_RATIOS = {
     "high": 0.20,
 }
 
+
+def _label_distribution_parameters(fixed):
+    """Return the neutral four-bin label-selection center and half-width."""
+    center = float(fixed.get("label_distribution_center", 0.50))
+    half_width = float(fixed.get("label_distribution_half_width", 0.25))
+    if not 0.0 < center < 1.0:
+        raise ValueError("label_distribution_center must lie in (0, 1).")
+    if half_width <= 0.0 or center - half_width < 0.0 or center + half_width > 1.0:
+        raise ValueError(
+            "label_distribution_half_width must define valid bins in [0, 1]."
+        )
+    return center, half_width
+
 CANDIDATE_GENERATION_MODES = (
     "unconstrained",
     "nominal_ontime",
@@ -121,6 +134,67 @@ CANDIDATE_GENERATION_MODES = (
     "nonlinear",
 )
 DEFAULT_NOMINAL_RUN_INDEX_OFFSET = 1_000_000
+DEFAULT_INSTANCE_FAILURE_HANDLING = {
+    "summary_filename": "generation_summary.json",
+}
+_NOMINAL_MAKESPAN_CACHE = {}
+
+
+def _normalize_instance_failure_handling(config=None):
+    values = dict(DEFAULT_INSTANCE_FAILURE_HANDLING)
+    raw = dict(config or {})
+    unknown = set(raw) - set(values)
+    if unknown:
+        raise ValueError(
+            "Unknown instance_failure_handling settings: "
+            f"{sorted(unknown)}"
+        )
+    values.update(raw)
+    values["summary_filename"] = str(values["summary_filename"])
+    summary_path = Path(values["summary_filename"])
+    if (
+        summary_path.name != values["summary_filename"]
+        or summary_path.suffix.lower() != ".json"
+    ):
+        raise ValueError(
+            "instance_failure_handling.summary_filename must be a JSON "
+            "filename without directories."
+        )
+    return values
+
+
+def _utc_timestamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _write_generation_summary(path, summary):
+    """Atomically persist progress so interrupted cluster runs stay auditable."""
+    summary["updated_at_utc"] = _utc_timestamp()
+    split_values = list(summary["splits"].values())
+    successful = sum(
+        len(values["successful_instances"]) for values in split_values
+    )
+    skipped = sum(
+        len(values["skipped_instances"]) for values in split_values
+    )
+    summary["totals"] = {
+        "configured_instances": sum(
+            values["configured_count"] for values in split_values
+        ),
+        "processed_instances": successful + skipped,
+        "successful_instances": successful,
+        "skipped_instances": skipped,
+        "written_graphs": sum(
+            values["written_graphs"] for values in split_values
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
 
 
 def _compact(value):
@@ -182,7 +256,7 @@ def _sample_range(rng, raw, defaults):
     }
 
 
-def _sample_reliability(instance, rng, generation):
+def _sample_reliability(instance, rng, generation, run_index):
     ensure_stochastic_parameters(instance)
     instance.weibull_alpha = _sample_range(
         rng, generation.get("alpha_range"), instance.weibull_alpha
@@ -197,50 +271,178 @@ def _sample_reliability(instance, rng, generation):
         machine: 1.0 / rate
         for machine, rate in instance.repair_rate.items()
     }
+    scale_factors = generation.get("weibull_scale_factors")
+    if scale_factors is None:
+        scale_factor = 1.0
+    else:
+        values = [float(value) for value in scale_factors]
+        if not values or any(value <= 0.0 for value in values):
+            raise ValueError("weibull_scale_factors must be positive.")
+        scale_factor = values[int(run_index) % len(values)]
+        instance.weibull_alpha = {
+            machine: scale_factor * float(value)
+            for machine, value in instance.weibull_alpha.items()
+        }
+    instance.training_weibull_scale_factor = scale_factor
 
 
-def _random_topological_order(instance, rng):
-    operations = list(instance.real_operations)
-    predecessors = {
-        operation: set(instance.predecessors.get(operation, []))
-        for operation in operations
+def _sample_training_due_dates(instance, rng, generation, run_index):
+    """Vary due-date slack on the copied training instance only."""
+    adaptive = dict(generation.get("adaptive_due_dates") or {})
+    if bool(adaptive.get("enabled", False)):
+        if generation.get("due_date_scale_factors") is not None or generation.get(
+            "due_date_scale_range"
+        ) is not None:
+            raise ValueError(
+                "adaptive_due_dates cannot be combined with legacy due-date "
+                "scale factors."
+            )
+        offsets = [
+            float(value)
+            for value in adaptive.get(
+                "relative_makespan_offsets", [0.02, 0.05, 0.10, 0.20]
+            )
+        ]
+        if not offsets or any(value < 0.0 for value in offsets):
+            raise ValueError(
+                "adaptive_due_dates.relative_makespan_offsets must "
+                "contain nonnegative values."
+            )
+        lower_bound = _fjsp_processing_lower_bound(instance)
+        calibration = _nominal_makespan_calibration(instance, adaptive)
+        rotation = _sample_seed(
+            getattr(instance, "instance_name", "instance"),
+            0,
+            generation.get("random_seed", 42),
+            "adaptive_due_date_rotation",
+        ) % len(offsets)
+        offset_index = (
+            int(run_index)
+            + int(rotation)
+            + int(run_index) // len(offsets)
+        ) % len(offsets)
+        offset = offsets[offset_index]
+        effective_factor = (
+            (1.0 + offset) * calibration["makespan"] / lower_bound
+        )
+        common_due_date = float(math.ceil(
+            (1.0 + offset) * calibration["makespan"] - 1e-12
+        ))
+        instance.due_dates = {
+            job: common_due_date for job in instance.jobs
+        }
+        instance.training_due_date_scale = 1.0
+        instance.nominal_makespan_calibration = calibration["makespan"]
+        instance.nominal_due_date_factor = (
+            calibration["makespan"] / lower_bound
+        )
+        instance.training_due_date_delta = offset
+        instance.training_effective_due_date_factor = effective_factor
+        instance.training_common_due_date = common_due_date
+        instance.due_date_calibration_status = calibration["status"]
+        instance.due_date_calibration_gap = calibration["gap"]
+        instance.nominal_calibration_assignment = dict(
+            calibration.get("assignment") or {}
+        )
+        return effective_factor
+
+    factors = generation.get("due_date_scale_factors")
+    raw = generation.get("due_date_scale_range")
+    if factors is not None:
+        values = [float(value) for value in factors]
+        if not values or any(value <= 0.0 for value in values):
+            raise ValueError(
+                "due_date_scale_factors must contain positive values."
+            )
+        scale = values[int(run_index) % len(values)]
+    elif raw is None:
+        scale = 1.0
+    else:
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            raise ValueError("due_date_scale_range must contain [lower, upper].")
+        lower, upper = map(float, raw)
+        if lower <= 0.0 or lower > upper:
+            raise ValueError(
+                "due_date_scale_range must satisfy 0 < lower <= upper."
+            )
+        scale = rng.uniform(lower, upper)
+    instance.due_dates = {
+        job: scale * float(value)
+        for job, value in instance.due_dates.items()
     }
-    successors = {operation: [] for operation in operations}
-    for operation, required in predecessors.items():
-        for predecessor in required:
-            successors[predecessor].append(operation)
-    available = [
-        operation for operation in operations if not predecessors[operation]
-    ]
-    result = []
-    while available:
-        operation = available.pop(rng.randrange(len(available)))
-        result.append(operation)
-        for successor in successors[operation]:
-            predecessors[successor].discard(operation)
-            if not predecessors[successor]:
-                available.append(successor)
-    if len(result) != len(operations):
-        raise ValueError("Job precedence graph contains a cycle.")
-    return result
+    instance.training_due_date_scale = scale
+    return scale
 
 
-def _random_assignment_and_edges(instance, rng):
-    assignment = {
-        operation: rng.choice(instance.eligible_machines[operation])
+def _fjsp_processing_lower_bound(instance):
+    minimum_times = {
+        operation: min(
+            float(instance.processing_times[operation, machine])
+            for machine in instance.eligible_machines[operation]
+        )
         for operation in instance.real_operations
     }
-    by_machine = {
-        machine: [] for machine in range(instance.num_machines)
+    return max(
+        sum(minimum_times.values()) / float(instance.num_machines),
+        max(
+            sum(minimum_times[operation] for operation in operations)
+            for operations in instance.jobs.values()
+        ),
+    )
+
+
+def _nominal_makespan_calibration(instance, config):
+    """Return a cached feasible nominal makespan for adaptive due dates."""
+    signature = (
+        getattr(instance, "instance_name", None),
+        tuple(sorted(
+            (operation, machine, float(value))
+            for (operation, machine), value in instance.processing_times.items()
+            if operation in set(instance.real_operations)
+            and machine in instance.eligible_machines[operation]
+        )),
+    )
+    if signature in _NOMINAL_MAKESPAN_CACHE:
+        return dict(_NOMINAL_MAKESPAN_CACHE[signature])
+
+    model = gp.Model("adaptive_due_date_nominal_makespan")
+    model.Params.OutputFlag = int(config.get("output_flag", 0))
+    model.Params.TimeLimit = float(config.get("time_limit_seconds", 5.0))
+    model.Params.MIPGap = float(config.get("mip_gap", 0.01))
+    model.Params.Seed = int(config.get("seed", 42))
+    model, variables = _base.build_fjsp(
+        model,
+        instance,
+        include_makespan=True,
+        enforce_due_dates=False,
+        economic_objective=False,
+    )
+    model.optimize()
+    if model.SolCount == 0:
+        status = int(model.Status)
+        model.dispose()
+        raise RuntimeError(
+            "Nominal makespan calibration found no feasible schedule; "
+            f"Gurobi status={status}."
+        )
+    result = {
+        "makespan": float(variables["C_max"].X),
+        "status": int(model.Status),
+        "gap": float(model.MIPGap),
+        "runtime_seconds": float(model.Runtime),
+        "assignment": {
+            operation: max(
+                instance.eligible_machines[operation],
+                key=lambda machine: float(
+                    variables["Y"][operation, machine].X
+                ),
+            )
+            for operation in instance.real_operations
+        },
     }
-    for operation in _random_topological_order(instance, rng):
-        by_machine[assignment[operation]].append(operation)
-    edges = [
-        (source, target, machine)
-        for machine, operations in by_machine.items()
-        for source, target in zip(operations, operations[1:])
-    ]
-    return assignment, edges
+    model.dispose()
+    _NOMINAL_MAKESPAN_CACHE[signature] = dict(result)
+    return result
 
 
 def _fix_neighborhood(
@@ -249,9 +451,9 @@ def _fix_neighborhood(
     instance,
     rng,
     fix_ratio,
-    sequence_fix_ratio,
     *,
     use_incumbent=False,
+    reference_assignment=None,
 ):
     if use_incumbent:
         assignment = {
@@ -263,12 +465,16 @@ def _fix_neighborhood(
             )
             for operation in instance.real_operations
         }
-        direct_edges = [
-            edge for edge in variables["U_index"]
-            if float(variables["U"][edge].X) > 0.5
-        ]
+    elif reference_assignment:
+        assignment = {
+            operation: reference_assignment[operation]
+            for operation in instance.real_operations
+        }
     else:
-        assignment, direct_edges = _random_assignment_and_edges(instance, rng)
+        assignment = {
+            operation: rng.choice(instance.eligible_machines[operation])
+            for operation in instance.real_operations
+        }
     flexible = [
         operation for operation in instance.real_operations
         if len(instance.eligible_machines[operation]) > 1
@@ -287,37 +493,10 @@ def _fix_neighborhood(
             variables["Y"][operation, machine].lb = value
             variables["Y"][operation, machine].ub = value
 
-    candidate_edges = [
-        edge for edge in direct_edges if edge in variables["U"]
-    ]
-    edge_count = min(
-        len(candidate_edges),
-        max(1, round(len(candidate_edges) * sequence_fix_ratio))
-        if sequence_fix_ratio else 0,
-    )
-    fixed_edges = rng.sample(candidate_edges, edge_count) if edge_count else []
-    for edge in fixed_edges:
-        if use_incumbent:
-            source, target, machine = edge
-            order_index = (
-                (source, target, machine)
-                if source < target
-                else (target, source, machine)
-            )
-            order_value = 1.0 if source < target else 0.0
-            variables["X"][order_index].lb = order_value
-            variables["X"][order_index].ub = order_value
-        else:
-            variables["U"][edge].lb = 1.0
-            variables["U"][edge].ub = 1.0
     model.update()
     return {
         "fix_ratio": len(fixed_operations) / len(flexible) if flexible else 0.0,
-        "sequence_fix_ratio": (
-            len(fixed_edges) / len(candidate_edges) if candidate_edges else 0.0
-        ),
         "fixed_operations": len(fixed_operations),
-        "fixed_predecessor_edges": len(fixed_edges),
     }
 
 
@@ -348,14 +527,14 @@ def _build_candidate_model(
     model, variables = _base.build_fjsp(
         model,
         instance,
-        include_makespan=False,
+        include_makespan=True,
+        horizon_upper_bound=max(instance.due_dates.values()),
     )
     parameters = stochastic_parameters(instance)
     variables.update({
         "weibull_alpha": parameters["alpha"],
         "weibull_beta": parameters["beta"],
         "repair_rate": parameters["repair_rate"],
-        "machine_cost": parameters["cost"],
     })
     add_reliability_graph_variables(
         model, variables, instance, graph_config
@@ -376,14 +555,6 @@ def _build_candidate_model(
         )
         midpoints[operation] = midpoint
     variables["T"] = midpoints
-    assignment_cost = gp.quicksum(
-        parameters["cost"][machine]
-        * float(instance.processing_times[operation, machine])
-        * variables["Y"][operation, machine]
-        for operation, machine in variables["Y_index"]
-    )
-    model.setObjective(assignment_cost, GRB.MINIMIZE)
-    model.update()
     return model, variables
 
 
@@ -408,61 +579,6 @@ def _selected_machine(variables, operation, solution_number):
             variables["Y"][operation, machine], solution_number
         ),
     )
-
-
-def _earliest_start_times(
-    instance,
-    operations,
-    processing_times,
-    machine_edges,
-):
-    """Return the canonical left-shifted timing for a fixed graph."""
-    operation_set = set(operations)
-    predecessors = {
-        operation: {
-            predecessor
-            for predecessor in instance.predecessors.get(operation, [])
-            if predecessor in operation_set
-        }
-        for operation in operations
-    }
-    for source, target, _machine in machine_edges:
-        if source not in operation_set or target not in operation_set:
-            raise ValueError("Machine edge references an unknown operation.")
-        predecessors[target].add(source)
-    successors = {operation: set() for operation in operations}
-    for target, required in predecessors.items():
-        for source in required:
-            successors[source].add(target)
-
-    indegree = {
-        operation: len(predecessors[operation]) for operation in operations
-    }
-    available = deque(
-        operation for operation in operations if indegree[operation] == 0
-    )
-    starts, completions = {}, {}
-    while available:
-        operation = available.popleft()
-        starts[operation] = max(
-            (
-                completions[predecessor]
-                for predecessor in predecessors[operation]
-            ),
-            default=0.0,
-        )
-        completions[operation] = (
-            starts[operation] + float(processing_times[operation])
-        )
-        for successor in successors[operation]:
-            indegree[successor] -= 1
-            if indegree[successor] == 0:
-                available.append(successor)
-    if len(starts) != len(operations):
-        raise ValueError(
-            "Fixed job and machine predecessor graph contains a cycle."
-        )
-    return starts, completions
 
 
 def _candidate_from_solution(
@@ -504,29 +620,20 @@ def _candidate_from_solution(
         ])
         for operation in operations
     }
-    if candidate_generation_mode == "nonlinear_evaluated":
-        timing_method = "earliest_start"
-        planned_starts, completions = _earliest_start_times(
-            instance,
-            operations,
-            processing_times,
-            active_edges,
+    timing_method = "gurobi_solution"
+    completions = {
+        operation: _solution_value(
+            variables["C"][operation], solution_number
         )
-    else:
-        timing_method = "gurobi_solution"
-        completions = {
-            operation: _solution_value(
-                variables["C"][operation], solution_number
-            )
-            for operation in operations
-        }
-        planned_starts = {
-            operation: max(
-                0.0,
-                completions[operation] - processing_times[operation],
-            )
-            for operation in operations
-        }
+        for operation in operations
+    }
+    planned_starts = {
+        operation: max(
+            0.0,
+            completions[operation] - processing_times[operation],
+        )
+        for operation in operations
+    }
     horizon = max(float(value) for value in instance.due_dates.values())
     node_features = []
     for operation in operations:
@@ -619,6 +726,28 @@ def _candidate_from_solution(
         "simulation_schedule": simulation_schedule,
         "row": {
             "instance_name": "",
+            "due_date_factor": getattr(instance, "due_date_factor", ""),
+            "training_due_date_scale": getattr(
+                instance, "training_due_date_scale", 1.0
+            ),
+            "nominal_makespan_calibration": getattr(
+                instance, "nominal_makespan_calibration", ""
+            ),
+            "nominal_due_date_factor": getattr(
+                instance, "nominal_due_date_factor", ""
+            ),
+            "training_due_date_delta": getattr(
+                instance, "training_due_date_delta", ""
+            ),
+            "training_effective_due_date_factor": getattr(
+                instance, "training_effective_due_date_factor", ""
+            ),
+            "training_common_due_date": getattr(
+                instance, "training_common_due_date", ""
+            ),
+            "training_weibull_scale_factor": getattr(
+                instance, "training_weibull_scale_factor", 1.0
+            ),
             "candidate_generation_mode": candidate_generation_mode,
             "schedule_timing_method": timing_method,
             "candidate_probability_band": (
@@ -626,32 +755,14 @@ def _candidate_from_solution(
                 else candidate_probability_band
             ),
             "job_ids": _compact(job_ids),
-            "nonlinear_job_ontime_probability_lbs": (
-                _compact(nonlinear_probabilities)
-                if nonlinear_probabilities else ""
-            ),
-            "nonlinear_min_job_ontime_probability_lb": (
-                "" if nonlinear_min_probability is None
-                else nonlinear_min_probability
-            ),
-            "job_ontime_probabilities": "",
-            "job_probability_standard_errors": "",
-            "job_mean_completion_times": "",
-            "job_probability_label_method": _simulation.LABEL_METHOD,
+            TARGET_COLUMN: "",
             "operation_job_indices": _compact([
                 job_to_index[operation_job[operation]]
                 for operation in operations
             ]),
-            "total_failure_delay": 0.0,
             "gnn_feature_names": _compact(reliability_node_feature_names()),
             "gnn_node_features": _compact(node_features),
             "gnn_active_edges": _compact(graph_edges),
-            "operation_failure_delays": "",
-            "operation_failure_probabilities": "",
-            "operation_repair_durations": "",
-            "simulation_replications": 0,
-            "simulation_mean_failures": 0.0,
-            "simulation_parameters": "",
             "reliability_graph_parameters": _compact(
                 reliability_graph_config_dict(graph_config)
             ),
@@ -659,7 +770,6 @@ def _candidate_from_solution(
             "optimization_run": run_index,
             "pool_solution_number": solution_number,
             "pool_objective": pool_objective,
-            "effective_objective": pool_objective,
             "pool_selection_category": "",
             "solver_runtime_seconds": float(model.Runtime),
         },
@@ -696,6 +806,7 @@ def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
 
     all_operations = tuple(schedule.operations)
     job_probabilities = []
+    job_expected_repair_buffers = []
     for job in sorted(schedule.jobs):
         service_operations = (
             tuple(schedule.jobs[job])
@@ -709,6 +820,7 @@ def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
             ])
             for operation in service_operations
         )
+        job_expected_repair_buffers.append(expected_disruption)
         end_operation = schedule.job_end_operations[job]
         nominal_completion = (
             float(schedule.planned_starts[end_operation])
@@ -723,19 +835,24 @@ def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
         job_probabilities.append(probability)
 
     candidate["nonlinear_job_probabilities"] = job_probabilities
+    candidate["nonlinear_job_expected_repair_buffers"] = (
+        job_expected_repair_buffers
+    )
     candidate["nonlinear_min_job_probability"] = min(job_probabilities)
-    candidate["row"].update({
-        "nonlinear_job_ontime_probability_lbs": _compact(
-            job_probabilities
-        ),
-        "nonlinear_min_job_ontime_probability_lb": min(
-            job_probabilities
-        ),
+    candidate.update({
+        "job_probabilities": job_probabilities,
+        "min_job_probability": min(job_probabilities),
+        "service_risk": 1.0 - min(job_probabilities),
+        "effective_objective": candidate.get("pool_objective", 0.0),
     })
+    candidate.setdefault("row", {})[TARGET_COLUMN] = _compact(
+        job_expected_repair_buffers
+    )
     return candidate
 
 
 def _apply_simulation_result(candidate, result, simulation_config):
+    """Attach optional MC diagnostics without changing nonlinear labels."""
     probabilities = list(result.job_ontime_probabilities)
     total_delay = float(result.mean_total_repair_delay)
     candidate.update({
@@ -743,33 +860,7 @@ def _apply_simulation_result(candidate, result, simulation_config):
         "total_failure_delay": total_delay,
         "min_job_probability": min(probabilities),
         "service_risk": 1.0 - min(probabilities),
-        "effective_objective": candidate["pool_objective"] + total_delay,
-    })
-    candidate["row"].update({
-        "job_ontime_probabilities": _compact(probabilities),
-        "job_probability_standard_errors": _compact(
-            list(result.job_probability_standard_errors)
-        ),
-        "job_mean_completion_times": _compact(
-            list(result.job_mean_completion_times)
-        ),
-        "job_probability_label_method": result.label_method,
-        "total_failure_delay": total_delay,
-        "operation_failure_delays": _compact(
-            list(result.operation_mean_repair_delays)
-        ),
-        "operation_failure_probabilities": _compact(
-            list(result.operation_failure_probabilities)
-        ),
-        "operation_repair_durations": _compact(
-            list(result.operation_mean_repair_durations)
-        ),
-        "simulation_replications": int(result.replications),
-        "simulation_mean_failures": float(result.mean_failures),
-        "simulation_parameters": _compact(
-            simulation_config_dict(simulation_config)
-        ),
-        "effective_objective": candidate["pool_objective"] + total_delay,
+        "effective_objective": candidate["pool_objective"],
     })
     return candidate
 
@@ -884,6 +975,136 @@ def _quota_sequence(total, ratios, categories):
         counts[category] += 1
         result.append(category)
     return result
+
+
+def _adaptive_due_date_offsets(generation):
+    config = dict(generation.get("adaptive_due_dates") or {})
+    if not bool(config.get("enabled", False)):
+        return []
+    return [
+        float(value)
+        for value in config.get(
+            "relative_makespan_offsets", [0.02, 0.05, 0.10, 0.20]
+        )
+    ]
+
+
+def _adaptive_due_date_coverage_met(candidates, limit, generation):
+    offsets = _adaptive_due_date_offsets(generation)
+    if not offsets:
+        return True
+    quotas = _quota_counts(
+        int(limit),
+        {offset: 1.0 / len(offsets) for offset in offsets},
+        offsets,
+    )
+    structures = {
+        offset: {
+            candidate["structure"]
+            for candidate in candidates
+            if math.isclose(
+                float(candidate["row"]["training_due_date_delta"]),
+                offset,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        }
+        for offset in offsets
+    }
+    return all(
+        len(structures[offset]) >= quotas[offset] for offset in offsets
+    )
+
+
+def _select_adaptive_due_date_candidates(
+    candidates,
+    limit,
+    ratios,
+    service_level,
+    boundary_width,
+    generation,
+):
+    """Select an approximately equal number of graphs per adaptive offset."""
+    offsets = _adaptive_due_date_offsets(generation)
+    if not offsets:
+        return _select_candidates(
+            candidates,
+            limit,
+            ratios,
+            service_level,
+            boundary_width,
+            hybrid_selection=_hybrid_selection_for_split(
+                generation["fixed_y"]
+            ),
+        )
+    quotas = _quota_counts(
+        int(limit),
+        {offset: 1.0 / len(offsets) for offset in offsets},
+        offsets,
+    )
+    selected, used_ids, used_graph_signatures = [], set(), set()
+    for offset in offsets:
+        group = [
+            candidate for candidate in candidates
+            if math.isclose(
+                float(candidate["row"]["training_due_date_delta"]),
+                offset,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ]
+        ranked = _select_candidates(
+            group,
+            len(group),
+            ratios,
+            service_level,
+            boundary_width,
+            hybrid_selection=None,
+        )
+        for entry in ranked:
+            candidate = entry["candidate"]
+            graph_signature = (offset, candidate["structure"])
+            if (
+                candidate["candidate_id"] in used_ids
+                or graph_signature in used_graph_signatures
+            ):
+                continue
+            entry["category"] = (
+                f"adaptive_delta_{offset:.3f}:{entry['category']}"
+            )
+            selected.append(entry)
+            used_ids.add(candidate["candidate_id"])
+            used_graph_signatures.add(graph_signature)
+            if sum(
+                math.isclose(
+                    float(item["candidate"]["row"][
+                        "training_due_date_delta"
+                    ]),
+                    offset,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                for item in selected
+            ) >= quotas[offset]:
+                break
+    if len(selected) < int(limit):
+        remaining = [
+            candidate for candidate in candidates
+            if candidate["candidate_id"] not in used_ids
+            and (
+                float(candidate["row"]["training_due_date_delta"]),
+                candidate["structure"],
+            ) not in used_graph_signatures
+        ]
+        selected.extend(_select_candidates(
+            remaining,
+            int(limit) - len(selected),
+            ratios,
+            service_level,
+            boundary_width,
+            hybrid_selection=None,
+        ))
+    return selected[:int(limit)]
 
 
 def _probability_bin(value, service_level, boundary_width):
@@ -1347,31 +1568,15 @@ def _select_candidates(
     )
 
 
-def _neighborhood_combinations(fixed):
+def _configured_fix_ratios(fixed):
     raw_fix_ratios = fixed.get("fix_ratios")
     fix_ratios = (
         [_validate_ratio(value, "fix_ratio") for value in raw_fix_ratios]
         if raw_fix_ratios else [None]
     )
-    raw_sequence_ratios = fixed.get("sequence_fix_ratios")
-    sequence_ratios = (
-        [
-            _validate_ratio(value, "sequence_fix_ratio")
-            for value in raw_sequence_ratios
-        ]
-        if raw_sequence_ratios else [0.0]
-    )
     if len(fix_ratios) != len(set(fix_ratios)):
         raise ValueError("fixed_y.fix_ratios must not contain duplicates.")
-    if len(sequence_ratios) != len(set(sequence_ratios)):
-        raise ValueError(
-            "fixed_y.sequence_fix_ratios must not contain duplicates."
-        )
-    return [
-        (fix_ratio, sequence_ratio)
-        for fix_ratio in fix_ratios
-        for sequence_ratio in sequence_ratios
-    ]
+    return fix_ratios
 
 
 def _run_neighborhood(
@@ -1382,7 +1587,6 @@ def _run_neighborhood(
     graph_config,
     simulation_config,
     fix_ratio,
-    sequence_ratio,
     candidate_generation_mode="unconstrained",
     candidate_probability_band=None,
 ):
@@ -1393,7 +1597,10 @@ def _run_neighborhood(
         instance_name, run_index, generation["random_seed"]
     ))
     sample_instance = copy.deepcopy(instance)
-    _sample_reliability(sample_instance, rng, generation)
+    _sample_reliability(sample_instance, rng, generation, run_index)
+    _sample_training_due_dates(sample_instance, rng, generation, run_index)
+    fixed = generation["fixed_y"]
+    label_center, label_half_width = _label_distribution_parameters(fixed)
     service_probability_band = None
     if candidate_probability_band is not None:
         if candidate_generation_mode != "nonlinear":
@@ -1403,10 +1610,8 @@ def _run_neighborhood(
             )
         service_probability_band = _probability_band_limits(
             candidate_probability_band,
-            graph_config.service_level,
-            generation["fixed_y"].get(
-                "service_boundary_width", 0.10
-            ),
+            label_center,
+            label_half_width,
         )
     model, variables = _build_candidate_model(
         sample_instance,
@@ -1416,7 +1621,6 @@ def _run_neighborhood(
     )
     if candidate_generation_mode == "nominal_ontime":
         _add_nominal_ontime_constraints(model, variables, sample_instance)
-    fixed = generation["fixed_y"]
     model.Params.OutputFlag = int(fixed.get("output_flag", 0))
     model.Params.TimeLimit = float(fixed.get("time_limit_seconds", 5.0))
     model.Params.MIPGap = float(fixed.get("mip_gap", 0.2))
@@ -1437,7 +1641,6 @@ def _run_neighborhood(
             float(fixed.get("fix_ratio_max", 0.4)),
         )
     fix_ratio = _validate_ratio(fix_ratio, "fix_ratio")
-    sequence_ratio = _validate_ratio(sequence_ratio, "sequence_fix_ratio")
     reference_runtime = 0.0
     use_incumbent = candidate_generation_mode == "nonlinear"
     incumbent_starts = None
@@ -1458,9 +1661,17 @@ def _run_neighborhood(
         sample_instance,
         rng,
         fix_ratio,
-        sequence_ratio,
         use_incumbent=use_incumbent,
+        reference_assignment=getattr(
+            sample_instance, "nominal_calibration_assignment", None
+        ),
     )
+    calibration_assignment = getattr(
+        sample_instance, "nominal_calibration_assignment", None
+    )
+    if calibration_assignment and not use_incumbent:
+        for operation, machine in calibration_assignment.items():
+            variables["Y"][operation, machine].Start = 1.0
     if incumbent_starts is not None:
         for variable, value in incumbent_starts.items():
             variable.Start = value
@@ -1500,22 +1711,13 @@ def _run_neighborhood(
             continue
         local_structures.add(candidate["structure"])
         candidate["row"]["instance_name"] = instance_name
-        if candidate_generation_mode == "nonlinear_evaluated":
-            _evaluate_fixed_schedule_nonlinear(candidate, graph_config)
-        _simulate_candidate(
-            candidate,
-            instance_name,
-            simulation_config,
-            replications=simulation_config.pilot_replications,
-            purpose="pilot",
-        )
+        _evaluate_fixed_schedule_nonlinear(candidate, graph_config)
         candidates.append(candidate)
     print(
-        f"[Simulation:pilot] {instance_name} | run={run_index + 1} | "
+        f"[Nonlinear labels] {instance_name} | run={run_index + 1} | "
         f"mode={candidate_generation_mode} | "
         f"band={candidate_probability_band or 'service_feasible'} | "
-        f"candidates={len(candidates)} | "
-        f"replications={simulation_config.pilot_replications}",
+        f"candidates={len(candidates)}",
         flush=True,
     )
     model.dispose()
@@ -1538,6 +1740,71 @@ def _hybrid_selection_for_split(fixed, split=None):
         if split is not None and split not in apply_to:
             return None
     return config
+
+
+def _validate_final_job_probability_coverage(
+    fixed,
+    split,
+    probability_counts,
+):
+    """Require final MC job labels on both sides of the service boundary."""
+    hybrid = _hybrid_selection_for_split(fixed, split)
+    coverage = dict(
+        (hybrid or {}).get("final_job_probability_coverage") or {}
+    )
+    if not coverage:
+        return None
+    apply_to = {
+        str(value)
+        for value in coverage.get("apply_to_splits", ["training"])
+    }
+    unknown = apply_to - {"training", "valid", "test"}
+    if unknown:
+        raise ValueError(
+            "final_job_probability_coverage.apply_to_splits contains "
+            f"unknown splits: {sorted(unknown)}"
+        )
+    if split not in apply_to:
+        return None
+    minimum_ratios = dict(coverage.get("minimum_ratios") or {})
+    required_names = {"boundary_below", "boundary_above"}
+    unknown = set(minimum_ratios) - required_names
+    if unknown:
+        raise ValueError(
+            "final_job_probability_coverage.minimum_ratios contains "
+            f"unknown bins: {sorted(unknown)}"
+        )
+    total = sum(probability_counts.values())
+    if total <= 0:
+        raise RuntimeError(
+            f"No final job-probability labels were generated for {split}."
+        )
+    failures = []
+    observed = {}
+    for name in sorted(required_names):
+        minimum = _validate_ratio(
+            minimum_ratios.get(name, 0.0),
+            f"final_job_probability_coverage.minimum_ratios.{name}",
+        )
+        actual = probability_counts[name] / total
+        observed[name] = actual
+        if actual + 1e-12 < minimum:
+            failures.append(
+                f"{name}={actual:.3f} < required {minimum:.3f}"
+            )
+    if failures:
+        raise RuntimeError(
+            f"Final job-level boundary coverage failed for {split}: "
+            + "; ".join(failures)
+        )
+    return {
+        "labels": total,
+        "observed_ratios": observed,
+        "minimum_ratios": {
+            name: float(minimum_ratios.get(name, 0.0))
+            for name in sorted(required_names)
+        },
+    }
 
 
 def _mixed_candidate_generation_for_split(fixed, split=None):
@@ -1659,7 +1926,7 @@ def _collect_instance_candidates(
         candidate_generation_mode
     )
     fixed = generation["fixed_y"]
-    neighborhoods = _neighborhood_combinations(fixed)
+    fix_ratios = _configured_fix_ratios(fixed)
     pool_candidates = int(fixed.get("pool_candidates", 50))
     if pool_candidates <= 0:
         raise ValueError("fixed_y.pool_candidates must be positive.")
@@ -1667,7 +1934,7 @@ def _collect_instance_candidates(
     configured_minimum_runs = int(
         minimum_runs_override
         if minimum_runs_override is not None
-        else fixed.get("minimum_candidate_pool_runs", len(neighborhoods))
+        else fixed.get("minimum_candidate_pool_runs", len(fix_ratios))
     )
     if configured_minimum_runs <= 0:
         raise ValueError(
@@ -1676,7 +1943,7 @@ def _collect_instance_candidates(
     minimum_runs = (
         configured_minimum_runs
         if minimum_runs_override is not None
-        else max(len(neighborhoods), configured_minimum_runs)
+        else max(len(fix_ratios), configured_minimum_runs)
     )
     if maximum_runs_override is not None:
         maximum_runs = int(maximum_runs_override)
@@ -1700,6 +1967,18 @@ def _collect_instance_candidates(
             planned_runs * 3,
             minimum_runs + 2,
         )
+    adaptive_due_dates = dict(generation.get("adaptive_due_dates") or {})
+    if bool(adaptive_due_dates.get("enabled", False)):
+        adaptive_maximum_runs = int(adaptive_due_dates.get(
+            "maximum_candidate_pool_runs",
+            max(minimum_runs * 3, 12),
+        ))
+        if adaptive_maximum_runs < minimum_runs:
+            raise ValueError(
+                "adaptive_due_dates.maximum_candidate_pool_runs must be at "
+                f"least {minimum_runs}."
+            )
+        maximum_runs = max(maximum_runs, adaptive_maximum_runs)
     probability_band_sequence = None
     if probability_band_generation:
         probability_band_sequence = _quota_sequence(
@@ -1710,9 +1989,7 @@ def _collect_instance_candidates(
     candidates = []
     for run_offset in range(maximum_runs):
         run_index = int(start_run) + run_offset
-        fix_ratio, sequence_ratio = neighborhoods[
-            run_offset % len(neighborhoods)
-        ]
+        fix_ratio = fix_ratios[run_offset % len(fix_ratios)]
         candidates.extend(_run_neighborhood(
             instance,
             instance_name,
@@ -1721,7 +1998,6 @@ def _collect_instance_candidates(
             graph_config,
             simulation_config,
             fix_ratio,
-            sequence_ratio,
             candidate_generation_mode,
             (
                 probability_band_sequence[run_offset]
@@ -1732,15 +2008,19 @@ def _collect_instance_candidates(
             progress(
                 run_index,
                 fix_ratio,
-                sequence_ratio,
                 len(candidates),
             )
-        if run_offset + 1 >= minimum_runs and len(candidates) >= minimum_count:
+        if (
+            run_offset + 1 >= minimum_runs
+            and len(candidates) >= minimum_count
+            and _adaptive_due_date_coverage_met(
+                candidates, minimum_count, generation
+            )
+        ):
             if not hybrid_selection or _hybrid_boundary_targets_met(
                 candidates,
                 minimum_count,
-                graph_config.service_level,
-                fixed.get("service_boundary_width", 0.10),
+                *_label_distribution_parameters(fixed),
                 hybrid_selection,
             ):
                 break
@@ -1852,14 +2132,22 @@ def _collect_and_select_instance_candidates(
             candidate_generation_mode=candidate_generation_mode,
             probability_band_generation=probability_band_generation,
         )
-        selected = _select_candidates(
-            candidates,
-            count,
-            fixed.get("pool_selection_ratios"),
-            graph_config.service_level,
-            fixed.get("service_boundary_width", 0.10),
-            hybrid_selection=hybrid_selection,
-        )
+        if _adaptive_due_date_offsets(generation):
+            selected = _select_adaptive_due_date_candidates(
+                candidates,
+                count,
+                fixed.get("pool_selection_ratios"),
+                *_label_distribution_parameters(fixed),
+                generation,
+            )
+        else:
+            selected = _select_candidates(
+                candidates,
+                count,
+                fixed.get("pool_selection_ratios"),
+                *_label_distribution_parameters(fixed),
+                hybrid_selection=hybrid_selection,
+            )
         return candidates, selected
 
     nominal_target = (
@@ -1914,8 +2202,7 @@ def _collect_and_select_instance_candidates(
         nominal,
         count,
         fixed.get("pool_selection_ratios"),
-        graph_config.service_level,
-        fixed.get("service_boundary_width", 0.10),
+        *_label_distribution_parameters(fixed),
         hybrid_selection,
         mixed_generation["nominal_selected_fraction"],
     )
@@ -1926,7 +2213,9 @@ def generate_from_config(generation):
     """Generate current-schema GNN graphs from fixed optimization neighborhoods."""
     generation = dict(generation)
     if generation.get("method") != "fix_and_optimize":
-        raise ValueError("Fix-and-optimize generation requires method='fix_and_optimize'.")
+        raise ValueError(
+            "Fix-and-optimize generation requires method='fix_and_optimize'."
+        )
     graph_config = normalize_reliability_graph_config(
         generation.get("reliability_graph")
     )
@@ -1937,103 +2226,194 @@ def generate_from_config(generation):
     if samples_per_instance <= 0:
         raise ValueError("samples_per_instance must be positive.")
     fixed = dict(generation.get("fixed_y") or {})
-    _neighborhood_combinations(fixed)
+    _configured_fix_ratios(fixed)
+    failure_handling = _normalize_instance_failure_handling(
+        generation.get("instance_failure_handling")
+    )
     generation["fixed_y"] = fixed
     generation["random_seed"] = int(generation.get("random_seed", 42))
     output_root = Path(generation["output_directory"])
     if not output_root.is_absolute():
         output_root = ROOT_DIR / output_root
+    output_root.mkdir(parents=True, exist_ok=True)
     splits = selected_instance_splits(
         generation["instance_splits"], generation.get("generate_splits")
     )
-    for split, instance_names in splits.items():
-        output_path = (
-            output_root / SPLIT_DIRECTORIES[split]
-            / SPLIT_CSV_FILENAMES[split]
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        written = 0
-        with output_path.open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=FIELDNAMES)
-            writer.writeheader()
+    summary_path = output_root / failure_handling["summary_filename"]
+    summary = {
+        "schema_version": 6,
+        "status": "running",
+        "started_at_utc": _utc_timestamp(),
+        "completed_at_utc": None,
+        "output_directory": str(output_root),
+        "samples_per_instance": samples_per_instance,
+        "training_due_date_scale_factors": generation.get(
+            "due_date_scale_factors", [1.0]
+        ),
+        "adaptive_due_dates": dict(generation.get("adaptive_due_dates") or {}),
+        "training_weibull_scale_factors": generation.get(
+            "weibull_scale_factors", [1.0]
+        ),
+        "label": {
+            "target_column": TARGET_COLUMN,
+            "label_method": "weibull_expected_repair_buffer_v1",
+            "source": "fixed_schedule_nonlinear_weibull_repair_equation",
+        },
+        "graph": {
+            "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
+            "include_machine_predecessor_edges": True,
+            "machine_predecessor_edge_scope": "direct",
+            "include_job_precedence_edges": True,
+        },
+        "failure_handling": dict(failure_handling),
+        "splits": {
+            split: {
+                "configured_count": len(instance_names),
+                "configured_instances": list(instance_names),
+                "successful_instances": [],
+                "skipped_instances": [],
+                "written_graphs": 0,
+            }
+            for split, instance_names in splits.items()
+        },
+    }
+    _write_generation_summary(summary_path, summary)
+
+    try:
+        for split, instance_names in splits.items():
+            output_path = (
+                output_root / SPLIT_DIRECTORIES[split]
+                / SPLIT_CSV_FILENAMES[split]
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            split_summary = summary["splits"][split]
             split_probability_counts = Counter()
-            for instance_name in instance_names:
-                instance = load_generated_instance(instance_name)
-                def report(run_index, fix_ratio, sequence_ratio, candidate_count):
+            with output_path.open("w", newline="", encoding="utf-8") as file:
+                writer = csv.DictWriter(file, fieldnames=FIELDNAMES)
+                writer.writeheader()
+                file.flush()
+                for instance_name in instance_names:
+                    def report(run_index, fix_ratio, candidate_count):
+                        print(
+                            f"[Fix-and-optimize] {split} | "
+                            f"{instance_name} | run={run_index + 1} | "
+                            f"graphs={candidate_count} candidates | "
+                            f"fix_ratio="
+                            f"{fix_ratio if fix_ratio is not None else 'random'}",
+                            flush=True,
+                        )
+
+                    try:
+                        instance = load_generated_instance(instance_name)
+                        candidates, selected = (
+                            _collect_and_select_instance_candidates(
+                                instance,
+                                instance_name,
+                                generation,
+                                graph_config,
+                                simulation_config,
+                                samples_per_instance,
+                                split=split,
+                                progress=report,
+                            )
+                        )
+                        if len(selected) < samples_per_instance:
+                            raise RuntimeError(
+                                f"Only {len(selected)}/"
+                                f"{samples_per_instance} structurally "
+                                "unique candidate graphs selected for "
+                                f"{instance_name} from "
+                                f"{len(candidates)} candidates."
+                            )
+                        rows = []
+                        instance_probability_counts = Counter()
+                        for entry in selected:
+                            candidate = entry["candidate"]
+                            row = candidate["row"]
+                            row["pool_selection_category"] = entry["category"]
+                            rows.append(row)
+                            instance_probability_counts.update(
+                                _probability_bin_counts(
+                                    candidate["job_probabilities"],
+                                    *_label_distribution_parameters(fixed),
+                                )
+                            )
+                    except Exception as error:
+                        split_summary["skipped_instances"].append({
+                            "instance_name": instance_name,
+                            "error_type": type(error).__name__,
+                            "message": str(error),
+                        })
+                        _write_generation_summary(summary_path, summary)
+                        print(
+                            f"[Fix-and-optimize:skip] {split} | "
+                            f"{instance_name} | {type(error).__name__}: "
+                            f"{error}",
+                            flush=True,
+                        )
+                        continue
+
+                    writer.writerows(rows)
+                    file.flush()
+                    split_probability_counts.update(
+                        instance_probability_counts
+                    )
+                    split_summary["written_graphs"] += len(rows)
+                    split_summary["successful_instances"].append({
+                        "instance_name": instance_name,
+                        "candidate_count": len(candidates),
+                        "written_graphs": len(rows),
+                        "job_probability_distribution": dict(
+                            instance_probability_counts
+                        ),
+                    })
+                    _write_generation_summary(summary_path, summary)
                     print(
                         f"[Fix-and-optimize] {split} | {instance_name} | "
-                        f"run={run_index + 1} | graphs="
-                        f"{candidate_count} candidates | fix_ratio="
-                        f"{fix_ratio if fix_ratio is not None else 'random'} | "
-                        f"sequence_fix_ratio={sequence_ratio}",
+                        f"selected={len(rows)}/{len(candidates)} candidates",
                         flush=True,
                     )
-                candidates, selected = _collect_and_select_instance_candidates(
-                    instance,
-                    instance_name,
-                    generation,
-                    graph_config,
-                    simulation_config,
-                    samples_per_instance,
-                    split=split,
-                    progress=report,
-                )
-                if len(selected) < samples_per_instance:
-                    raise RuntimeError(
-                        f"Only {len(selected)}/{samples_per_instance} "
-                        f"structurally unique candidate graphs selected for "
-                        f"{instance_name} from {len(candidates)} candidates."
+                    print(
+                        f"[Job-label distribution] {split} | "
+                        f"{instance_name} | "
+                        f"{_distribution_text(instance_probability_counts)}",
+                        flush=True,
                     )
-                rows = []
-                instance_probability_counts = Counter()
-                print(
-                    f"[Simulation:labels] {split} | {instance_name} | "
-                    f"graphs={len(selected)} | "
-                    f"replications={simulation_config.label_replications}",
-                    flush=True,
-                )
-                for entry in selected:
-                    candidate = _simulate_candidate(
-                        entry["candidate"],
-                        instance_name,
-                        simulation_config,
-                        replications=simulation_config.label_replications,
-                        purpose="label",
-                    )
-                    row = candidate["row"]
-                    row["pool_selection_category"] = entry["category"]
-                    rows.append(row)
-                    instance_probability_counts.update(
-                        _probability_bin_counts(
-                            candidate["job_probabilities"],
-                            graph_config.service_level,
-                            fixed.get("service_boundary_width", 0.10),
-                        )
-                    )
-                writer.writerows(rows)
-                file.flush()
-                written += len(rows)
-                split_probability_counts.update(instance_probability_counts)
-                print(
-                    f"[Fix-and-optimize] {split} | {instance_name} | "
-                    f"selected={len(rows)}/{len(candidates)} candidates",
-                    flush=True,
-                )
-                print(
-                    f"[Job-label distribution] {split} | {instance_name} | "
-                    f"{_distribution_text(instance_probability_counts)}",
-                    flush=True,
-                )
+
+            print(
+                f"[Fix-and-optimize] finished {split}: "
+                f"{split_summary['written_graphs']} graphs, "
+                f"{len(split_summary['skipped_instances'])} skipped -> "
+                f"{output_path}",
+                flush=True,
+            )
+            coverage = _validate_final_job_probability_coverage(
+                fixed, split, split_probability_counts
+            )
+            split_summary["final_job_probability_coverage"] = coverage
+            _write_generation_summary(summary_path, summary)
+            print(
+                f"[Job-label distribution] finished {split} | "
+                f"{_distribution_text(split_probability_counts)}",
+                flush=True,
+            )
+        summary["status"] = "completed"
+        summary["completed_at_utc"] = _utc_timestamp()
+        _write_generation_summary(summary_path, summary)
         print(
-            f"[Fix-and-optimize] finished {split}: {written} graphs -> "
-            f"{output_path}",
+            f"[Fix-and-optimize] generation summary -> {summary_path}",
             flush=True,
         )
-        print(
-            f"[Job-label distribution] finished {split} | "
-            f"{_distribution_text(split_probability_counts)}",
-            flush=True,
-        )
+        return summary
+    except Exception as error:
+        summary["status"] = "failed"
+        summary["completed_at_utc"] = _utc_timestamp()
+        summary["fatal_error"] = {
+            "error_type": type(error).__name__,
+            "message": str(error),
+        }
+        _write_generation_summary(summary_path, summary)
+        raise
 
 
 def generate_rows_for_instance(
@@ -2042,6 +2422,7 @@ def generate_rows_for_instance(
     *,
     count,
     start_run=0,
+    include_diagnostics=False,
 ):
     """Small in-memory generator used by smoke tests and numerical studies."""
     generation = dict(generation)
@@ -2070,14 +2451,16 @@ def generate_rows_for_instance(
         )
     rows = []
     for entry in selected:
-        candidate = _simulate_candidate(
-            entry["candidate"],
-            instance_name,
-            simulation_config,
-            replications=simulation_config.label_replications,
-            purpose="label",
-        )
+        candidate = entry["candidate"]
         row = candidate["row"]
+        if include_diagnostics:
+            row = dict(row)
+            row["_nonlinear_job_probabilities"] = _compact(
+                candidate.get("nonlinear_job_probabilities", [])
+            )
+            row["_label_method"] = (
+                "weibull_expected_repair_buffer_v1"
+            )
         row["pool_selection_category"] = entry["category"]
         rows.append(row)
     return rows

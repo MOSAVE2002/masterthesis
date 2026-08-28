@@ -30,7 +30,10 @@ if str(ROOT_DIR) not in sys.path:
 
 _instances = importlib.import_module("01_generator.instance_generator")
 _simulation = importlib.import_module("05_Simulation.preempt_resume")
-from helper.stochastic_fjsp import stochastic_parameters
+from helper.stochastic_fjsp import (
+    stochastic_parameters,
+    weibull_down_probability,
+)
 
 
 CONFIG_PATH = ROOT_DIR / "config.json"
@@ -48,10 +51,9 @@ _JOB_PATTERN = re.compile(
     r"^job (?P<job>-?\d+): "
     r"completion=(?P<completion>[^,]+), "
     r"due_date=(?P<due_date>[^,]+), "
-    r"realized_alpha=(?P<probability>[^,]+), "
-    r"target_alpha=(?P<target>[^,]+), "
-    r"alpha_slack=(?P<slack>[^,]+), "
-    r"satisfied=(?P<satisfied>yes|no)$"
+    r"expected_repair_buffer=(?P<buffer>[^,]+), "
+    r"protected_completion=(?P<protected>[^,]+), "
+    r"robust_slack=(?P<slack>[^,]+)$"
 )
 _OPERATION_PATTERN = re.compile(
     r"^op (?P<operation>-?\d+): "
@@ -104,6 +106,8 @@ def _field(lines, label, default=""):
 
 
 def _optional_float(value):
+    if value is None:
+        return None
     value = str(value).strip()
     return None if value == "" else float(value)
 
@@ -156,10 +160,9 @@ def parse_solution(solution_path):
             jobs[job] = {
                 "nominal_completion": float(values["completion"]),
                 "due_date_from_solution": float(values["due_date"]),
-                "internal_probability": float(values["probability"]),
-                "target_from_solution": float(values["target"]),
-                "internal_slack": float(values["slack"]),
-                "internal_satisfied": values["satisfied"] == "yes",
+                "internal_repair_buffer": float(values["buffer"]),
+                "protected_completion": float(values["protected"]),
+                "robust_slack": float(values["slack"]),
             }
             continue
         operation_match = _OPERATION_PATTERN.match(line)
@@ -187,6 +190,10 @@ def parse_solution(solution_path):
         "status": _field(lines, "Status"),
         "solution_count": int(_field(lines, "Solution count", "0")),
         "objective": _optional_float(_field(lines, "Objective")),
+        "makespan": _optional_float(_field(lines, "Makespan")),
+        "processing_cost": _optional_float(_field(lines, "Processing cost")),
+        "operating_cost": _optional_float(_field(lines, "Operating cost")),
+        "total_cost": _optional_float(_field(lines, "Total cost")),
         "best_bound": _optional_float(_field(lines, "Best bound")),
         "mip_gap": _optional_float(_field(lines, "MIP gap")),
         "runtime_seconds": _optional_float(_field(lines, "Runtime [s]")),
@@ -196,8 +203,8 @@ def parse_solution(solution_path):
         "optimizer_wall_seconds": _optional_float(
             _field(lines, "Optimizer wall runtime [s]")
         ),
-        "probability_label_method": _field(
-            lines, "Probability label method"
+        "repair_buffer_label_method": _field(
+            lines, "Repair buffer label method"
         ),
         "jobs": jobs,
         "operations": operations,
@@ -324,6 +331,37 @@ def _evaluation_seed(base_seed, instance_name):
     return int.from_bytes(digest[:4], byteorder="big", signed=False)
 
 
+def _reference_expected_repair_buffers(schedule, service_scope="job"):
+    """Recompute the nonlinear buffer for a fixed optimized schedule."""
+    operation_buffers = {}
+    for operation in schedule.operations:
+        machine = schedule.selected_machines[operation]
+        midpoint = (
+            float(schedule.planned_starts[operation])
+            + 0.5 * float(schedule.processing_times[operation])
+        )
+        probability = weibull_down_probability(
+            midpoint,
+            schedule.weibull_scale[machine],
+            schedule.weibull_shape[machine],
+            schedule.repair_rate[machine],
+            order=64,
+        )
+        operation_buffers[operation] = (
+            probability / float(schedule.repair_rate[machine])
+        )
+    return {
+        job: sum(
+            operation_buffers[operation]
+            for operation in (
+                schedule.jobs[job]
+                if service_scope == "job" else schedule.operations
+            )
+        )
+        for job in schedule.jobs
+    }
+
+
 def evaluate_solution(
     solution_path,
     *,
@@ -339,9 +377,6 @@ def evaluate_solution(
     )
     tier = _evaluation_tier(instance_path, Path(instances_root))
     relative_solution_path = _portable_path(parsed["solution_path"])
-    service_levels = [
-        float(instance.service_levels[job]) for job in sorted(instance.jobs)
-    ]
     joint_confidence = bonferroni_confidence(
         confidence, len(instance.jobs)
     )
@@ -355,23 +390,24 @@ def evaluate_solution(
             "status": parsed["status"],
             "postsolve_evaluation_status": "not_evaluated_no_incumbent",
             "objective": parsed["objective"],
+            "processing_cost": parsed["processing_cost"],
+            "operating_cost": parsed["operating_cost"],
+            "total_cost": parsed["total_cost"],
             "best_bound": parsed["best_bound"],
             "mip_gap": parsed["mip_gap"],
             "runtime_seconds": parsed["runtime_seconds"],
             "model_build_seconds": parsed["model_build_seconds"],
             "optimizer_wall_seconds": parsed["optimizer_wall_seconds"],
             "number_of_jobs": len(instance.jobs),
-            "minimum_target_service_level": min(service_levels),
-            "maximum_target_service_level": max(service_levels),
-            "minimum_internal_probability": None,
-            "internal_all_jobs_feasible": None,
+            "due_date_factor": getattr(instance, "due_date_factor", None),
+            "nominal_makespan": parsed["makespan"],
+            "maximum_internal_repair_buffer": None,
+            "repair_buffer_mae": None,
+            "repair_buffer_rmse": None,
+            "repair_buffer_mean_error": None,
             "minimum_mc_ontime_probability": None,
             "minimum_wilson_lower_bound": None,
             "minimum_bonferroni_wilson_lower_bound": None,
-            "mc_all_jobs_point_feasible": None,
-            "wilson_all_jobs_feasible": None,
-            "bonferroni_wilson_all_jobs_feasible": None,
-            "maximum_service_shortfall": None,
             "simulation_replications": 0,
             "simulation_seed": None,
             "simulation_mean_failures": None,
@@ -383,6 +419,7 @@ def evaluate_solution(
             f"Incumbent has no per-job values in {parsed['solution_path']}."
         )
     schedule = _fixed_schedule(parsed, instance)
+    reference_buffers = _reference_expected_repair_buffers(schedule)
     seed = _evaluation_seed(base_seed, parsed["instance_name"])
     result = simulate_fixed_schedule(
         schedule,
@@ -397,7 +434,6 @@ def evaluate_solution(
             raise ValueError(
                 f"Job {job!r} is missing in {parsed['solution_path']}."
             )
-        target = float(instance.service_levels[job])
         probability = float(result.job_ontime_probabilities[index])
         successes = int(round(probability * result.replications))
         lower_bound = wilson_lower_bound(
@@ -418,14 +454,19 @@ def evaluate_solution(
             "status": parsed["status"],
             "postsolve_evaluation_status": "evaluated",
             "job_id": job,
-            "target_service_level": target,
+            "due_date_factor": getattr(instance, "due_date_factor", None),
             "nominal_completion": internal["nominal_completion"],
             "due_date": float(instance.due_dates[job]),
-            "internal_probability": internal["internal_probability"],
-            "internal_probability_method": parsed[
-                "probability_label_method"
+            "internal_expected_repair_buffer": internal[
+                "internal_repair_buffer"
             ],
-            "internal_feasible": internal["internal_probability"] >= target,
+            "reference_expected_repair_buffer": reference_buffers[job],
+            "repair_buffer_error": (
+                internal["internal_repair_buffer"] - reference_buffers[job]
+            ),
+            "protected_completion": internal["protected_completion"],
+            "robust_slack": internal["robust_slack"],
+            "repair_buffer_method": parsed["repair_buffer_label_method"],
             "mc_ontime_probability": probability,
             "mc_standard_error": float(
                 result.job_probability_standard_errors[index]
@@ -434,25 +475,23 @@ def evaluate_solution(
             "wilson_confidence": float(confidence),
             "bonferroni_wilson_lower_bound": bonferroni_lower_bound,
             "bonferroni_wilson_confidence": joint_confidence,
-            "mc_point_feasible": probability >= target,
-            "wilson_feasible": lower_bound >= target,
-            "bonferroni_wilson_feasible": (
-                bonferroni_lower_bound >= target
-            ),
-            "service_shortfall": max(0.0, target - probability),
             "mc_mean_completion": float(
                 result.job_mean_completion_times[index]
             ),
             "simulation_replications": int(result.replications),
             "simulation_seed": seed,
             "objective": parsed["objective"],
+            "processing_cost": parsed["processing_cost"],
+            "operating_cost": parsed["operating_cost"],
+            "total_cost": parsed["total_cost"],
+            "nominal_makespan": parsed["makespan"],
             "runtime_seconds": parsed["runtime_seconds"],
             "mip_gap": parsed["mip_gap"],
             "solution_file": relative_solution_path,
         })
 
-    minimum_internal = min(
-        row["internal_probability"] for row in job_rows
+    maximum_internal_buffer = max(
+        row["internal_expected_repair_buffer"] for row in job_rows
     )
     minimum_mc = min(row["mc_ontime_probability"] for row in job_rows)
     minimum_wilson = min(row["wilson_lower_bound"] for row in job_rows)
@@ -468,34 +507,32 @@ def evaluate_solution(
         "status": parsed["status"],
         "postsolve_evaluation_status": "evaluated",
         "objective": parsed["objective"],
+        "processing_cost": parsed["processing_cost"],
+        "operating_cost": parsed["operating_cost"],
+        "total_cost": parsed["total_cost"],
         "best_bound": parsed["best_bound"],
         "mip_gap": parsed["mip_gap"],
         "runtime_seconds": parsed["runtime_seconds"],
         "model_build_seconds": parsed["model_build_seconds"],
         "optimizer_wall_seconds": parsed["optimizer_wall_seconds"],
         "number_of_jobs": len(job_rows),
-        "minimum_target_service_level": min(service_levels),
-        "maximum_target_service_level": max(service_levels),
-        "minimum_internal_probability": minimum_internal,
-        "internal_all_jobs_feasible": all(
-            row["internal_feasible"] for row in job_rows
+        "due_date_factor": getattr(instance, "due_date_factor", None),
+        "nominal_makespan": parsed["makespan"],
+        "maximum_internal_repair_buffer": maximum_internal_buffer,
+        "repair_buffer_mae": sum(
+            abs(row["repair_buffer_error"]) for row in job_rows
+        ) / len(job_rows),
+        "repair_buffer_rmse": math.sqrt(
+            sum(row["repair_buffer_error"] ** 2 for row in job_rows)
+            / len(job_rows)
         ),
+        "repair_buffer_mean_error": sum(
+            row["repair_buffer_error"] for row in job_rows
+        ) / len(job_rows),
         "minimum_mc_ontime_probability": minimum_mc,
         "minimum_wilson_lower_bound": minimum_wilson,
         "minimum_bonferroni_wilson_lower_bound": (
             minimum_bonferroni_wilson
-        ),
-        "mc_all_jobs_point_feasible": all(
-            row["mc_point_feasible"] for row in job_rows
-        ),
-        "wilson_all_jobs_feasible": all(
-            row["wilson_feasible"] for row in job_rows
-        ),
-        "bonferroni_wilson_all_jobs_feasible": all(
-            row["bonferroni_wilson_feasible"] for row in job_rows
-        ),
-        "maximum_service_shortfall": max(
-            row["service_shortfall"] for row in job_rows
         ),
         "simulation_replications": int(result.replications),
         "simulation_seed": seed,
@@ -524,24 +561,21 @@ _PRESENTATION_COLUMNS = (
     ("evaluation_tier", "Tier"),
     ("model", "Modell"),
     ("status", "Status"),
-    ("objective", "Zielfunktionswert"),
+    ("due_date_factor", "Due-Date-Faktor"),
+    ("total_cost", "Gesamtkosten"),
+    ("processing_cost", "Bearbeitungskosten"),
+    ("operating_cost", "Betriebskosten"),
+    ("nominal_makespan", "Makespan"),
     ("runtime_seconds", "Laufzeit [s]"),
     ("mip_gap", "MIP-Gap"),
-    ("minimum_target_service_level", "Serviceziel"),
-    ("minimum_internal_probability", "min. intern"),
+    ("maximum_internal_repair_buffer", "max. Reparaturpuffer"),
+    ("repair_buffer_mae", "Puffer-MAE"),
     ("minimum_mc_ontime_probability", "min. MC"),
     ("minimum_wilson_lower_bound", "Wilson-LB"),
     (
         "minimum_bonferroni_wilson_lower_bound",
         "Bonf.-Wilson-LB",
     ),
-    ("mc_all_jobs_point_feasible", "MC zulässig"),
-    ("wilson_all_jobs_feasible", "Wilson zulässig"),
-    (
-        "bonferroni_wilson_all_jobs_feasible",
-        "Bonf. zulässig",
-    ),
-    ("maximum_service_shortfall", "max. Shortfall"),
 )
 
 
@@ -553,6 +587,7 @@ def _presentation_value(key, value):
     if key == "evaluation_tier":
         return {
             "in_distribution": "ID",
+            "benchmark": "Benchmark",
             "extrapolation": "Extrap.",
             "stress": "Stress",
         }.get(str(value), str(value))
@@ -571,12 +606,16 @@ def _presentation_value(key, value):
         return f"{float(value):.3f}"
     if key in {
         "objective",
-        "minimum_target_service_level",
-        "minimum_internal_probability",
+        "due_date_factor",
+        "total_cost",
+        "processing_cost",
+        "operating_cost",
+        "nominal_makespan",
+        "maximum_internal_repair_buffer",
+        "repair_buffer_mae",
         "minimum_mc_ontime_probability",
         "minimum_wilson_lower_bound",
         "minimum_bonferroni_wilson_lower_bound",
-        "maximum_service_shortfall",
     }:
         return f"{float(value):.4f}"
     return str(value)
@@ -773,10 +812,10 @@ def run_evaluation(
     if not 0.5 < confidence < 1.0:
         raise ValueError("--confidence must lie strictly between 0.5 and 1.")
 
-    simulation_config = normalize_simulation_config(
-        config["training"]["data_generation"].get("simulation")
-    )
     evaluation_config = config.get("evaluation", {})
+    simulation_config = normalize_simulation_config(
+        evaluation_config.get("simulation")
+    )
     dataset_diagnostics = dict(
         evaluation_config.get("dataset_diagnostics", {})
         if dataset_diagnostics is None else dataset_diagnostics
@@ -809,8 +848,6 @@ def run_evaluation(
                 f"model={schedule_row['model']} | "
                 "min_mc="
                 f"{schedule_row['minimum_mc_ontime_probability']:.4f} | "
-                "point_feasible="
-                f"{schedule_row['mc_all_jobs_point_feasible']} | "
                 "min_wilson="
                 f"{schedule_row['minimum_wilson_lower_bound']:.4f} | "
                 "min_wilson_bonferroni="
@@ -848,9 +885,6 @@ def run_evaluation(
         )
         data_config = config["training"]["data_generation"]
         fixed = data_config["fixed_y"]
-        graph_config = config["constraint"]["weibull"][
-            "reliability_graph"
-        ]
         dataset_result = dataset_module.run_dataset_evaluation(
             dataset_directory=dataset_diagnostics.get(
                 "dataset_directory", data_config["output_directory"]
@@ -858,9 +892,12 @@ def run_evaluation(
             output_directory=dataset_diagnostics.get(
                 "output_directory", output_directory
             ),
-            expected_service_level=graph_config["service_level"],
+            expected_service_level=fixed.get(
+                "label_distribution_center", 0.50
+            ),
             boundary_width=dataset_diagnostics.get(
-                "boundary_width", fixed["service_boundary_width"]
+                "boundary_width",
+                fixed.get("label_distribution_half_width", 0.25),
             ),
             histogram_bins=dataset_diagnostics.get("histogram_bins", 20),
         )
@@ -881,7 +918,7 @@ def run_evaluation(
             boundary_width=prediction_diagnostics.get(
                 "boundary_width",
                 config["training"]["data_generation"]["fixed_y"][
-                    "service_boundary_width"
+                    "label_distribution_half_width"
                 ],
             ),
             calibration_bins=prediction_diagnostics.get(
@@ -952,6 +989,7 @@ def evaluate_from_config(config=None):
         "replications",
         "random_seed",
         "wilson_confidence",
+        "simulation",
         "dataset_diagnostics",
         "prediction_diagnostics",
     }

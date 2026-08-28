@@ -1,0 +1,66 @@
+Status: OPTIMAL
+Objective: 368.2000
+Makespan: 82.0000
+Processing cost: 286.2000
+Operating cost: 82.0000
+Total cost: 368.2000
+Big M: 293.0000
+Runtime [s]: 35.3354
+Solution count: 10
+
+Model structure:
+variables: 406
+continuous: 21
+binary: 385
+integer: 0
+linear_constraints: 745
+quadratic_constraints: 0
+general_constraints: 0
+nonlinear_constraints: 0
+
+Y values:
+Y(1, 0)=0
+Y(1, 2)=1
+Y(2, 0)=0
+Y(2, 1)=1
+Y(3, 0)=1
+Y(3, 2)=0
+Y(4, 0)=0
+Y(4, 1)=1
+Y(4, 2)=0
+Y(5, 0)=1
+Y(5, 2)=0
+Y(6, 0)=1
+Y(6, 1)=0
+Y(6, 2)=0
+Y(7, 0)=1
+Y(7, 1)=0
+Y(8, 0)=0
+Y(8, 2)=1
+Y(9, 0)=0
+Y(9, 1)=1
+Y(10, 0)=0
+Y(10, 2)=1
+Y(11, 0)=0
+Y(11, 1)=1
+Y(11, 2)=0
+Y(12, 0)=0
+Y(12, 2)=1
+Y(13, 0)=1
+Y(13, 2)=0
+Y(14, 0)=1
+Y(14, 1)=0
+Y(15, 0)=1
+Y(15, 2)=0
+Y(16, 0)=1
+Y(16, 1)=0
+Y(17, 0)=0
+Y(17, 2)=1
+Y(18, 0)=0
+Y(18, 1)=1
+Y(18, 2)=0
+Y(19, 0)=1
+Y(19, 1)=0
+Y(19, 2)=0
+Y(20, 0)=0
+Y(20, 2)=1

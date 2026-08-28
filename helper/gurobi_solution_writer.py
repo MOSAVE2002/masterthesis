@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+import gurobipy as gp
 from gurobipy import GRB
 
 STATUS_NAMES = {
@@ -25,7 +26,13 @@ def _value(item):
     if hasattr(item, "X"):
         return float(item.X)
     if hasattr(item, "getValue"):
-        return float(item.getValue())
+        try:
+            return float(item.getValue())
+        except (AttributeError, gp.GurobiError):
+            return None
+    if isinstance(item, (gp.Var, gp.LinExpr, gp.QuadExpr)):
+        # Gurobi solution attributes are unavailable when no incumbent exists.
+        return None
     return float(item)
 
 
@@ -34,13 +41,11 @@ def _number(item, digits=6):
     return "" if value is None else f"{value:.{digits}f}"
 
 
-def _job_probability_value(variables, item):
-    value = _value(item)
-    if variables.get("job_probability_postprocess") == (
-        "relu_clip_0_1_outside_model"
-    ):
-        return min(1.0, max(0.0, value))
-    return value
+def _model_attribute(model, name):
+    try:
+        return getattr(model, name)
+    except (AttributeError, gp.GurobiError):
+        return None
 
 
 def _selected_machine(variables, operation):
@@ -129,8 +134,21 @@ def write_comparable_solution(
             f"{variables.get('objective_definition', '')}\n"
         )
         file.write(f"Objective: {_number(model.ObjVal if has_solution else None)}\n")
-        file.write(f"Best bound: {_number(model.ObjBound)}\n")
-        file.write(f"MIP gap: {_number(model.MIPGap if has_solution else None)}\n")
+        file.write(f"Makespan: {_number(variables.get('C_max'))}\n")
+        file.write(f"Processing cost: {_number(variables.get('processing_cost'))}\n")
+        file.write(f"Operating cost: {_number(variables.get('operating_cost'))}\n")
+        file.write(f"Total cost: {_number(variables.get('total_cost'))}\n")
+        file.write(
+            "Facility cost per time: "
+            f"{_number(variables.get('facility_cost_per_time'))}\n"
+        )
+        file.write(f"Objective mode: {variables.get('objective_mode', '')}\n")
+        file.write(
+            f"Best bound: {_number(_model_attribute(model, 'ObjBound'))}\n"
+        )
+        file.write(
+            f"MIP gap: {_number(_model_attribute(model, 'MIPGap'))}\n"
+        )
         file.write(f"Runtime [s]: {_number(model.Runtime)}\n")
         timing = variables.get("timing", {})
         file.write(
@@ -152,7 +170,6 @@ def write_comparable_solution(
         file.write("\nStochastic formulation:\n")
         file.write(f"Constraint type: {variables.get('constraint_type', '')}\n")
         file.write(f"Service scope: {variables.get('service_scope', '')}\n")
-        file.write(f"Service levels: {variables.get('service_levels', {})}\n")
         file.write(f"Due dates: {variables.get('due_dates', {})}\n")
         file.write(f"GNN convolution: {metadata.get('convolution', '')}\n")
         file.write(f"GNN layers: {metadata.get('num_graphsage_layers', '')}\n")
@@ -161,49 +178,33 @@ def write_comparable_solution(
         if not has_solution:
             return path
 
-        file.write("\nAlpha service level summary:\n")
-        probabilities = variables.get("job_ontime_probabilities", {})
-        realized_alpha = {
-            job: _job_probability_value(variables, probabilities[job])
-            for job in sorted(probabilities)
+        file.write("\nExpected repair-buffer summary:\n")
+        buffers = variables.get("job_expected_repair_buffers", {})
+        buffer_values = {
+            job: _value(buffers[job]) for job in sorted(buffers)
         }
-        alpha_slacks = {
-            job: realized_alpha[job]
-            - float(variables["service_levels"][job])
-            for job in realized_alpha
-        }
-        if realized_alpha:
+        if buffer_values:
             file.write(
-                "Minimum realized per-job alpha service level: "
-                f"{min(realized_alpha.values()):.6f}\n"
-            )
-            file.write(
-                "Minimum alpha service slack: "
-                f"{min(alpha_slacks.values()):.6f}\n"
-            )
-            file.write(
-                "All per-job alpha targets satisfied: "
-                f"{'yes' if min(alpha_slacks.values()) >= -1e-6 else 'no'}\n"
+                "Maximum expected job repair buffer: "
+                f"{max(buffer_values.values()):.6f}\n"
             )
         file.write(
-            "Probability label method: "
-            f"{variables.get('job_probability_label_method', '')}\n"
+            "Repair buffer label method: "
+            f"{variables.get('job_repair_buffer_label_method', '')}\n"
         )
 
-        file.write("\nPer-job alpha service levels:\n")
-        for job in sorted(probabilities):
+        file.write("\nPer-job expected repair buffers:\n")
+        for job in sorted(buffers):
             completion = variables["C"][instance.job_end_operations[job]]
             due_date = float(variables["due_dates"][job])
-            probability = realized_alpha[job]
-            target = float(variables["service_levels"][job])
-            slack = alpha_slacks[job]
+            buffer = buffer_values[job]
             file.write(
                 f"job {job}: completion={_number(completion)}, "
                 f"due_date={due_date:.6f}, "
-                f"realized_alpha={probability:.6f}, "
-                f"target_alpha={target:.6f}, "
-                f"alpha_slack={slack:.6f}, "
-                f"satisfied={'yes' if slack >= -1e-6 else 'no'}\n"
+                f"expected_repair_buffer={buffer:.6f}, "
+                f"protected_completion={_value(completion) + buffer:.6f}, "
+                "robust_slack="
+                f"{due_date - _value(completion) - buffer:.6f}\n"
             )
 
         file.write("\nOperation values:\n")

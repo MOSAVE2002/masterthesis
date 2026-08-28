@@ -12,8 +12,8 @@ training = importlib.import_module(
 
 class GNNLossTests(unittest.TestCase):
     def setUp(self):
-        self.prediction = torch.tensor([0.90, 0.97])
-        self.batch = SimpleNamespace(job_y=torch.tensor([0.95, 0.95]))
+        self.prediction = torch.tensor([0.45, 0.52])
+        self.batch = SimpleNamespace(job_y=torch.tensor([0.50, 0.50]))
 
     def loss(self, name, **kwargs):
         return float(training._loss(

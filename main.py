@@ -71,6 +71,13 @@ def _absolute(path):
     return path if path.is_absolute() else ROOT_DIR / path
 
 
+def _due_date_generation_config(config):
+    """Return due-date generation settings."""
+    return dict(
+        config["instances"]["generation"].get("due_dates") or {}
+    )
+
+
 def _instance_specs(generation):
     return [
         {
@@ -112,41 +119,44 @@ def _configured_instance_splits(config, specs):
                 "processing_times", {}
             ).get("relative_deviation"),
             machine_parameter_ranges=generation.get("machine_parameters"),
+            machine_profile_config=generation.get("machine_profiles"),
         )
 
-    expected_service_level = float(
-        config["constraint"]["weibull"]["reliability_graph"][
-            "service_level"
-        ]
-    )
+    due_date_factors = [
+        float(value)
+        for value in config["instances"]["generation"]
+        .get("due_dates", {})
+        .get("factors", [])
+    ]
+    if not due_date_factors:
+        raise ValueError("instances.generation.due_dates.factors is empty.")
     for name in (
         instance_name
         for split_names in splits.values()
         for instance_name in split_names
     ):
         instance = _instances.load_generated_instance(name)
-        mismatches = {
-            job: float(instance.service_levels[job])
-            for job in instance.jobs
-            if not math.isclose(
-                float(instance.service_levels[job]),
-                expected_service_level,
-                rel_tol=0.0,
-                abs_tol=1e-12,
-            )
-        }
-        if mismatches:
+        expected_factor = due_date_factors[
+            (int(instance.nb_instance) - 1) % len(due_date_factors)
+        ]
+        actual_factor = getattr(instance, "due_date_factor", None)
+        if actual_factor is None or not math.isclose(
+            float(actual_factor),
+            expected_factor,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
             raise ValueError(
-                f"Instance {name} contains service levels {mismatches}, "
-                f"but config requires {expected_service_level}. Regenerate "
-                "or migrate the instances before running the pipeline."
+                f"Instance {name} contains due_date_factor="
+                f"{actual_factor}, but config requires {expected_factor}. "
+                "Regenerate the instances before running the pipeline."
             )
     return splits
 
 
 def _generate_data(config, splits):
     data = config["training"]["data_generation"]
-    ranges = data["reliability_ranges"]
+    ranges = data.get("reliability_ranges") or {}
     generator = importlib.import_module(
         "04_GraphNeuralNetworks.models.generate_weibull_training_data"
     ).generate_from_config
@@ -157,13 +167,17 @@ def _generate_data(config, splits):
         "output_directory": data["output_directory"],
         "random_seed": int(data.get("random_seed", 42)),
         "samples_per_instance": int(data["samples_per_instance"]),
-        "alpha_range": ranges["alpha"],
-        "beta_range": ranges["beta"],
-        "repair_rate_range": ranges["repair_rate"],
+        "instance_failure_handling": data.get(
+            "instance_failure_handling"
+        ),
+        "alpha_range": ranges.get("alpha"),
+        "beta_range": ranges.get("beta"),
+        "repair_rate_range": ranges.get("repair_rate"),
+        "weibull_scale_factors": data.get("weibull_scale_factors"),
+        "adaptive_due_dates": data.get("adaptive_due_dates"),
         "reliability_graph": config["constraint"]["weibull"][
             "reliability_graph"
         ],
-        "simulation": data["simulation"],
         "fixed_y": data.get("fixed_y"),
     })
 
@@ -241,7 +255,7 @@ def _in_distribution_plan(config, splits):
 
 
 def _generated_tier_plan(config, tier_name):
-    if tier_name not in {"extrapolation", "stress"}:
+    if tier_name not in {"benchmark", "extrapolation", "stress"}:
         raise ValueError(f"Unknown generated evaluation tier: {tier_name}")
     evaluation = config["solve"].get("evaluation", {})
     generation = config["instances"]["generation"]
@@ -268,27 +282,98 @@ def _generated_tier_plan(config, tier_name):
         for jobs in tier["num_jobs"]
         for machines in tier["num_machines"]
     ]
-    directory = root / tier_name
-    paths = _instances.generate_evaluation_instance_specs(
-        specs,
-        random_seed=int(evaluation.get("random_seed", 2026)),
-        output_directory=directory,
-        processing_time_range=generation.get(
-            "processing_times", {}
-        ).get("base_range"),
-        processing_time_deviation=generation.get(
-            "processing_times", {}
-        ).get("relative_deviation", 0.2),
-        machine_parameter_ranges=generation.get("machine_parameters"),
-    )
-    return [
-        {
+    raw_factors = tier.get("due_date_factors")
+    if raw_factors is None:
+        scalar = tier.get("due_date_factor")
+        raw_factors = [scalar] if scalar is not None else [None]
+    factors = []
+    for raw_factor in raw_factors:
+        factor = None if raw_factor is None else float(raw_factor)
+        if factor is not None and factor <= 0.0:
+            raise ValueError(
+                f"{tier_name}.due_date_factors must be positive."
+            )
+        if factor in factors:
+            raise ValueError(
+                f"{tier_name}.due_date_factors must not contain duplicates."
+            )
+        factors.append(factor)
+
+    plan = []
+    for factor in factors:
+        factor_slug = (
+            "configured"
+            if factor is None else f"df{factor:.2f}".replace(".", "p")
+        )
+        directory = root / tier_name / factor_slug
+        due_date_config = _due_date_generation_config(config)
+        if factor is not None:
+            due_date_config["factors"] = [factor]
+        suffix = f"{tier_name}_{factor_slug}"
+        expected_paths = [
+            directory / (
+                f"i{spec['num_jobs']}_k{spec['num_machines']}_"
+                f"o{min(spec['operations_per_job'])}-"
+                f"{max(spec['operations_per_job'])}_{instance_number}_"
+                f"{suffix}.pkl"
+            )
+            for spec in specs
+            for instance_number in range(1, spec["count"] + 1)
+        ]
+        existing_paths = (
+            sorted(directory.glob("*.pkl")) if directory.exists() else []
+        )
+        reuse_existing = bool(
+            tier.get("reuse_existing_instances", True)
+        )
+        if reuse_existing and existing_paths:
+            expected_set = {path.resolve() for path in expected_paths}
+            existing_set = {path.resolve() for path in existing_paths}
+            if existing_set != expected_set:
+                missing = sorted(
+                    path.name for path in expected_set - existing_set
+                )
+                unexpected = sorted(
+                    path.name for path in existing_set - expected_set
+                )
+                raise ValueError(
+                    f"Existing {tier_name} instances do not match the "
+                    "configured evaluation plan. To preserve benchmark "
+                    "instances, no files were overwritten. "
+                    f"Missing={missing}; unexpected={unexpected}. Delete "
+                    f"or move {directory} explicitly to generate a new set."
+                )
+            paths = expected_paths
+            print(
+                f"Reusing {len(paths)} unchanged {tier_name} instances "
+                f"from: {directory}",
+                flush=True,
+            )
+        else:
+            paths = _instances.generate_evaluation_instance_specs(
+                specs,
+                random_seed=int(evaluation.get("random_seed", 2026)),
+                output_directory=directory,
+                processing_time_range=generation.get(
+                    "processing_times", {}
+                ).get("base_range"),
+                processing_time_deviation=generation.get(
+                    "processing_times", {}
+                ).get("relative_deviation", 0.2),
+                machine_parameter_ranges=generation.get(
+                    "machine_parameters"
+                ),
+                machine_profile_config=generation.get("machine_profiles"),
+                due_date_config=due_date_config,
+                instance_name_suffix=suffix,
+            )
+        plan.extend({
             "tier": tier_name,
             "instance_name": path.stem,
             "instance_directory": str(directory),
-        }
-        for path in paths
-    ]
+            "due_date_factor": factor,
+        } for path in paths)
+    return plan
 
 
 def _trained_models(config):
@@ -389,6 +474,9 @@ def _solve(config, splits):
         "in_distribution": evaluation.get("in_distribution", {}).get(
             "enabled", True
         ),
+        "benchmark": evaluation.get("benchmark", {}).get(
+            "enabled", False
+        ),
         "extrapolation": evaluation.get("extrapolation", {}).get(
             "enabled", False
         ),
@@ -399,6 +487,9 @@ def _solve(config, splits):
 
     solver_config = config["solvers"]["gurobi"]
     common = dict(solver_config.get("common", {}))
+    common["facility_cost_per_time"] = float(
+        config["objective"].get("facility_cost_per_time", 1.0)
+    )
     constraint = config["constraint"]
     stochastic = {
         "constraint_type": constraint["type"],
@@ -411,6 +502,7 @@ def _solve(config, splits):
 
     tier_plans = (
         ("solve", lambda: _in_distribution_plan(config, splits)),
+        ("benchmark", lambda: _generated_tier_plan(config, "benchmark")),
         (
             "extrapolation",
             lambda: _generated_tier_plan(config, "extrapolation"),
@@ -439,7 +531,8 @@ def _evaluate(config):
     evaluator = importlib.import_module(
         "06_Evaluation.evaluate_solutions"
     ).evaluate_from_config
-    return evaluator(config)
+    result = evaluator(config)
+    return result
 
 
 def main(argv=None):
@@ -464,10 +557,12 @@ def main(argv=None):
                 "processing_times", {}
             ).get("relative_deviation", 0.2),
             machine_parameter_ranges=generation.get("machine_parameters"),
+            machine_profile_config=generation.get("machine_profiles"),
+            due_date_config=_due_date_generation_config(config),
         )
     splits = _configured_instance_splits(config, specs)
     print(
-        "Per-job probability pipeline | "
+        "Cost plus expected-repair-buffer pipeline | "
         + " | ".join(f"{key}={bool(value)}" for key, value in workflow.items())
     )
     if workflow.get("generate_training_data", False):
