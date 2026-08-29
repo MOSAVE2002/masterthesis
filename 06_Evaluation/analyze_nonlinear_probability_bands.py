@@ -225,11 +225,6 @@ def run_analysis(
     graph_config = GENERATOR.normalize_reliability_graph_config(
         config["constraint"]["weibull"]["reliability_graph"]
     )
-    simulation_config = GENERATOR.normalize_simulation_config({
-        **source["simulation"],
-        "pilot_replications": int(replications),
-        "label_replications": int(replications),
-    })
     names = (
         [str(name) for name in instance_names]
         if instance_names
@@ -252,7 +247,6 @@ def run_analysis(
                     0,
                     generation,
                     graph_config,
-                    simulation_config,
                     fix_ratio,
                     "nonlinear",
                     target_band,

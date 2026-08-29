@@ -50,7 +50,9 @@ def controlled_due_date(nominal_makespan, relative_offset):
 def _value(item):
     if hasattr(item, "X"):
         return float(item.X)
-    return float(item.getValue())
+    if hasattr(item, "getValue"):
+        return float(item.getValue())
+    return float(item)
 
 
 def _status_name(model):
@@ -177,6 +179,7 @@ def _solve_formulation(
             model,
             instance,
             facility_cost_per_time=solver_config["facility_cost_per_time"],
+            tardiness_cost_per_time=solver_config["tardiness_cost_per_time"],
         )
     elif formulation == "nonlinear":
         model, variables = _nonlinear.build_fjsp(
@@ -184,6 +187,7 @@ def _solve_formulation(
             instance,
             reliability_graph_config=graph_config,
             facility_cost_per_time=solver_config["facility_cost_per_time"],
+            tardiness_cost_per_time=solver_config["tardiness_cost_per_time"],
         )
     else:
         raise ValueError(f"Unknown formulation: {formulation!r}.")
@@ -214,6 +218,9 @@ def _solve_formulation(
     for position, job in enumerate(simulation_result.job_ids):
         completion = completions[instance.job_end_operations[job]]
         buffer = _value(buffers[job]) if job in buffers else 0.0
+        optimization_tardiness = _value(
+            variables["job_tardiness"][job]
+        )
         due_date = float(instance.due_dates[job])
         job_rows.append({
             "job": job,
@@ -221,6 +228,7 @@ def _solve_formulation(
             "due_date": due_date,
             "nominal_slack": due_date - completion,
             "expected_repair_buffer": buffer,
+            "optimization_tardiness": optimization_tardiness,
             "protected_slack": due_date - completion - buffer,
             "mc_ontime_probability": float(
                 simulation_result.job_ontime_probabilities[position]
@@ -241,6 +249,8 @@ def _solve_formulation(
         "mip_gap": float(model.MIPGap),
         "processing_cost": _value(variables["processing_cost"]),
         "operating_cost": _value(variables["operating_cost"]),
+        "tardiness_cost": _value(variables["tardiness_cost"]),
+        "total_tardiness": _value(variables["total_tardiness"]),
         "nominal_makespan": _value(variables["C_max"]),
         "old_operations": profile_counts["old"],
         "new_operations": profile_counts["new"],
@@ -506,6 +516,9 @@ def run_analysis(
         "facility_cost_per_time": float(
             config["objective"]["facility_cost_per_time"]
         ),
+        "tardiness_cost_per_time": float(
+            config["objective"].get("tardiness_cost_per_time", 1.0)
+        ),
     }
     graph_config = config["constraint"]["weibull"]["reliability_graph"]
     simulation_config = config["evaluation"]["simulation"]
@@ -600,6 +613,8 @@ def run_analysis(
                 "runtime_seconds",
                 "processing_cost",
                 "operating_cost",
+                "tardiness_cost",
+                "total_tardiness",
                 "nominal_makespan",
                 "old_operations",
                 "new_operations",

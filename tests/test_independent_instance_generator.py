@@ -106,7 +106,7 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
                 "speed": 0.8,
                 "weibull_alpha": 60.0,
                 "weibull_beta": 3.0,
-                "repair_rate": 0.15,
+                "repair_rate": 1.0 / 30.0,
             },
         )
         self.assertEqual(
@@ -116,7 +116,7 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
                 "speed": 1.25,
                 "weibull_alpha": 100.0,
                 "weibull_beta": 2.0,
-                "repair_rate": 0.4,
+                "repair_rate": 1.0 / 15.0,
             },
         )
         self.assertTrue(all(

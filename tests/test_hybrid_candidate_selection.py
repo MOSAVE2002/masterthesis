@@ -250,7 +250,6 @@ class HybridCandidateSelectionTests(unittest.TestCase):
                     "instance",
                     generation,
                     SimpleNamespace(service_level=0.95),
-                    object(),
                     4,
                     split="training",
                 )
@@ -296,7 +295,6 @@ class HybridCandidateSelectionTests(unittest.TestCase):
                     "instance",
                     generation,
                     SimpleNamespace(service_level=0.95),
-                    object(),
                     4,
                     split="test",
                 )
@@ -699,7 +697,6 @@ class HybridCandidateSelectionTests(unittest.TestCase):
                 "instance",
                 generation,
                 SimpleNamespace(service_level=0.80),
-                object(),
                 5,
                 hybrid_selection=hybrid,
             )

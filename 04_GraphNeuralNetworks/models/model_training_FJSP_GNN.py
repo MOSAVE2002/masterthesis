@@ -32,6 +32,7 @@ from helper.sequence_setup import (
     reliability_node_feature_names,
 )
 from helper.surrogate_constraint import configured_constraint_type, target_column
+from helper.stochastic_fjsp import normalize_machine_profile_config
 
 
 _instances = importlib.import_module("01_generator.instance_generator")
@@ -153,6 +154,40 @@ def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
             "fixed job edges. Regenerate the dataset with schema_version >= 3."
         )
     return label_method, {"source": label.get("source")}
+
+
+def _validate_dataset_context(
+    csv_path,
+    *,
+    machine_profile_config,
+    time_unit_minutes,
+):
+    summary_path = Path(csv_path).parent.parent / "generation_summary.json"
+    with summary_path.open(encoding="utf-8") as file:
+        summary = json.load(file)
+    dataset_profiles = summary.get("machine_profile_config")
+    if dataset_profiles is None:
+        raise ValueError(
+            "Dataset metadata does not contain machine_profile_config. "
+            "Regenerate the GNN dataset before training."
+        )
+    if normalize_machine_profile_config(
+        dataset_profiles
+    ) != normalize_machine_profile_config(machine_profile_config):
+        raise ValueError(
+            "Dataset machine profiles differ from the training config. "
+            "Regenerate the GNN dataset before training."
+        )
+    if not math.isclose(
+        float(summary.get("time_unit_minutes", -1.0)),
+        float(time_unit_minutes),
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            "Dataset time unit differs from the training config. "
+            "Regenerate the GNN dataset before training."
+        )
 
 
 def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
@@ -472,6 +507,8 @@ def train_from_file(
     boundary_weight=4.0,
     overestimation_weight=2.0,
     huber_delta=0.05,
+    machine_profile_config=None,
+    time_unit_minutes=1.0,
     output_stem=None,
     model_dir=MODEL_DIR,
 ):
@@ -480,6 +517,21 @@ def train_from_file(
     )
     torch.manual_seed(int(seed))
     random.seed(int(seed))
+    _validate_dataset_context(
+        csv_path,
+        machine_profile_config=machine_profile_config,
+        time_unit_minutes=time_unit_minutes,
+    )
+    _validate_dataset_context(
+        validation_csv_path,
+        machine_profile_config=machine_profile_config,
+        time_unit_minutes=time_unit_minutes,
+    )
+    _validate_dataset_context(
+        test_csv_path,
+        machine_profile_config=machine_profile_config,
+        time_unit_minutes=time_unit_minutes,
+    )
     train_graphs, feature_names, graph_config, label_method = load_graphs(
         Path(csv_path)
     )
@@ -621,6 +673,10 @@ def train_from_file(
             architecture["convolution"] in {CONV_SAGE, CONV_JOB}
         ),
         "reliability_graph_config": reliability_graph_config_dict(graph_config),
+        "machine_profile_config": normalize_machine_profile_config(
+            machine_profile_config
+        ),
+        "time_unit_minutes": float(time_unit_minutes),
         "seed": int(seed),
         "loss": loss_parameters,
         "epochs_completed": int(epoch),
@@ -730,6 +786,13 @@ def train_from_config(seed=42, csv_path=None):
                     ),
                     huber_delta=float(
                         loss_config.get("huber_delta", 0.05)
+                    ),
+                    machine_profile_config=config["instances"]["generation"]
+                    ["machine_profiles"],
+                    time_unit_minutes=float(
+                        config["instances"]["generation"].get(
+                            "time_unit_minutes", 1.0
+                        )
                     ),
                     output_stem=stem,
                     model_dir=output_dir,

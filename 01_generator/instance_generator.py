@@ -278,6 +278,7 @@ class FJSPData:
         machine_parameter_ranges=None,
         machine_profile_config=None,
         due_date_config=None,
+        time_unit_minutes=1.0,
         random_source=None):
 
         """
@@ -299,6 +300,9 @@ class FJSPData:
         # instance parameters
         self.num_jobs = num_jobs
         self.num_machines = num_machines
+        self.time_unit_minutes = float(time_unit_minutes)
+        if self.time_unit_minutes <= 0.0:
+            raise ValueError("time_unit_minutes must be positive.")
 
         # Operations per job parameters
         self.ope_per_job_min = operations_per_job_min
@@ -450,6 +454,7 @@ def generate_instances(
     machine_parameter_ranges=None,
     machine_profile_config=None,
     due_date_config=None,
+    time_unit_minutes=1.0,
 ):
     """
     Generate multiple instances 
@@ -475,6 +480,7 @@ def generate_instances(
             machine_parameter_ranges=machine_parameter_ranges,
             machine_profile_config=machine_profile_config,
             due_date_config=due_date_config,
+            time_unit_minutes=time_unit_minutes,
             random_source=generation_rng,
         )
         for instance_nb in range(1, nb_instances + 1)
@@ -497,6 +503,7 @@ def generate_instance_specs(
     machine_parameter_ranges=None,
     machine_profile_config=None,
     due_date_config=None,
+    time_unit_minutes=1.0,
 ):
     """Generate configured sizes and split every size independently."""
     split_instances = {split_name: [] for split_name in SPLIT_NAMES}
@@ -516,6 +523,7 @@ def generate_instance_specs(
                 machine_parameter_ranges=machine_parameter_ranges,
                 machine_profile_config=machine_profile_config,
                 due_date_config=due_date_config,
+                time_unit_minutes=time_unit_minutes,
                 random_source=generation_rng,
             )
             for instance_nb in range(1, spec["count"] + 1)
@@ -543,6 +551,7 @@ def generate_evaluation_instance_specs(
     machine_profile_config=None,
     due_date_config=None,
     instance_name_suffix=None,
+    time_unit_minutes=1.0,
 ):
     """Generate a flat holdout set without train/valid/test subdirectories."""
     output_directory = Path(output_directory or INSTANCE_DIRECTORY)
@@ -563,6 +572,7 @@ def generate_evaluation_instance_specs(
                 machine_parameter_ranges=machine_parameter_ranges,
                 machine_profile_config=machine_profile_config,
                 due_date_config=due_date_config,
+                time_unit_minutes=time_unit_minutes,
                 random_source=generation_rng,
             )
             for instance_number in range(1, spec["count"] + 1)
@@ -790,6 +800,7 @@ def configured_instance_names_by_split(
     processing_time_deviation=None,
     machine_parameter_ranges=None,
     machine_profile_config=None,
+    time_unit_minutes=None,
 ):
     """Select and validate exactly the instances requested by the config."""
     from helper.stochastic_fjsp import (
@@ -864,6 +875,19 @@ def configured_instance_names_by_split(
             instance_name,
             instance_directory=instance_directory,
         )
+        if (
+            time_unit_minutes is not None
+            and not math.isclose(
+                float(getattr(instance, "time_unit_minutes", 1.0)),
+                float(time_unit_minutes),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            raise ValueError(
+                f"Gespeicherte Instanz {instance_name} verwendet eine andere "
+                "Zeiteinheit. Setze workflow.create_instances einmal auf true."
+            )
         expected_model = (
             PROFILE_GENERATION_MODEL
             if expected_profile_config is not None

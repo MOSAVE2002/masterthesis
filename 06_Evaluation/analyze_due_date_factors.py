@@ -38,6 +38,44 @@ ENTRY = importlib.import_module(
 GENERATOR = importlib.import_module(
     "04_GraphNeuralNetworks.models.generate_fix_and_optimize_training_data"
 )
+SIMULATION = importlib.import_module("05_Simulation.preempt_resume")
+
+
+def _simulation_seed(candidate, instance_name, simulation_config, purpose):
+    run_index, solution_number = candidate["candidate_id"]
+    return GENERATOR._sample_seed(
+        instance_name,
+        run_index,
+        simulation_config.random_seed,
+        f"simulation:{purpose}:solution={solution_number}",
+    )
+
+
+def _simulate_candidate(
+    candidate,
+    instance_name,
+    simulation_config,
+    *,
+    replications,
+    purpose,
+):
+    result = SIMULATION.simulate_fixed_schedule(
+        candidate["simulation_schedule"],
+        replications=int(replications),
+        seed=_simulation_seed(
+            candidate, instance_name, simulation_config, purpose
+        ),
+        config=simulation_config,
+    )
+    probabilities = list(result.job_ontime_probabilities)
+    candidate.update({
+        "job_probabilities": probabilities,
+        "total_failure_delay": float(result.mean_total_repair_delay),
+        "min_job_probability": min(probabilities),
+        "service_risk": 1.0 - min(probabilities),
+        "effective_objective": candidate["pool_objective"],
+    })
+    return candidate
 
 
 def _serial_horizon(instance):
@@ -75,7 +113,7 @@ def _evaluate_factor(
         GENERATOR._evaluate_fixed_schedule_nonlinear(
             candidate, graph_config
         )
-        GENERATOR._simulate_candidate(
+        _simulate_candidate(
             candidate,
             instance_name,
             simulation_config,
@@ -93,7 +131,7 @@ def _evaluate_factor(
     job_probabilities = []
     graph_minima = []
     for entry in selected:
-        candidate = GENERATOR._simulate_candidate(
+        candidate = _simulate_candidate(
             entry["candidate"],
             instance_name,
             simulation_config,
@@ -195,16 +233,16 @@ def run_analysis():
     with CONFIG_PATH.open(encoding="utf-8") as handle:
         config = json.load(handle)
     generation = ENTRY._generation_from_project_config(config)
-    generation["simulation"] = {
-        **generation["simulation"],
+    simulation_values = {
+        **dict(generation.get("simulation") or {}),
         "pilot_replications": 256,
         "label_replications": 1000,
     }
     graph_config = GENERATOR.normalize_reliability_graph_config(
         generation["reliability_graph"]
     )
-    simulation_config = GENERATOR.normalize_simulation_config(
-        generation["simulation"]
+    simulation_config = SIMULATION.normalize_simulation_config(
+        simulation_values
     )
     rows = []
     started = time.perf_counter()
@@ -220,7 +258,6 @@ def run_analysis():
             instance_name,
             generation,
             graph_config,
-            simulation_config,
             generation["samples_per_instance"],
             hybrid_selection=None,
             candidate_generation_mode="nonlinear_evaluated",

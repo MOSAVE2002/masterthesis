@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 import importlib
+import tempfile
 import unittest
+from pathlib import Path
 
 import gurobipy as gp
 
@@ -33,7 +35,7 @@ class EconomicObjectiveTests(unittest.TestCase):
     def test_expected_repair_buffer_is_used_unscaled(self):
         model = gp.Model()
         model.Params.OutputFlag = 0
-        completion = model.addVar(lb=0.0, name="completion")
+        completion = model.addVar(lb=9.0, ub=9.0, name="completion")
         raw_buffer = model.addVar(lb=2.0, ub=2.0, name="raw_buffer")
         instance = SimpleNamespace(
             jobs={1: [1]},
@@ -47,10 +49,11 @@ class EconomicObjectiveTests(unittest.TestCase):
             instance,
             {1: raw_buffer},
         )
-        model.setObjective(completion, gp.GRB.MAXIMIZE)
+        model.setObjective(variables["job_tardiness"][1], gp.GRB.MINIMIZE)
         model.optimize()
         self.assertEqual(model.Status, gp.GRB.OPTIMAL)
-        self.assertAlmostEqual(completion.X, 8.0)
+        self.assertAlmostEqual(completion.X, 9.0)
+        self.assertAlmostEqual(variables["job_tardiness"][1].X, 1.0)
         self.assertAlmostEqual(
             variables["job_expected_repair_buffers"][1].X, 2.0
         )
@@ -58,7 +61,7 @@ class EconomicObjectiveTests(unittest.TestCase):
         self.assertNotIn("repair_buffer_scale", variables)
         model.dispose()
 
-    def test_processing_plus_operating_cost_and_due_date(self):
+    def test_processing_operating_and_tardiness_cost(self):
         model = gp.Model()
         model.Params.OutputFlag = 0
         model, variables = base.build_fjsp(
@@ -69,16 +72,42 @@ class EconomicObjectiveTests(unittest.TestCase):
         self.assertGreater(variables["Y"][1, 0].X, 0.5)
         self.assertAlmostEqual(variables["processing_cost"].getValue(), 10.0)
         self.assertAlmostEqual(variables["operating_cost"].getValue(), 10.0)
+        self.assertAlmostEqual(variables["tardiness_cost"].getValue(), 0.0)
         self.assertAlmostEqual(model.ObjVal, 20.0)
         self.assertLessEqual(variables["C"][1].X, 20.0)
         model.dispose()
 
-    def test_hard_due_date_can_make_base_model_infeasible(self):
+    def test_soft_due_date_keeps_base_model_feasible(self):
         model = gp.Model()
         model.Params.OutputFlag = 0
-        model, _variables = base.build_fjsp(model, _instance(due_date=4.0))
+        model, variables = base.build_fjsp(model, _instance(due_date=4.0))
         model.optimize()
-        self.assertEqual(model.Status, gp.GRB.INFEASIBLE)
+        self.assertEqual(model.Status, gp.GRB.OPTIMAL)
+        self.assertGreater(variables["job_tardiness"][1].X, 0.0)
+        self.assertAlmostEqual(
+            variables["tardiness_cost"].getValue(),
+            variables["job_tardiness"][1].X,
+        )
+        model.dispose()
+
+    def test_base_solution_uses_comparable_schedule_format(self):
+        instance = _instance(due_date=4.0)
+        model = gp.Model()
+        model.Params.OutputFlag = 0
+        model, variables = base.build_fjsp(model, instance)
+        model.optimize()
+        with tempfile.TemporaryDirectory() as directory:
+            path = base.write_solution_file(
+                model,
+                variables,
+                instance,
+                Path(directory) / "base.txt",
+            )
+            content = path.read_text(encoding="utf-8")
+        self.assertIn("Tardiness cost:", content)
+        self.assertIn("tardiness=", content)
+        self.assertIn("op 1: machine=", content)
+        self.assertIn("S=", content)
         model.dispose()
 
 

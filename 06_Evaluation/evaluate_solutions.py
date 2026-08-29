@@ -53,7 +53,8 @@ _JOB_PATTERN = re.compile(
     r"due_date=(?P<due_date>[^,]+), "
     r"expected_repair_buffer=(?P<buffer>[^,]+), "
     r"protected_completion=(?P<protected>[^,]+), "
-    r"robust_slack=(?P<slack>[^,]+)$"
+    r"robust_slack=(?P<slack>[^,]+), "
+    r"tardiness=(?P<tardiness>[^,]+)$"
 )
 _OPERATION_PATTERN = re.compile(
     r"^op (?P<operation>-?\d+): "
@@ -163,6 +164,7 @@ def parse_solution(solution_path):
                 "internal_repair_buffer": float(values["buffer"]),
                 "protected_completion": float(values["protected"]),
                 "robust_slack": float(values["slack"]),
+                "optimization_tardiness": float(values["tardiness"]),
             }
             continue
         operation_match = _OPERATION_PATTERN.match(line)
@@ -193,6 +195,8 @@ def parse_solution(solution_path):
         "makespan": _optional_float(_field(lines, "Makespan")),
         "processing_cost": _optional_float(_field(lines, "Processing cost")),
         "operating_cost": _optional_float(_field(lines, "Operating cost")),
+        "tardiness_cost": _optional_float(_field(lines, "Tardiness cost")),
+        "total_tardiness": _optional_float(_field(lines, "Total tardiness")),
         "total_cost": _optional_float(_field(lines, "Total cost")),
         "best_bound": _optional_float(_field(lines, "Best bound")),
         "mip_gap": _optional_float(_field(lines, "MIP gap")),
@@ -392,6 +396,8 @@ def evaluate_solution(
             "objective": parsed["objective"],
             "processing_cost": parsed["processing_cost"],
             "operating_cost": parsed["operating_cost"],
+            "tardiness_cost": parsed["tardiness_cost"],
+            "total_tardiness": parsed["total_tardiness"],
             "total_cost": parsed["total_cost"],
             "best_bound": parsed["best_bound"],
             "mip_gap": parsed["mip_gap"],
@@ -466,6 +472,9 @@ def evaluate_solution(
             ),
             "protected_completion": internal["protected_completion"],
             "robust_slack": internal["robust_slack"],
+            "optimization_tardiness": internal[
+                "optimization_tardiness"
+            ],
             "repair_buffer_method": parsed["repair_buffer_label_method"],
             "mc_ontime_probability": probability,
             "mc_standard_error": float(
@@ -483,6 +492,8 @@ def evaluate_solution(
             "objective": parsed["objective"],
             "processing_cost": parsed["processing_cost"],
             "operating_cost": parsed["operating_cost"],
+            "tardiness_cost": parsed["tardiness_cost"],
+            "total_tardiness": parsed["total_tardiness"],
             "total_cost": parsed["total_cost"],
             "nominal_makespan": parsed["makespan"],
             "runtime_seconds": parsed["runtime_seconds"],
@@ -509,6 +520,8 @@ def evaluate_solution(
         "objective": parsed["objective"],
         "processing_cost": parsed["processing_cost"],
         "operating_cost": parsed["operating_cost"],
+        "tardiness_cost": parsed["tardiness_cost"],
+        "total_tardiness": parsed["total_tardiness"],
         "total_cost": parsed["total_cost"],
         "best_bound": parsed["best_bound"],
         "mip_gap": parsed["mip_gap"],
@@ -565,6 +578,8 @@ _PRESENTATION_COLUMNS = (
     ("total_cost", "Gesamtkosten"),
     ("processing_cost", "Bearbeitungskosten"),
     ("operating_cost", "Betriebskosten"),
+    ("tardiness_cost", "Verspätungskosten"),
+    ("total_tardiness", "Gesamtverspätung"),
     ("nominal_makespan", "Makespan"),
     ("runtime_seconds", "Laufzeit [s]"),
     ("mip_gap", "MIP-Gap"),
@@ -610,6 +625,8 @@ def _presentation_value(key, value):
         "total_cost",
         "processing_cost",
         "operating_cost",
+        "tardiness_cost",
+        "total_tardiness",
         "nominal_makespan",
         "maximum_internal_repair_buffer",
         "repair_buffer_mae",

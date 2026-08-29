@@ -15,6 +15,7 @@ training = importlib.import_module(
 )
 embedding = importlib.import_module("03_Gurobi.build_fjsp_with_gnn")
 sequence_setup = importlib.import_module("helper.sequence_setup")
+stochastic = importlib.import_module("helper.stochastic_fjsp")
 
 
 class GNNEdgeFormulationTests(unittest.TestCase):
@@ -27,6 +28,8 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             operations_per_job_max=2,
             num_operations=[2],
             flag_save_file=False,
+            machine_profile_config=stochastic.DEFAULT_MACHINE_PROFILE_CONFIG,
+            time_unit_minutes=10.0,
             random_source=random.Random(42),
         )
 
@@ -62,6 +65,10 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             "reliability_graph_config": (
                 sequence_setup.reliability_graph_config_dict(graph_config)
             ),
+            "machine_profile_config": (
+                stochastic.normalize_machine_profile_config()
+            ),
+            "time_unit_minutes": 10.0,
         }
 
     def _build(self, directory, convolution):
@@ -106,6 +113,8 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             model, variables = self._build(directory, "linear")
             try:
                 self.assertIn("job_expected_repair_buffers", variables)
+                self.assertIn("job_tardiness", variables)
+                self.assertIn("tardiness_cost", variables)
                 self.assertNotIn("job_scaled_repair_buffers", variables)
                 self.assertNotIn("repair_buffer_scale", variables)
             finally:

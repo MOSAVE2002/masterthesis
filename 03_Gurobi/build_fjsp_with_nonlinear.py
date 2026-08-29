@@ -6,7 +6,6 @@ import importlib
 import math
 
 import gurobipy as gp
-from gurobipy import GRB
 
 from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
@@ -173,6 +172,7 @@ def build_fjsp(
     reliability_graph_config=None,
     service_probability_band=None,
     facility_cost_per_time=1.0,
+    tardiness_cost_per_time=1.0,
 ):
     """Build the nonlinear stochastic reference formulation."""
     validate_constraint_type(constraint_type)
@@ -188,8 +188,8 @@ def build_fjsp(
         fjsp,
         instance,
         include_makespan=False,
-        horizon_upper_bound=max(instance.due_dates.values()),
-        enforce_due_dates=True,
+        horizon_upper_bound=None,
+        enforce_due_dates=False,
         economic_objective=False,
     )
     model.Params.NonConvex = 2
@@ -236,10 +236,11 @@ def build_fjsp(
         variables,
         instance,
         facility_cost_per_time=facility_cost_per_time,
+        tardiness_cost_per_time=tardiness_cost_per_time,
     )
     variables.update({
         "constraint_type": constraint_type,
-        "formulation": "nonlinear_expected_repair_buffer_cost_v9",
+        "formulation": "nonlinear_expected_repair_buffer_tardiness_cost_v10",
     })
     model.update()
     return model, variables

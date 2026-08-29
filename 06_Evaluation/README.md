@@ -19,6 +19,13 @@ and currently equal 0.02, 0.05, 0.10 and 0.20. The analysis writes raw
 schedule comparisons, per-job observations, offset summaries, repair-buffer
 calibration summaries and JSON metadata to `06_Evaluation/results`.
 
+This is a post-solve robustness experiment, not a service-constrained
+optimization. A job is successful in one Monte-Carlo replication when its
+simulated completion time does not exceed its due date. Repeated simulations
+estimate the on-time probability of every job; the result tables then compare
+the minimum and mean job probabilities of each schedule across the tested
+parameter settings. No simulated probability is returned to the solver.
+
 The evaluator reconstructs the schedules stored in existing solution text
 files, labels them with fresh Monte-Carlo replications, and writes comparison
 tables. Both direct execution and the final phase of `main.py` require
@@ -147,22 +154,7 @@ configured service target. `wilson_feasible` additionally reports whether the
 one-sided Wilson lower confidence bound reaches that target.
 `bonferroni_wilson_feasible` uses the per-job Bonferroni correction required
 for a joint confidence statement over all jobs of one schedule. Both Wilson
-values are diagnostic only and are not fed back into either optimization
-model.
-
-## Two-stage candidate-generation analysis
-
-Evaluate the configured `nonlinear_evaluated` Fix-and-Optimize pipeline on
-small instances without changing the existing GNN dataset:
-
-```bash
-python3 06_Evaluation/analyze_two_stage_candidate_generation.py \
-  --instances 5 --samples-per-instance 15
-```
-
-The script generates candidates with the linear Gurobi solution pool, keeps
-the optimized Gurobi start and completion times, evaluates the nonlinear
-midpoint/Weibull/Markov expression on every fixed schedule, selects candidates
-using pilot Monte Carlo probabilities, and uses the configured final Monte
-Carlo replication count for the labels. Raw and summary CSV files, JSON
-metadata, PDF, and PNG are written to `06_Evaluation/results`.
+values and every service-target classification are diagnostic only. They are
+used to count and compare schedules that reach the selected reference level
+under different parameters; they are not constraints and are not fed back into
+either optimization model.

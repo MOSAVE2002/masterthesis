@@ -1,4 +1,4 @@
-"""Entry point for per-graph vectors of jobspecific on-time probabilities."""
+"""Entry point for per-graph vectors of job-specific repair buffers."""
 
 from __future__ import annotations
 
@@ -44,6 +44,9 @@ def _generation_from_project_config(config):
             machine_profile_config=instance_generation.get(
                 "machine_profiles"
             ),
+            time_unit_minutes=instance_generation.get(
+                "time_unit_minutes", 1.0
+            ),
         ),
         "generate_splits": source.get("generate_splits"),
         "output_directory": source["output_directory"],
@@ -59,6 +62,12 @@ def _generation_from_project_config(config):
             "reliability_graph"
         ],
         "weibull_scale_factors": source.get("weibull_scale_factors"),
+        "machine_profile_config": instance_generation.get(
+            "machine_profiles"
+        ),
+        "time_unit_minutes": instance_generation.get(
+            "time_unit_minutes", 1.0
+        ),
         "adaptive_due_dates": source.get("adaptive_due_dates"),
         "fixed_y": source["fixed_y"],
     }

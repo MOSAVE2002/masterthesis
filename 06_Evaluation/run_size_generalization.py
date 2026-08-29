@@ -11,7 +11,6 @@ import argparse
 import csv
 import importlib
 import json
-import math
 import statistics
 import sys
 from collections import defaultdict

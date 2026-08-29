@@ -1,11 +1,9 @@
 """Nominal flexible job-shop MILP shared by both stochastic extensions."""
 
-from pathlib import Path
-
 import gurobipy as gp
 from gurobipy import GRB
 
-from helper.gurobi_solution_writer import write_model_structure
+from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
     add_economic_cost_objective,
     add_nominal_due_date_constraints,
@@ -33,6 +31,7 @@ def build_fjsp(
     enforce_due_dates=None,
     economic_objective=None,
     facility_cost_per_time=1.0,
+    tardiness_cost_per_time=1.0,
 ):
     operations = list(instance.real_operations)
     machines = list(range(instance.num_machines))
@@ -162,44 +161,23 @@ def build_fjsp(
             variables,
             instance,
             facility_cost_per_time=facility_cost_per_time,
+            tardiness_cost_per_time=tardiness_cost_per_time,
         )
     elif include_makespan:
         model.setObjective(makespan, GRB.MINIMIZE)
+    variables.update({
+        "formulation": "nominal_fjsp_with_tardiness_cost_v1",
+        "constraint_type": "nominal_completion_plus_tardiness",
+        "service_scope": "none",
+    })
     model.update()
     return model, variables
 
 
 def write_solution_file(model, variables, instance, filename="solution.txt"):
-    del instance
-    path = Path(filename)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
-        file.write(f"Status: {STATUS_NAMES.get(model.Status, model.Status)}\n")
-        file.write(
-            f"Objective: {model.ObjVal:.4f}\n" if model.SolCount else "Objective:\n"
-        )
-        file.write(
-            f"Makespan: {variables['C_max'].X:.4f}\n"
-            if model.SolCount and variables.get("C_max") is not None
-            else "Makespan:\n"
-        )
-        for label, key in (
-            ("Processing cost", "processing_cost"),
-            ("Operating cost", "operating_cost"),
-            ("Total cost", "total_cost"),
-        ):
-            value = variables.get(key)
-            file.write(
-                f"{label}: {value.getValue():.4f}\n"
-                if model.SolCount and value is not None
-                else f"{label}:\n"
-            )
-        file.write(f"Big M: {float(variables['H']):.4f}\n")
-        file.write(f"Runtime [s]: {float(model.Runtime):.4f}\n")
-        file.write(f"Solution count: {int(model.SolCount)}\n")
-        write_model_structure(file, model)
-        if model.SolCount:
-            file.write("\nY values:\n")
-            for index in variables["Y_index"]:
-                file.write(f"Y{index}={int(round(variables['Y'][index].X))}\n")
-    return path
+    return write_comparable_solution(
+        model,
+        variables,
+        filename,
+        instance=instance,
+    )

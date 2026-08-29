@@ -55,6 +55,17 @@ def _selected_machine(variables, operation):
     )
 
 
+def _operation_start(variables, operation):
+    """Return an explicit start variable or derive it from completion."""
+    if variables.get("S") is not None:
+        return _value(variables["S"][operation])
+    machine = _selected_machine(variables, operation)
+    return (
+        _value(variables["C"][operation])
+        - float(variables["processing_times"][operation, machine])
+    )
+
+
 def _active_machine_edges(variables):
     """Return immediate machine-predecessor edges of the incumbent schedule."""
     if variables.get("U") is not None:
@@ -76,7 +87,7 @@ def _active_machine_edges(variables):
         ordered = sorted(
             operations,
             key=lambda operation: (
-                _value(variables["S"][operation]),
+                _operation_start(variables, operation),
                 _value(variables["C"][operation]),
                 operation,
             ),
@@ -105,13 +116,6 @@ def _model_structure(model):
     }
 
 
-def write_model_structure(file, model):
-    """Write the compact structure block used by the nominal FJSP writer."""
-    file.write("\nModel structure:\n")
-    for name, count in _model_structure(model).items():
-        file.write(f"{name}: {count}\n")
-
-
 def write_comparable_solution(
     model,
     variables,
@@ -137,10 +141,16 @@ def write_comparable_solution(
         file.write(f"Makespan: {_number(variables.get('C_max'))}\n")
         file.write(f"Processing cost: {_number(variables.get('processing_cost'))}\n")
         file.write(f"Operating cost: {_number(variables.get('operating_cost'))}\n")
+        file.write(f"Tardiness cost: {_number(variables.get('tardiness_cost'))}\n")
+        file.write(f"Total tardiness: {_number(variables.get('total_tardiness'))}\n")
         file.write(f"Total cost: {_number(variables.get('total_cost'))}\n")
         file.write(
             "Facility cost per time: "
             f"{_number(variables.get('facility_cost_per_time'))}\n"
+        )
+        file.write(
+            "Tardiness cost per time: "
+            f"{_number(variables.get('tardiness_cost_per_time'))}\n"
         )
         file.write(f"Objective mode: {variables.get('objective_mode', '')}\n")
         file.write(
@@ -198,13 +208,15 @@ def write_comparable_solution(
             completion = variables["C"][instance.job_end_operations[job]]
             due_date = float(variables["due_dates"][job])
             buffer = buffer_values[job]
+            tardiness = variables.get("job_tardiness", {}).get(job)
             file.write(
                 f"job {job}: completion={_number(completion)}, "
                 f"due_date={due_date:.6f}, "
                 f"expected_repair_buffer={buffer:.6f}, "
                 f"protected_completion={_value(completion) + buffer:.6f}, "
                 "robust_slack="
-                f"{due_date - _value(completion) - buffer:.6f}\n"
+                f"{due_date - _value(completion) - buffer:.6f}, "
+                f"tardiness={_number(tardiness)}\n"
             )
 
         file.write("\nOperation values:\n")
@@ -218,7 +230,7 @@ def write_comparable_solution(
                 pd_gnn = variables["Pd_gnn"].get(operation)
             file.write(
                 f"op {operation}: machine={machine}, "
-                f"S={_number(variables['S'][operation])}, "
+                f"S={_number(_operation_start(variables, operation))}, "
                 f"C={_number(variables['C'][operation])}, "
                 f"T={_number(variables.get('T', {}).get(operation))}, "
                 f"Pd_model={_number(pd_model)}, "

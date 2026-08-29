@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import gurobipy as gp
-from gurobipy import GRB
 
 from helper.sequence_setup import (
     RELIABILITY_GNN_GRAPH_SCHEMA,
@@ -40,9 +39,6 @@ _base = importlib.import_module("03_Gurobi.build_fjsp")
 _nonlinear = importlib.import_module("03_Gurobi.build_fjsp_with_nonlinear")
 _simulation = importlib.import_module("05_Simulation.preempt_resume")
 FixedSchedule = _simulation.FixedSchedule
-normalize_simulation_config = _simulation.normalize_simulation_config
-simulate_fixed_schedule = _simulation.simulate_fixed_schedule
-simulation_config_dict = _simulation.simulation_config_dict
 TARGET_COLUMN = target_column(configured_constraint_type())
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
@@ -776,16 +772,6 @@ def _candidate_from_solution(
     }
 
 
-def _simulation_seed(candidate, instance_name, simulation_config, purpose):
-    run_index, solution_number = candidate["candidate_id"]
-    return _sample_seed(
-        instance_name,
-        run_index,
-        simulation_config.random_seed,
-        f"simulation:{purpose}:solution={solution_number}",
-    )
-
-
 def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
     """Evaluate the reference nonlinear Markov bound on a fixed schedule."""
     schedule = candidate["simulation_schedule"]
@@ -849,39 +835,6 @@ def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
         job_expected_repair_buffers
     )
     return candidate
-
-
-def _apply_simulation_result(candidate, result, simulation_config):
-    """Attach optional MC diagnostics without changing nonlinear labels."""
-    probabilities = list(result.job_ontime_probabilities)
-    total_delay = float(result.mean_total_repair_delay)
-    candidate.update({
-        "job_probabilities": probabilities,
-        "total_failure_delay": total_delay,
-        "min_job_probability": min(probabilities),
-        "service_risk": 1.0 - min(probabilities),
-        "effective_objective": candidate["pool_objective"],
-    })
-    return candidate
-
-
-def _simulate_candidate(
-    candidate,
-    instance_name,
-    simulation_config,
-    *,
-    replications,
-    purpose,
-):
-    result = simulate_fixed_schedule(
-        candidate["simulation_schedule"],
-        replications=int(replications),
-        seed=_simulation_seed(
-            candidate, instance_name, simulation_config, purpose
-        ),
-        config=simulation_config,
-    )
-    return _apply_simulation_result(candidate, result, simulation_config)
 
 
 def _normalized(value, values):
@@ -1585,7 +1538,6 @@ def _run_neighborhood(
     run_index,
     generation,
     graph_config,
-    simulation_config,
     fix_ratio,
     candidate_generation_mode="unconstrained",
     candidate_probability_band=None,
@@ -1911,7 +1863,6 @@ def _collect_instance_candidates(
     instance_name,
     generation,
     graph_config,
-    simulation_config,
     minimum_count,
     *,
     start_run=0,
@@ -1996,7 +1947,6 @@ def _collect_instance_candidates(
             run_index,
             generation,
             graph_config,
-            simulation_config,
             fix_ratio,
             candidate_generation_mode,
             (
@@ -2100,7 +2050,6 @@ def _collect_and_select_instance_candidates(
     instance_name,
     generation,
     graph_config,
-    simulation_config,
     count,
     *,
     split=None,
@@ -2124,7 +2073,6 @@ def _collect_and_select_instance_candidates(
             instance_name,
             generation,
             graph_config,
-            simulation_config,
             int(count),
             start_run=start_run,
             progress=progress,
@@ -2167,7 +2115,6 @@ def _collect_and_select_instance_candidates(
             instance_name,
             generation,
             graph_config,
-            simulation_config,
             unconstrained_target,
             start_run=start_run,
             progress=progress,
@@ -2181,7 +2128,6 @@ def _collect_and_select_instance_candidates(
             instance_name,
             generation,
             graph_config,
-            simulation_config,
             nominal_target,
             start_run=(
                 int(start_run)
@@ -2219,9 +2165,6 @@ def generate_from_config(generation):
     graph_config = normalize_reliability_graph_config(
         generation.get("reliability_graph")
     )
-    simulation_config = normalize_simulation_config(
-        generation.get("simulation")
-    )
     samples_per_instance = int(generation["samples_per_instance"])
     if samples_per_instance <= 0:
         raise ValueError("samples_per_instance must be positive.")
@@ -2241,7 +2184,7 @@ def generate_from_config(generation):
     )
     summary_path = output_root / failure_handling["summary_filename"]
     summary = {
-        "schema_version": 6,
+        "schema_version": 7,
         "status": "running",
         "started_at_utc": _utc_timestamp(),
         "completed_at_utc": None,
@@ -2253,6 +2196,10 @@ def generate_from_config(generation):
         "adaptive_due_dates": dict(generation.get("adaptive_due_dates") or {}),
         "training_weibull_scale_factors": generation.get(
             "weibull_scale_factors", [1.0]
+        ),
+        "machine_profile_config": generation.get("machine_profile_config"),
+        "time_unit_minutes": float(
+            generation.get("time_unit_minutes", 1.0)
         ),
         "label": {
             "target_column": TARGET_COLUMN,
@@ -2311,7 +2258,6 @@ def generate_from_config(generation):
                                 instance_name,
                                 generation,
                                 graph_config,
-                                simulation_config,
                                 samples_per_instance,
                                 split=split,
                                 progress=report,
@@ -2429,9 +2375,6 @@ def generate_rows_for_instance(
     graph_config = normalize_reliability_graph_config(
         generation.get("reliability_graph")
     )
-    simulation_config = normalize_simulation_config(
-        generation.get("simulation")
-    )
     generation["fixed_y"] = dict(generation.get("fixed_y") or {})
     generation["random_seed"] = int(generation.get("random_seed", 42))
     instance = load_generated_instance(instance_name)
@@ -2440,7 +2383,6 @@ def generate_rows_for_instance(
         instance_name,
         generation,
         graph_config,
-        simulation_config,
         int(count),
         start_run=start_run,
     )

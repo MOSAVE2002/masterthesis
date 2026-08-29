@@ -25,11 +25,12 @@ _architectures = importlib.import_module(
 
 
 BUILD_KEYS = {
-    "gurobi": {"facility_cost_per_time"},
+    "gurobi": {"facility_cost_per_time", "tardiness_cost_per_time"},
     "gurobi_nonlinear": {
         "constraint_type",
         "reliability_graph_config",
         "facility_cost_per_time",
+        "tardiness_cost_per_time",
     },
     "gurobi_gnn": {
         "model_path",
@@ -44,6 +45,7 @@ BUILD_KEYS = {
         "reliability_graph_config",
         "analytic_bounds",
         "facility_cost_per_time",
+        "tardiness_cost_per_time",
     },
 }
 
@@ -200,7 +202,8 @@ def solveModel(**kwargs):
         if variables.get("processing_cost") is not None:
             print(
                 f"  processing cost={variables['processing_cost'].getValue():.6f} | "
-                f"operating cost={variables['operating_cost'].getValue():.6f}"
+                f"operating cost={variables['operating_cost'].getValue():.6f} | "
+                f"tardiness cost={variables['tardiness_cost'].getValue():.6f}"
             )
     if write_solution:
         path = _solution_path(solver, instance_name, variables)

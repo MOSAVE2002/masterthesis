@@ -36,6 +36,7 @@ from helper.sequence_setup import (
 )
 from helper.stochastic_fjsp import (
     ensure_stochastic_parameters,
+    normalize_machine_profile_config,
     stochastic_parameters,
 )
 _gnn_architecture = importlib.import_module(
@@ -100,7 +101,7 @@ def _load_metadata(metadata_path):
         convolution in {CONV_SAGE, CONV_JOB}
         and not metadata.get("include_job_precedence_edges", False)
     ):
-        raise ValueError("The job-probability GNN requires fixed job edges.")
+        raise ValueError("The job-buffer GNN requires fixed job edges.")
     if (
         convolution == CONV_SAGE
         and not metadata.get("include_machine_predecessor_edges", False)
@@ -843,8 +844,9 @@ def build_fjsp(
     reliability_graph_config=None,
     analytic_bounds=True,
     facility_cost_per_time=1.0,
+    tardiness_cost_per_time=1.0,
 ):
-    """Build the ReLU-GNN MILP with one on-time probability per job."""
+    """Build the ReLU-GNN MILP with one expected repair buffer per job."""
     model = fjsp
     analytic_bounds = bool(analytic_bounds)
     constraint_type = validate_constraint_type(constraint_type)
@@ -929,12 +931,38 @@ def build_fjsp(
             f"metadata={metadata_prediction_config}, "
             f"solver={solver_prediction_config}."
         )
+    metadata_profiles = metadata.get("machine_profile_config")
+    if metadata_profiles is None:
+        raise ValueError(
+            "GNN metadata does not contain machine_profile_config. "
+            "Regenerate the training data and retrain the GNN before solving."
+        )
+    expected_profiles = normalize_machine_profile_config(metadata_profiles)
+    actual_profiles = normalize_machine_profile_config(
+        getattr(instance, "machine_profile_config", None)
+    )
+    if expected_profiles != actual_profiles:
+        raise ValueError(
+            "GNN machine profiles differ from the solved instance. "
+            "Regenerate the training data and retrain the GNN."
+        )
+    metadata_time_unit = metadata.get("time_unit_minutes")
+    if metadata_time_unit is None or not math.isclose(
+        float(metadata_time_unit),
+        float(getattr(instance, "time_unit_minutes", 1.0)),
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            "GNN time-unit metadata differs from the solved instance. "
+            "Regenerate the training data and retrain the GNN."
+        )
     model, variables = build_base_fjsp(
         model,
         instance,
         include_makespan=False,
-        horizon_upper_bound=max(instance.due_dates.values()),
-        enforce_due_dates=True,
+        horizon_upper_bound=None,
+        enforce_due_dates=False,
         economic_objective=False,
     )
     for operation in variables["real_operations"]:
@@ -987,8 +1015,9 @@ def build_fjsp(
         variables,
         instance,
         facility_cost_per_time=facility_cost_per_time,
+        tardiness_cost_per_time=tardiness_cost_per_time,
     )
-    formulation = "gnn_expected_repair_buffer_cost_v12"
+    formulation = "gnn_expected_repair_buffer_tardiness_cost_v13"
     variables.update({
         "formulation": formulation,
     })

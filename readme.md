@@ -30,14 +30,17 @@ Die produktiven Modelle minimieren gemeinsam
 
 \[
 \sum_{i,k} c_k p_{ik}Y_{ik}
-+c_{Halle}\,C_{\max}.
++c_{Halle}\,C_{\max}
++c_L\sum_{u\in\mathcal J}L_u.
 \]
 
 Der erste Term erfasst die Maschinenkosten während der Bearbeitung. Der zweite
-Term bildet die Hallenbetriebskosten bis zum Makespan ab. Die Kostenrate wird
-über `objective.facility_cost_per_time` konfiguriert. Dieselbe Zielfunktion
-wird im nichtlinearen Modell, im GNN-Modell und bei der Erzeugung der
-Kandidatenschedules verwendet.
+Term bildet die Hallenbetriebskosten bis zum Makespan ab. Der dritte Term
+bestraft die Summe der jobspezifischen Verspätungen. Die Kostenraten werden
+über `objective.facility_cost_per_time` und
+`objective.tardiness_cost_per_time` konfiguriert. Beide stehen aktuell auf
+eins. Dieselbe Zielfunktion wird im Grundmodell, im nichtlinearen Modell, im
+GNN-Modell und bei der Erzeugung der Kandidatenschedules verwendet.
 
 ## Maschinenprofile
 
@@ -56,7 +59,10 @@ Profilklassen ausgeführt werden. Ihre Bearbeitungszeit entsteht
 aus einer Basiszeit, dem Geschwindigkeitsfaktor des Profils und einem kleinen
 Operationsrauschen. Die
 Profile werden unter `instances.generation.machine_profiles` konfiguriert und
-bleiben bei der Monte-Carlo-Erzeugung der Trainingslabels unverändert.
+bleiben bei der analytischen Erzeugung der Trainingslabels unverändert.
+Eine Zeiteinheit entspricht zehn Minuten. Die mittleren exponentiellen
+Reparaturzeiten betragen 30 ZE beziehungsweise fünf Stunden für `old` und
+15 ZE beziehungsweise zweieinhalb Stunden für `new`.
 
 ## Referenzmodell
 
@@ -82,17 +88,27 @@ bestimmt. Für jeden Job wird daraus der erwartete Reparaturpuffer
 B_u^{NL}=\sum_{i\in\mathcal O_u}\Delta_i
 \]
 
-gebildet. Die nicht fortgepflanzte Due-Date-Constraint lautet
+gebildet. Mit der nichtnegativen Verspätungsvariablen (L_u) lautet die
+nicht fortgepflanzte Due-Date-Constraint
 
 \[
-C_u+B_u^{NL}\le d_u\qquad\forall u\in\mathcal J.
+C_u+B_u^{NL}\le d_u+L_u,
+\qquad L_u\ge0,
+\qquad\forall u\in\mathcal J.
 \]
 
-Der Alpha-Servicegrad ist keine
-Optimierungsconstraint; er wird ausschließlich nach der Optimierung durch die
-Monte-Carlo-Simulation bestimmt. Zusammen mit den
+Im Grundmodell gilt (B_u=0). Due Dates sind daher in allen drei Modellen
+weich: Eine Überschreitung bleibt zulässig, wird aber mit (c_L L_u) in der
+Zielfunktion bestraft. Die Variable (L_u) ist eine deterministische
+Optimierungsgröße und nicht mit der später simulierten stochastischen
+Verspätung gleichzusetzen.
+
+Der Alpha-Servicegrad ist keine Optimierungsconstraint. Die Optimierung fordert
+insbesondere keine vorgegebene Wahrscheinlichkeit für die Einhaltung der Due
+Dates. Der konfigurierte Servicewert wird erst in der nachgelagerten Auswertung
+als diagnostische Referenzschwelle verwendet. Zusammen mit den
 Weibull-Integralen bleibt das Referenzmodell ein MINLP. `service_scope` steht
-für diese Pipeline auf `"job"`.
+für diese Auswertung auf `"job"`.
 
 Die einzige aktive Simulation verwendet dieselbe operationsbezogene
 Midpoint-Snapshot-Wahrscheinlichkeit wie das Referenzmodell. Bedingt auf einen
@@ -101,6 +117,16 @@ resultierende Verzögerung wird über die festen Job- und Maschinenkanten nach
 rechts fortgepflanzt. Damit gilt je Operation konsistent
 \(E[\Delta_i]=Pd_i(t_i)/\lambda_i\); es gibt weder eine zusätzliche Skalierung
 noch einen Renewal-Prozess oder Leerlaufausfälle.
+
+Die Simulation ist ein unabhängiges Post-Solve-Experiment: Sie verändert den
+Schedule nicht und gibt keine Nebenbedingung an den Solver zurück. Ein Job gilt
+in einer Replikation als pünktlich, wenn seine simulierte Fertigstellungszeit
+seine Due Date nicht überschreitet. Über viele Replikationen entsteht daraus
+für jeden Job eine empirische On-Time-Wahrscheinlichkeit. Die Evaluation
+vergleicht damit, wie viele beziehungsweise welche Schedules unter
+unterschiedlichen Due-Date-, Ausfall- und Reparaturparametern robust
+funktionieren. Eine Einteilung anhand des konfigurierten Servicewerts ist dabei
+nur eine Auswertungskennzahl und kein Bestandteil des mathematischen Modells.
 
 ## GNN-Ersatzmodell
 
@@ -138,7 +164,8 @@ Operationsknoten jedes Jobs zusammen. Für jeden Job gilt im eingebetteten
 Modell dieselbe unskalierte Constraint wie im Referenzmodell:
 
 \[
-C_u+\widehat B_u\le d_u.
+C_u+\widehat B_u\le d_u+L_u,
+\qquad L_u\ge0.
 \]
 
 Das GNN-Modell ist ein MILP, während das Referenzmodell das schwierige MINLP
@@ -147,10 +174,11 @@ bleibt.
 ## Trainingsdaten
 
 Fix-and-Optimize erzeugt Maschinenzuordnungen und unmittelbare
-Maschinenfolgen. Im Modus `nonlinear_evaluated` wird jede feste Struktur vor
-der nichtlinearen Auswertung und Simulation kanonisch auf ihren frühestmöglichen
-Schedule nach links geschoben. Jeder Schedule-Graph wird in genau einer
-CSV-Zeile gespeichert.
+Maschinenfolgen. Im Modus `nonlinear_evaluated` werden die von Gurobi
+optimierten Start- und Fertigstellungszeiten übernommen. Für diesen festen
+Schedule wird der jobspezifische erwartete Reparaturpuffer mit derselben
+Midpoint-Weibull-Gleichung wie im Referenzmodell analytisch ausgewertet. Jeder
+Schedule-Graph wird in genau einer CSV-Zeile gespeichert.
 
 Die Trainings-Due-Date wird zunächst durch einen nominalen Makespanlauf
 kalibriert und anschließend einheitlich als
@@ -174,27 +202,20 @@ Diese Zeile enthält unter anderem
 
 ```text
 job_ids=[1,2,3,...]
-job_ontime_probabilities=[P_1^MC,P_2^MC,P_3^MC,...]
+nonlinear_expected_repair_buffer=[B_1^NL,B_2^NL,B_3^NL,...]
 operation_job_indices=[...]
 ```
 
 Damit kann ein Graph beliebig viele Jobs und ebenso viele unterschiedliche
-Joblabels enthalten. `job_probability_label_method` dokumentiert die
-Monte-Carlo-Pünktlichkeitsanteile; die nichtlinearen Markov-Näherungen werden
-getrennt im technisch weiterhin so benannten Feld
-`nonlinear_job_ontime_probability_lbs` gespeichert.
-
-Die aktive Simulation zieht für jede Operation genau einen Ausfallzustand mit
-der nichtlinearen Wahrscheinlichkeit am nominalen Operationsmittelpunkt. Bei
-einem Ausfall wird eine verbleibende exponentielle Reparaturdauer addiert. Die
-Verzögerung verschiebt alle Nachfolger entlang der festen Job- und
-Maschinenkanten nach rechts. Leerlaufausfälle, kontinuierliches Maschinenalter
-und wiederholte Ausfälle innerhalb einer Operation sind nicht Bestandteil des
-gewählten stochastischen Modells.
+Joblabels enthalten. Die Trainingslabels sind analytische erwartete
+Reparaturpuffer; Monte-Carlo-Pünktlichkeitsanteile werden nicht in die
+Trainings-CSV geschrieben. Die aus dem erwarteten Puffer und dem nominalen
+Due-Date-Slack abgeleitete Markov-Untergrenze wird nur intern zur ausgewogenen
+Kandidatenauswahl verwendet.
 
 Die Daten werden unter `02_data/gnn_dataset` geschrieben. Die aktiven Modelle
-liegen unter
-`04_GraphNeuralNetworks/trained_gnn_models/job_ontime_v3`.
+liegen in den architekturspezifischen Unterverzeichnissen von
+`04_GraphNeuralNetworks/trained_gnn_models`.
 
 ## Ausführung
 
@@ -230,6 +251,12 @@ Auswertung simuliert die gespeicherten Solver-Schedules unabhängig nach und
 schreibt die Vergleichstabellen nach `06_Evaluation/results`. Die Instanzgrößen für
 Training und die in-distribution Evaluation werden zentral über
 `instances.generation.num_jobs` und `num_machines` festgelegt.
+
+Der zusätzliche Schalter `solve.create_instances` steuert die getrennten
+Benchmark-, Extrapolations- und Stressinstanzen. Bei `true` wird für jeden unter
+`solve.evaluation` aktivierten Tier der vollständig konfigurierte Instanzsatz im
+zugehörigen Faktorordner neu erzeugt. Bei `false` werden vorhandene Instanzen
+nur wiederverwendet, wenn ihr Dateisatz exakt zum konfigurierten Plan passt.
 
 ### Produktionsplan und Graphen plotten
 

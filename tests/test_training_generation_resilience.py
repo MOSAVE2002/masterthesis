@@ -52,7 +52,6 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
                 "random_seed": 42,
                 "samples_per_instance": 1,
                 "reliability_graph": {},
-                "simulation": {},
                 "fixed_y": {"fix_ratios": [0.25]},
                 "instance_failure_handling": {
                     "summary_filename": "generation_summary.json",
@@ -69,14 +68,8 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
                     "_collect_and_select_instance_candidates",
                     side_effect=collect,
                 ),
-                patch.object(
-                    generator,
-                    "_simulate_candidate",
-                    side_effect=lambda value, *_args, **_kwargs: value,
-                ) as simulate,
             ):
                 returned = generator.generate_from_config(generation)
-            simulate.assert_not_called()
 
             summary_path = Path(directory) / "generation_summary.json"
             summary = json.loads(summary_path.read_text(encoding="utf-8"))

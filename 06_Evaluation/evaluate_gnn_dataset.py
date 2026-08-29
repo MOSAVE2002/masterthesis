@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import tempfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 
@@ -225,30 +225,6 @@ def _distribution_rows(
                 boundary_width,
             ))
     return result
-
-
-def _classification_metrics(labels, predictions, threshold):
-    true = [value >= threshold for value in labels]
-    predicted = [value >= threshold for value in predictions]
-    tp = sum(actual and estimate for actual, estimate in zip(true, predicted))
-    tn = sum(not actual and not estimate for actual, estimate in zip(true, predicted))
-    fp = sum(not actual and estimate for actual, estimate in zip(true, predicted))
-    fn = sum(actual and not estimate for actual, estimate in zip(true, predicted))
-    recall = _safe_divide(tp, tp + fn)
-    specificity = _safe_divide(tn, tn + fp)
-    precision = _safe_divide(tp, tp + fp)
-    return {
-        "accuracy": _safe_divide(tp + tn, len(labels)),
-        "balanced_accuracy": 0.5 * (recall + specificity),
-        "precision": precision,
-        "recall": recall,
-        "specificity": specificity,
-        "f1": _safe_divide(2.0 * precision * recall, precision + recall),
-        "true_positive": tp,
-        "true_negative": tn,
-        "false_positive": fp,
-        "false_negative": fn,
-    }
 
 
 def _constant_baseline_rows(

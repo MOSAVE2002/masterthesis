@@ -1,5 +1,5 @@
 {
-  "schema_version": 30,
+  "schema_version": 31,
 
   "workflow": {
     "create_instances": false,
@@ -14,8 +14,9 @@
       "num_jobs": [3, 4, 5],
       "num_machines": [3, 4, 5],
       "operations_per_job": [3, 5],
-      "instances_per_size": 35,
-      "random_seed": 69,
+      "instances_per_size": 70,
+      "random_seed": 19,
+      "time_unit_minutes": 10,
       "processing_times": {
         "base_range": [5, 15]
       },
@@ -26,14 +27,14 @@
             "speed": 0.80,
             "weibull_alpha": 60.0,
             "weibull_beta": 3.0,
-            "repair_rate": 0.15
+            "repair_rate": 0.03333333333333333
           },
           "new": {
             "cost_rate": 1.60,
             "speed": 1.25,
             "weibull_alpha": 100.0,
             "weibull_beta": 2.0,
-            "repair_rate": 0.40
+            "repair_rate": 0.06666666666666667
           }
         },
         "parameter_jitter": {
@@ -61,24 +62,26 @@
   },
 
   "objective": {
-    "type": "minimize_processing_plus_operating_cost",
-    "facility_cost_per_time": 1.0
+    "type": "minimize_processing_plus_operating_plus_tardiness_cost",
+    "facility_cost_per_time": 1.0,
+    "tardiness_cost_per_time": 1.0
   },
 
   "solve": {
+    "create_instances": true,
     "solvers": ["gurobi_nonlinear", "gurobi_gnn", "gurobi"],
     "evaluation": {
       "random_seed": 2026,
       "instance_directory": "02_data/fjsp_instances",
       "in_distribution": {
         "enabled": false,
-        "instances_per_size": 2
+        "instances_per_size": 5
       },
       "benchmark": {
         "enabled": true,
         "reuse_existing_instances": true,
-        "num_jobs": [5],
-        "num_machines": [3],
+        "num_jobs": [3,5],
+        "num_machines": [3,5],
         "instances_per_size": 5,
         "due_date_factors": [1.60]
       },
@@ -250,8 +253,8 @@
       },
 
       "validation": {
-        "interval_epochs": 10,
-        "patience_epochs": 30,
+        "interval_epochs": 100,
+        "patience_epochs": 100,
         "enforce_graph_influence": false
       }
     }

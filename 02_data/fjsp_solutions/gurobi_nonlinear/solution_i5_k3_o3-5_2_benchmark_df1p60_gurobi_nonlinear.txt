@@ -1,86 +1,95 @@
 Solution summary:
-Formulation: nonlinear_expected_repair_buffer_cost_v9
+Formulation: nonlinear_expected_repair_buffer_tardiness_cost_v10
 Status: INTERRUPTED
-Objective definition: sum_{i,k} c_k*p_ik*Y_ik + c_B*C_max
-Objective: 381.551824
-Makespan: 92.151824
-Processing cost: 289.400000
-Operating cost: 92.151824
-Total cost: 381.551824
+Objective definition: sum_{i,k} c_k*p_ik*Y_ik + c_B*C_max + c_L*sum_j L_j
+Objective: 397.599997
+Makespan: 90.999997
+Processing cost: 306.600000
+Operating cost: 90.999997
+Tardiness cost: 0.000000
+Total tardiness: 0.000000
+Total cost: 397.599997
 Facility cost per time: 1.000000
-Objective mode: minimize_economic_cost
-Best bound: 342.613373
-MIP gap: 0.102053
-Runtime [s]: 12.256953
-Model build runtime [s]: 0.019526
-Optimizer wall runtime [s]: 12.256898
-Build plus optimizer runtime [s]: 12.276424
-Solution count: 8
-variables: 1076
-continuous: 691
-binary: 385
+Tardiness cost per time: 1.000000
+Objective mode: minimize_economic_cost_with_tardiness
+Best bound: 362.200000
+MIP gap: 0.089034
+Runtime [s]: 3458.168728
+Model build runtime [s]: 0.018755
+Optimizer wall runtime [s]: 3458.247557
+Build plus optimizer runtime [s]: 3458.266311
+Solution count: 10
+variables: 1219
+continuous: 761
+binary: 458
 integer: 0
-linear_constraints: 925
+linear_constraints: 1085
 quadratic_constraints: 0
-general_constraints: 585
-nonlinear_constraints: 585
+general_constraints: 637
+nonlinear_constraints: 637
 
 Stochastic formulation:
 Constraint type: weibull
 Service scope: job
-Due dates: {1: 101.0, 2: 101.0, 3: 101.0, 4: 101.0, 5: 101.0}
+Due dates: {1: 110.0, 2: 110.0, 3: 110.0, 4: 110.0, 5: 110.0}
 GNN convolution: 
 GNN layers: 
 GNN hidden channels: 
 
 Expected repair-buffer summary:
-Maximum expected job repair buffer: 1.652977
+Maximum expected job repair buffer: 29.429627
 Repair buffer label method: weibull_expected_repair_buffer_v1
 
 Per-job expected repair buffers:
-job 1: completion=88.671719, due_date=101.000000, expected_repair_buffer=0.291666, protected_completion=88.963384, robust_slack=12.036616
-job 2: completion=92.151477, due_date=101.000000, expected_repair_buffer=1.260335, protected_completion=93.411813, robust_slack=7.588187
-job 3: completion=90.835607, due_date=101.000000, expected_repair_buffer=1.652977, protected_completion=92.488584, robust_slack=8.511416
-job 4: completion=76.151069, due_date=101.000000, expected_repair_buffer=1.585272, protected_completion=77.736341, robust_slack=23.263659
-job 5: completion=80.171268, due_date=101.000000, expected_repair_buffer=0.753276, protected_completion=80.924544, robust_slack=20.075456
+job 1: completion=90.999998, due_date=110.000000, expected_repair_buffer=15.084632, protected_completion=106.084630, robust_slack=3.915370, tardiness=0.000000
+job 2: completion=68.119471, due_date=110.000000, expected_repair_buffer=29.429627, protected_completion=97.549099, robust_slack=12.450901, tardiness=0.000000
+job 3: completion=67.999999, due_date=110.000000, expected_repair_buffer=3.646081, protected_completion=71.646080, robust_slack=38.353920, tardiness=0.000000
+job 4: completion=85.999999, due_date=110.000000, expected_repair_buffer=19.734775, protected_completion=105.734774, robust_slack=4.265226, tardiness=0.000000
+job 5: completion=88.588048, due_date=110.000000, expected_repair_buffer=15.372489, protected_completion=103.960537, robust_slack=6.039463, tardiness=0.000000
 
 Operation values:
-op 1: machine=0, S=9.105252, C=13.105252, T=11.105252, Pd_model=0.004279, Pd_gnn=
-op 2: machine=1, S=13.123193, C=32.123193, T=22.623193, Pd_model=0.026480, Pd_gnn=
-op 3: machine=0, S=57.823505, C=66.823505, T=62.323505, Pd_model=0.020883, Pd_gnn=
-op 4: machine=0, S=80.671719, C=88.671719, T=84.671719, Pd_model=0.020892, Pd_gnn=
-op 5: machine=0, S=2.074082, C=9.074082, T=5.574082, Pd_model=0.001668, Pd_gnn=
-op 6: machine=0, S=29.424885, C=41.424885, T=35.424885, Pd_model=0.014746, Pd_gnn=
-op 7: machine=0, S=41.815270, C=50.815270, T=46.315270, Pd_model=0.018052, Pd_gnn=
-op 8: machine=2, S=62.070950, C=76.070950, T=69.070950, Pd_model=0.112006, Pd_gnn=
-op 9: machine=1, S=76.151477, C=92.151477, T=84.151477, Pd_model=0.064120, Pd_gnn=
-op 10: machine=2, S=27.149881, C=43.149881, T=35.149881, Pd_model=0.068804, Pd_gnn=
-op 11: machine=1, S=44.144721, C=59.144721, T=51.644721, Pd_model=0.118999, Pd_gnn=
-op 12: machine=2, S=79.835607, C=90.835607, T=85.335607, Pd_model=0.060144, Pd_gnn=
-op 13: machine=2, S=0.146811, C=11.146811, T=5.646811, Pd_model=0.000683, Pd_gnn=
-op 14: machine=0, S=18.110153, C=29.110153, T=23.610153, Pd_model=0.010078, Pd_gnn=
-op 15: machine=2, S=43.150546, C=59.150546, T=51.150546, Pd_model=0.118117, Pd_gnn=
-op 16: machine=1, S=59.151069, C=76.151069, T=67.651069, Pd_model=0.115211, Pd_gnn=
-op 17: machine=2, S=11.148866, C=27.148866, T=19.148866, Pd_model=0.017710, Pd_gnn=
-op 18: machine=1, S=32.135269, C=44.135269, T=38.135269, Pd_model=0.079830, Pd_gnn=
-op 19: machine=0, S=51.374956, C=57.374956, T=54.374956, Pd_model=0.019788, Pd_gnn=
-op 20: machine=0, S=67.171268, C=80.171268, T=73.671268, Pd_model=0.021416, Pd_gnn=
+op 1: machine=0, S=1.027330, C=19.027330, T=10.027330, Pd_model=0.004292, Pd_gnn=
+op 2: machine=2, S=20.000000, C=28.000000, T=24.000000, Pd_model=0.034868, Pd_gnn=
+op 3: machine=2, S=28.000000, C=35.000000, T=31.500000, Pd_model=0.051724, Pd_gnn=
+op 4: machine=1, S=67.999998, C=85.999998, T=76.999998, Pd_model=0.393818, Pd_gnn=
+op 5: machine=2, S=85.999998, C=90.999998, T=88.499998, Pd_model=0.122830, Pd_gnn=
+op 6: machine=2, S=0.000000, C=4.000000, T=2.000000, Pd_model=0.000383, Pd_gnn=
+op 7: machine=0, S=19.027330, C=35.027330, T=27.027330, Pd_model=0.070452, Pd_gnn=
+op 8: machine=0, S=35.027330, C=43.027330, T=39.027330, Pd_model=0.175778, Pd_gnn=
+op 9: machine=1, S=49.079787, C=62.079787, T=55.579787, Pd_model=0.339709, Pd_gnn=
+op 10: machine=0, S=62.119471, C=68.119471, T=65.119471, Pd_model=0.394858, Pd_gnn=
+op 11: machine=1, S=0.000000, C=9.000000, T=4.500000, Pd_model=0.000406, Pd_gnn=
+op 12: machine=1, S=9.000000, C=25.000000, T=17.000000, Pd_model=0.019619, Pd_gnn=
+op 13: machine=2, S=45.999999, C=57.999999, T=51.999999, Pd_model=0.093571, Pd_gnn=
+op 14: machine=2, S=57.999999, C=67.999999, T=62.999999, Pd_model=0.109450, Pd_gnn=
+op 15: machine=2, S=15.000000, C=20.000000, T=17.500000, Pd_model=0.021139, Pd_gnn=
+op 16: machine=1, S=33.000000, C=48.000000, T=40.500000, Pd_model=0.190948, Pd_gnn=
+op 17: machine=0, S=48.119471, C=62.119471, T=55.119471, Pd_model=0.335960, Pd_gnn=
+op 18: machine=2, S=67.999999, C=76.999999, T=72.499999, Pd_model=0.118299, Pd_gnn=
+op 19: machine=2, S=76.999999, C=85.999999, T=81.499999, Pd_model=0.122398, Pd_gnn=
+op 20: machine=2, S=4.000000, C=15.000000, T=9.500000, Pd_model=0.007351, Pd_gnn=
+op 21: machine=1, S=25.000000, C=33.000000, T=29.000000, Pd_model=0.084777, Pd_gnn=
+op 22: machine=2, S=34.999999, C=45.999999, T=40.499999, Pd_model=0.071506, Pd_gnn=
+op 23: machine=0, S=68.588048, C=88.588048, T=78.588048, Pd_model=0.388211, Pd_gnn=
 
 Active U edges:
-U(5, 1, 0)=1
-U(1, 14, 0)=1
-U(14, 6, 0)=1
-U(6, 7, 0)=1
-U(7, 19, 0)=1
-U(19, 3, 0)=1
-U(3, 20, 0)=1
-U(20, 4, 0)=1
-U(2, 18, 1)=1
-U(18, 11, 1)=1
-U(11, 16, 1)=1
+U(1, 7, 0)=1
+U(7, 8, 0)=1
+U(8, 17, 0)=1
+U(17, 10, 0)=1
+U(10, 23, 0)=1
+U(11, 12, 1)=1
+U(12, 21, 1)=1
+U(21, 16, 1)=1
 U(16, 9, 1)=1
-U(13, 17, 2)=1
-U(17, 10, 2)=1
-U(10, 15, 2)=1
-U(15, 8, 2)=1
-U(8, 12, 2)=1
+U(9, 4, 1)=1
+U(6, 20, 2)=1
+U(20, 15, 2)=1
+U(15, 2, 2)=1
+U(2, 3, 2)=1
+U(3, 22, 2)=1
+U(22, 13, 2)=1
+U(13, 14, 2)=1
+U(14, 18, 2)=1
+U(18, 19, 2)=1
+U(19, 5, 2)=1

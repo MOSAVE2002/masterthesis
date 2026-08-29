@@ -1,4 +1,4 @@
-"""Entry point for the jobspecific service-probability pipeline."""
+"""Entry point for the job-specific expected-repair-buffer pipeline."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import random
 from pathlib import Path
 
 from helper.sequence_setup import normalize_reliability_graph_config
+from helper.stochastic_fjsp import normalize_machine_profile_config
 from helper.start_solve_ins import solve_instances_with_solver
 from helper.surrogate_constraint import target_column
 
@@ -120,6 +121,7 @@ def _configured_instance_splits(config, specs):
             ).get("relative_deviation"),
             machine_parameter_ranges=generation.get("machine_parameters"),
             machine_profile_config=generation.get("machine_profiles"),
+            time_unit_minutes=generation.get("time_unit_minutes", 1.0),
         )
 
     due_date_factors = [
@@ -174,6 +176,12 @@ def _generate_data(config, splits):
         "beta_range": ranges.get("beta"),
         "repair_rate_range": ranges.get("repair_rate"),
         "weibull_scale_factors": data.get("weibull_scale_factors"),
+        "machine_profile_config": config["instances"]["generation"][
+            "machine_profiles"
+        ],
+        "time_unit_minutes": config["instances"]["generation"].get(
+            "time_unit_minutes", 1.0
+        ),
         "adaptive_due_dates": data.get("adaptive_due_dates"),
         "reliability_graph": config["constraint"]["weibull"][
             "reliability_graph"
@@ -258,6 +266,9 @@ def _generated_tier_plan(config, tier_name):
     if tier_name not in {"benchmark", "extrapolation", "stress"}:
         raise ValueError(f"Unknown generated evaluation tier: {tier_name}")
     evaluation = config["solve"].get("evaluation", {})
+    create_instances = bool(
+        config["solve"].get("create_instances", False)
+    )
     generation = config["instances"]["generation"]
     root = _absolute(
         evaluation.get(
@@ -326,30 +337,7 @@ def _generated_tier_plan(config, tier_name):
         reuse_existing = bool(
             tier.get("reuse_existing_instances", True)
         )
-        if reuse_existing and existing_paths:
-            expected_set = {path.resolve() for path in expected_paths}
-            existing_set = {path.resolve() for path in existing_paths}
-            if existing_set != expected_set:
-                missing = sorted(
-                    path.name for path in expected_set - existing_set
-                )
-                unexpected = sorted(
-                    path.name for path in existing_set - expected_set
-                )
-                raise ValueError(
-                    f"Existing {tier_name} instances do not match the "
-                    "configured evaluation plan. To preserve benchmark "
-                    "instances, no files were overwritten. "
-                    f"Missing={missing}; unexpected={unexpected}. Delete "
-                    f"or move {directory} explicitly to generate a new set."
-                )
-            paths = expected_paths
-            print(
-                f"Reusing {len(paths)} unchanged {tier_name} instances "
-                f"from: {directory}",
-                flush=True,
-            )
-        else:
+        if create_instances:
             paths = _instances.generate_evaluation_instance_specs(
                 specs,
                 random_seed=int(evaluation.get("random_seed", 2026)),
@@ -366,6 +354,45 @@ def _generated_tier_plan(config, tier_name):
                 machine_profile_config=generation.get("machine_profiles"),
                 due_date_config=due_date_config,
                 instance_name_suffix=suffix,
+                time_unit_minutes=generation.get("time_unit_minutes", 1.0),
+            )
+        elif reuse_existing and existing_paths:
+            expected_set = {path.resolve() for path in expected_paths}
+            existing_set = {path.resolve() for path in existing_paths}
+            if existing_set != expected_set:
+                missing = sorted(
+                    path.name for path in expected_set - existing_set
+                )
+                unexpected = sorted(
+                    path.name for path in existing_set - expected_set
+                )
+                raise ValueError(
+                    f"Existing {tier_name} instances do not match the "
+                    "configured evaluation plan. To preserve benchmark "
+                    "instances, no files were overwritten. "
+                    f"Missing={missing}; unexpected={unexpected}. Set "
+                    "solve.create_instances to true to replace this folder "
+                    "with the exactly configured set, or move "
+                    f"{directory} explicitly."
+                )
+            paths = expected_paths
+            print(
+                f"Reusing {len(paths)} unchanged {tier_name} instances "
+                f"from: {directory}",
+                flush=True,
+            )
+        elif not existing_paths:
+            raise FileNotFoundError(
+                f"No {tier_name} instances exist in {directory}. Set "
+                "solve.create_instances to true once to generate exactly "
+                "the configured evaluation set."
+            )
+        else:
+            raise ValueError(
+                f"Existing {tier_name} instances may not be regenerated "
+                "while solve.create_instances is false. Either enable "
+                "reuse_existing_instances or set solve.create_instances "
+                "to true explicitly."
             )
         plan.extend({
             "tier": tier_name,
@@ -409,6 +436,34 @@ def _trained_models(config):
             if not model_path.exists() or not metadata_path.exists():
                 raise FileNotFoundError(
                     f"Trained GNN missing: {model_path} / {metadata_path}"
+                )
+            with metadata_path.open(encoding="utf-8") as file:
+                metadata = json.load(file)
+            configured_profiles = normalize_machine_profile_config(
+                config["instances"]["generation"]["machine_profiles"]
+            )
+            metadata_profiles = metadata.get("machine_profile_config")
+            configured_time_unit = float(
+                config["instances"]["generation"].get(
+                    "time_unit_minutes", 1.0
+                )
+            )
+            if (
+                metadata_profiles is None
+                or normalize_machine_profile_config(metadata_profiles)
+                != configured_profiles
+                or not math.isclose(
+                    float(metadata.get("time_unit_minutes", -1.0)),
+                    configured_time_unit,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise ValueError(
+                    "Configured machine profiles or time units differ from "
+                    f"the trained GNN metadata {metadata_path}. Regenerate "
+                    "the training data and retrain all GNN models before "
+                    "running gurobi_gnn."
                 )
             models.append({
                 "convolution": architecture["convolution"],
@@ -490,6 +545,9 @@ def _solve(config, splits):
     common["facility_cost_per_time"] = float(
         config["objective"].get("facility_cost_per_time", 1.0)
     )
+    common["tardiness_cost_per_time"] = float(
+        config["objective"].get("tardiness_cost_per_time", 1.0)
+    )
     constraint = config["constraint"]
     stochastic = {
         "constraint_type": constraint["type"],
@@ -559,6 +617,7 @@ def main(argv=None):
             machine_parameter_ranges=generation.get("machine_parameters"),
             machine_profile_config=generation.get("machine_profiles"),
             due_date_config=_due_date_generation_config(config),
+            time_unit_minutes=generation.get("time_unit_minutes", 1.0),
         )
     splits = _configured_instance_splits(config, specs)
     print(

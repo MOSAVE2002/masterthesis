@@ -1,0 +1,63 @@
+Solution summary:
+Formulation: gnn_expected_repair_buffer_tardiness_cost_v13
+Status: OPTIMAL
+Objective definition: sum_{i,k} c_k*p_ik*Y_ik + c_B*C_max + c_L*sum_j L_j
+Objective: 141.600000
+Makespan: 31.000000
+Processing cost: 110.600000
+Operating cost: 31.000000
+Tardiness cost: 0.000000
+Total tardiness: 0.000000
+Total cost: 141.600000
+Facility cost per time: 1.000000
+Tardiness cost per time: 1.000000
+Objective mode: minimize_economic_cost_with_tardiness
+Best bound: 141.600000
+MIP gap: 0.000000
+Runtime [s]: 0.063686
+Model build runtime [s]: 0.020920
+Optimizer wall runtime [s]: 0.063702
+Build plus optimizer runtime [s]: 0.084622
+Solution count: 3
+variables: 1011
+continuous: 745
+binary: 266
+integer: 0
+linear_constraints: 3054
+quadratic_constraints: 0
+general_constraints: 3
+nonlinear_constraints: 0
+
+Stochastic formulation:
+Constraint type: weibull
+Service scope: job
+Due dates: {1: 50.0, 2: 50.0, 3: 50.0}
+GNN convolution: sage
+GNN layers: 1
+GNN hidden channels: 4
+
+Expected repair-buffer summary:
+Maximum expected job repair buffer: 2.864699
+Repair buffer label method: weibull_expected_repair_buffer_v1
+
+Per-job expected repair buffers:
+job 1: completion=25.000000, due_date=50.000000, expected_repair_buffer=0.710451, protected_completion=25.710451, robust_slack=24.289549, tardiness=0.000000
+job 2: completion=31.000000, due_date=50.000000, expected_repair_buffer=0.586004, protected_completion=31.586004, robust_slack=18.413996, tardiness=0.000000
+job 3: completion=30.000000, due_date=50.000000, expected_repair_buffer=2.864699, protected_completion=32.864699, robust_slack=17.135301, tardiness=0.000000
+
+Operation values:
+op 1: machine=3, S=0.000000, C=8.000000, T=4.000000, Pd_model=, Pd_gnn=
+op 2: machine=3, S=8.000000, C=15.000000, T=11.500000, Pd_model=, Pd_gnn=
+op 3: machine=0, S=15.000000, C=25.000000, T=20.000000, Pd_model=, Pd_gnn=
+op 4: machine=0, S=0.000000, C=11.000000, T=5.500000, Pd_model=, Pd_gnn=
+op 5: machine=2, S=11.000000, C=22.000000, T=16.500000, Pd_model=, Pd_gnn=
+op 6: machine=2, S=22.000000, C=31.000000, T=26.500000, Pd_model=, Pd_gnn=
+op 7: machine=1, S=0.000000, C=14.000000, T=7.000000, Pd_model=, Pd_gnn=
+op 8: machine=4, S=14.000000, C=23.000000, T=18.500000, Pd_model=, Pd_gnn=
+op 9: machine=3, S=23.000000, C=30.000000, T=26.500000, Pd_model=, Pd_gnn=
+
+Active U edges:
+U(1, 2, 3)=1
+U(2, 9, 3)=1
+U(4, 3, 0)=1
+U(5, 6, 2)=1

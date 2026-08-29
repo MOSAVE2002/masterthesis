@@ -69,22 +69,6 @@ def reliability_node_feature_names(_config=None) -> list[str]:
     return list(RELIABILITY_NODE_FEATURE_NAMES)
 
 
-def fixed_machine_multiedges(instance, operations):
-    operation_to_index = {
-        operation: index for index, operation in enumerate(operations)
-    }
-    return [
-        (operation_to_index[source], operation_to_index[target], machine)
-        for source in operations
-        for target in operations
-        if source != target
-        for machine in sorted(
-            set(instance.eligible_machines[source])
-            & set(instance.eligible_machines[target])
-        )
-    ]
-
-
 def directed_machine_order(A_plus, A_minus, source, target, machine):
     """Return the active precedence gate for one directed machine pair."""
     if source < target:

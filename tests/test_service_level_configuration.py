@@ -18,8 +18,11 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
         self.assertEqual(
             config["objective"],
             {
-                "type": "minimize_processing_plus_operating_cost",
+                "type": (
+                    "minimize_processing_plus_operating_plus_tardiness_cost"
+                ),
                 "facility_cost_per_time": 1.0,
+                "tardiness_cost_per_time": 1.0,
             },
         )
         profiles = config["instances"]["generation"]["machine_profiles"]
@@ -37,6 +40,13 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
             4,
         )
         generation = config["instances"]["generation"]
+        self.assertEqual(generation["time_unit_minutes"], 10)
+        self.assertAlmostEqual(
+            profiles["profiles"]["old"]["repair_rate"], 1.0 / 30.0
+        )
+        self.assertAlmostEqual(
+            profiles["profiles"]["new"]["repair_rate"], 1.0 / 15.0
+        )
         self.assertEqual(generation["num_jobs"], [3, 4, 5])
         self.assertEqual(generation["num_machines"], [3, 4, 5])
         split = instances.split_items(
@@ -50,8 +60,7 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
                 "samples_per_instance"
             ]
         )
-        self.assertEqual(training_graphs_per_size, 112)
-        self.assertEqual(training_graphs_per_size * 9, 1008)
+        self.assertEqual(training_graphs_per_size * 9, 2016)
         self.assertNotIn(
             "service_level",
             config["constraint"]["weibull"]["reliability_graph"],
@@ -64,6 +73,7 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
             config["solve"]["evaluation"]["benchmark"]["due_date_factors"],
             [1.60],
         )
+        self.assertTrue(config["solve"]["create_instances"])
         self.assertEqual(
             config["solve"]["evaluation"]["stress"]["due_date_factor"],
             1.60,
