@@ -124,11 +124,19 @@ def _configured_instance_splits(config, specs):
             time_unit_minutes=generation.get("time_unit_minutes", 1.0),
         )
 
+    due_date_config = _due_date_generation_config(config)
+    expected_due_date_method = str(
+        due_date_config.get("method", "total_work_content")
+    )
+    expected_due_date_aggregation = str(
+        due_date_config.get("machine_aggregation", "mean")
+    )
+    expected_due_date_assignment = str(
+        due_date_config.get("assignment", "cyclic")
+    )
     due_date_factors = [
         float(value)
-        for value in config["instances"]["generation"]
-        .get("due_dates", {})
-        .get("factors", [])
+        for value in due_date_config.get("factors", [])
     ]
     if not due_date_factors:
         raise ValueError("instances.generation.due_dates.factors is empty.")
@@ -142,15 +150,32 @@ def _configured_instance_splits(config, specs):
             (int(instance.nb_instance) - 1) % len(due_date_factors)
         ]
         actual_factor = getattr(instance, "due_date_factor", None)
-        if actual_factor is None or not math.isclose(
-            float(actual_factor),
-            expected_factor,
-            rel_tol=0.0,
-            abs_tol=1e-12,
+        due_date_context_matches = (
+            getattr(instance, "due_date_method", None)
+            == expected_due_date_method
+            and getattr(instance, "due_date_machine_aggregation", None)
+            == expected_due_date_aggregation
+            and getattr(instance, "due_date_assignment", None)
+            == expected_due_date_assignment
+        )
+        if (
+            actual_factor is None
+            or not math.isclose(
+                float(actual_factor),
+                expected_factor,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or not due_date_context_matches
         ):
             raise ValueError(
                 f"Instance {name} contains due_date_factor="
-                f"{actual_factor}, but config requires {expected_factor}. "
+                f"{actual_factor} and due_date_method="
+                f"{getattr(instance, 'due_date_method', None)!r}, but config "
+                f"requires factor={expected_factor}, method="
+                f"{expected_due_date_method!r}, machine_aggregation="
+                f"{expected_due_date_aggregation!r}, assignment="
+                f"{expected_due_date_assignment!r}. "
                 "Regenerate the instances before running the pipeline."
             )
     return splits
@@ -169,6 +194,7 @@ def _generate_data(config, splits):
         "output_directory": data["output_directory"],
         "random_seed": int(data.get("random_seed", 42)),
         "samples_per_instance": int(data["samples_per_instance"]),
+        "simulation": data.get("simulation"),
         "instance_failure_handling": data.get(
             "instance_failure_handling"
         ),
@@ -293,33 +319,162 @@ def _generated_tier_plan(config, tier_name):
         for jobs in tier["num_jobs"]
         for machines in tier["num_machines"]
     ]
-    raw_factors = tier.get("due_date_factors")
-    if raw_factors is None:
-        scalar = tier.get("due_date_factor")
-        raw_factors = [scalar] if scalar is not None else [None]
-    factors = []
-    for raw_factor in raw_factors:
-        factor = None if raw_factor is None else float(raw_factor)
-        if factor is not None and factor <= 0.0:
+    calibrated_config = tier.get("due_dates")
+    if calibrated_config is not None:
+        calibrated_config = dict(calibrated_config)
+        if (
+            tier.get("due_date_factors") is not None
+            or tier.get("due_date_factor") is not None
+        ):
             raise ValueError(
-                f"{tier_name}.due_date_factors must be positive."
+                f"{tier_name}.due_dates cannot be combined with legacy "
+                "due-date factors."
             )
-        if factor in factors:
+        method = str(calibrated_config.get("method", ""))
+        aggregation = str(
+            calibrated_config.get("machine_aggregation", "mean")
+        )
+        if method != "calibrated_total_work_content":
             raise ValueError(
-                f"{tier_name}.due_date_factors must not contain duplicates."
+                f"{tier_name}.due_dates.method must be "
+                "'calibrated_total_work_content'."
             )
-        factors.append(factor)
+        if aggregation != "mean":
+            raise ValueError(
+                f"{tier_name}.due_dates.machine_aggregation must be 'mean'."
+            )
+        has_scalar_offset = "relative_makespan_offset" in calibrated_config
+        has_offset_list = "relative_makespan_offsets" in calibrated_config
+        if has_scalar_offset and has_offset_list:
+            raise ValueError(
+                f"{tier_name}.due_dates must use either "
+                "relative_makespan_offset or relative_makespan_offsets, "
+                "not both."
+            )
+        raw_offsets = calibrated_config.get("relative_makespan_offsets")
+        if raw_offsets is None:
+            raw_offsets = [
+                calibrated_config.get("relative_makespan_offset", 0.0)
+            ]
+        if not isinstance(raw_offsets, (list, tuple)) or not raw_offsets:
+            raise ValueError(
+                f"{tier_name}.due_dates.relative_makespan_offsets must be "
+                "a non-empty list."
+            )
+        offsets = [float(value) for value in raw_offsets]
+        if any(
+            not math.isfinite(offset) or offset <= -1.0
+            for offset in offsets
+        ):
+            raise ValueError(
+                f"{tier_name}.due_dates relative makespan offsets must be "
+                "finite and greater than -1."
+            )
+        if len(set(offsets)) != len(offsets):
+            raise ValueError(
+                f"{tier_name}.due_dates.relative_makespan_offsets must not "
+                "contain duplicates."
+            )
+        variants = []
+        factor_slugs = set()
+        for offset in offsets:
+            offset_slug = (
+                f"{offset:.2f}".replace("-", "m").replace(".", "p")
+            )
+            factor_slug = f"twk_d{offset_slug}"
+            if factor_slug in factor_slugs:
+                raise ValueError(
+                    f"{tier_name}.due_dates relative makespan offsets must "
+                    "remain distinct when rounded to two decimals for "
+                    "directory names."
+                )
+            factor_slugs.add(factor_slug)
+            variants.append({
+                "factor": None,
+                "factor_slug": factor_slug,
+                "calibrated_config": calibrated_config,
+                "relative_makespan_offset": offset,
+            })
+    else:
+        raw_factors = tier.get("due_date_factors")
+        if raw_factors is None:
+            scalar = tier.get("due_date_factor")
+            raw_factors = [scalar] if scalar is not None else [None]
+        factors = []
+        for raw_factor in raw_factors:
+            factor = None if raw_factor is None else float(raw_factor)
+            if factor is not None and factor <= 0.0:
+                raise ValueError(
+                    f"{tier_name}.due_date_factors must be positive."
+                )
+            if factor in factors:
+                raise ValueError(
+                    f"{tier_name}.due_date_factors must not contain "
+                    "duplicates."
+                )
+            factors.append(factor)
+        variants = [{
+            "factor": factor,
+            "factor_slug": (
+                "configured"
+                if factor is None else f"df{factor:.2f}".replace(".", "p")
+            ),
+            "calibrated_config": None,
+            "relative_makespan_offset": None,
+        } for factor in factors]
 
     plan = []
-    for factor in factors:
-        factor_slug = (
-            "configured"
-            if factor is None else f"df{factor:.2f}".replace(".", "p")
-        )
+    for variant in variants:
+        factor = variant["factor"]
+        factor_slug = variant["factor_slug"]
+        relative_offset = variant["relative_makespan_offset"]
         directory = root / tier_name / factor_slug
         due_date_config = _due_date_generation_config(config)
         if factor is not None:
             due_date_config["factors"] = [factor]
+        instance_postprocessor = None
+        if variant["calibrated_config"] is not None:
+            benchmark_calibration = importlib.import_module(
+                "04_GraphNeuralNetworks.models."
+                "generate_fix_and_optimize_training_data"
+            )
+
+            def instance_postprocessor(instance, *, _variant=variant):
+                calibrated = (
+                    benchmark_calibration
+                    .calibrated_total_work_content_due_dates(
+                        instance,
+                        _variant["calibrated_config"],
+                        _variant["relative_makespan_offset"],
+                    )
+                )
+                calibration = calibrated["calibration"]
+                instance.due_dates = dict(calibrated["due_dates"])
+                instance.due_date_method = "calibrated_total_work_content"
+                instance.due_date_machine_aggregation = "mean"
+                instance.due_date_assignment = "nominal_makespan_calibrated"
+                instance.due_date_factor = calibrated["effective_factor"]
+                instance.due_date_work_content = dict(
+                    calibrated["work_content"]
+                )
+                instance.due_date_relative_makespan_offset = calibrated[
+                    "relative_offset"
+                ]
+                instance.nominal_makespan_calibration = calibration[
+                    "makespan"
+                ]
+                instance.nominal_twk_due_date_factor = calibrated[
+                    "nominal_factor"
+                ]
+                instance.due_date_calibration_status = calibration["status"]
+                instance.due_date_calibration_gap = calibration["gap"]
+                instance.due_date_calibration_runtime_seconds = calibration[
+                    "runtime_seconds"
+                ]
+                instance.nominal_calibration_assignment = dict(
+                    calibration.get("assignment") or {}
+                )
+
         suffix = f"{tier_name}_{factor_slug}"
         expected_paths = [
             directory / (
@@ -353,6 +508,7 @@ def _generated_tier_plan(config, tier_name):
                 ),
                 machine_profile_config=generation.get("machine_profiles"),
                 due_date_config=due_date_config,
+                instance_postprocessor=instance_postprocessor,
                 instance_name_suffix=suffix,
                 time_unit_minutes=generation.get("time_unit_minutes", 1.0),
             )
@@ -376,6 +532,78 @@ def _generated_tier_plan(config, tier_name):
                     f"{directory} explicitly."
                 )
             paths = expected_paths
+            if variant["calibrated_config"] is not None:
+                for path in paths:
+                    instance = _instances.load_generated_instance(
+                        path.stem, directory
+                    )
+                    actual_offset = getattr(
+                        instance, "due_date_relative_makespan_offset", None
+                    )
+                    nominal_factor = getattr(
+                        instance, "nominal_twk_due_date_factor", None
+                    )
+                    actual_factor = getattr(instance, "due_date_factor", None)
+                    work_content = getattr(
+                        instance, "due_date_work_content", {}
+                    )
+                    stored_due_dates = getattr(instance, "due_dates", {})
+                    context_matches = (
+                        getattr(instance, "due_date_method", None)
+                        == "calibrated_total_work_content"
+                        and getattr(
+                            instance,
+                            "due_date_machine_aggregation",
+                            None,
+                        ) == "mean"
+                        and getattr(instance, "due_date_assignment", None)
+                        == "nominal_makespan_calibrated"
+                    )
+                    factor_matches = (
+                        nominal_factor is not None
+                        and actual_factor is not None
+                        and math.isclose(
+                            float(actual_factor),
+                            (1.0 + relative_offset)
+                            * float(nominal_factor),
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                    )
+                    due_dates_match = (
+                        factor_matches
+                        and set(work_content) == set(instance.jobs)
+                        and set(stored_due_dates) == set(instance.jobs)
+                        and all(
+                            math.isclose(
+                                float(stored_due_dates[job]),
+                                float(math.ceil(
+                                    float(actual_factor)
+                                    * float(work_content[job])
+                                    - 1e-12
+                                )),
+                                rel_tol=0.0,
+                                abs_tol=1e-12,
+                            )
+                            for job in instance.jobs
+                        )
+                    )
+                    if (
+                        actual_offset is None
+                        or not math.isclose(
+                            float(actual_offset),
+                            relative_offset,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                        or not context_matches
+                        or not due_dates_match
+                    ):
+                        raise ValueError(
+                            f"Existing benchmark instance {path.name} does "
+                            "not match the calibrated TWK configuration. "
+                            "Regenerate the benchmark instances explicitly."
+                        )
             print(
                 f"Reusing {len(paths)} unchanged {tier_name} instances "
                 f"from: {directory}",
@@ -399,6 +627,7 @@ def _generated_tier_plan(config, tier_name):
             "instance_name": path.stem,
             "instance_directory": str(directory),
             "due_date_factor": factor,
+            "relative_makespan_offset": relative_offset,
         } for path in paths)
     return plan
 
@@ -545,8 +774,8 @@ def _solve(config, splits):
     common["facility_cost_per_time"] = float(
         config["objective"].get("facility_cost_per_time", 1.0)
     )
-    common["tardiness_cost_per_time"] = float(
-        config["objective"].get("tardiness_cost_per_time", 1.0)
+    common["service_violation_cost_per_time"] = float(
+        config["objective"].get("service_violation_cost_per_time", 1.0)
     )
     constraint = config["constraint"]
     stochastic = {
@@ -554,6 +783,9 @@ def _solve(config, splits):
         "reliability_graph_config": constraint["weibull"][
             "reliability_graph"
         ],
+        "service_level": float(
+            constraint["weibull"].get("service_level", 0.90)
+        ),
     }
     requested = [name.lower() for name in config["solve"]["solvers"]]
     models = _trained_models(config) if "gurobi_gnn" in requested else []

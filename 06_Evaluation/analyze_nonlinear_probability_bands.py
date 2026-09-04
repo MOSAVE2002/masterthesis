@@ -217,6 +217,7 @@ def run_analysis(
     ranges = source.get("reliability_ranges") or {}
     generation = {
         "random_seed": int(source.get("random_seed", 42)),
+        "simulation": source.get("simulation"),
         "alpha_range": ranges.get("alpha"),
         "beta_range": ranges.get("beta"),
         "repair_rate_range": ranges.get("repair_rate"),

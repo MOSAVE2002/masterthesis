@@ -52,6 +52,7 @@ def _generation_from_project_config(config):
         "output_directory": source["output_directory"],
         "random_seed": int(source.get("random_seed", 42)),
         "samples_per_instance": int(source["samples_per_instance"]),
+        "simulation": source.get("simulation"),
         "instance_failure_handling": source.get(
             "instance_failure_handling"
         ),

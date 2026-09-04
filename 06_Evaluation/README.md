@@ -1,5 +1,9 @@
 # Standalone post-solve evaluation
 
+Die Planung und offenen Entscheidungen für die spätere integrierte numerische
+Pipeline werden in
+[`NUMERISCHE_PIPELINE_IDEEN.md`](NUMERISCHE_PIPELINE_IDEEN.md) gesammelt.
+
 ## Controlled base-model versus nonlinear-model comparison
 
 Calibrate a nominal makespan for each physical instance, derive the common
@@ -15,9 +19,12 @@ python3 06_Evaluation/compare_base_nonlinear.py \
 ```
 
 The default offsets are read from `training.data_generation.adaptive_due_dates`
-and currently equal 0.02, 0.05, 0.10 and 0.20. The analysis writes raw
-schedule comparisons, per-job observations, offset summaries, repair-buffer
-calibration summaries and JSON metadata to `06_Evaluation/results`.
+and currently equal 0.00, 0.15, 0.30 and 0.45. The controlled comparison
+still uses common makespan-relative due dates; the GNN training generator uses
+the same offsets for its job-specific, makespan-calibrated TWK factors. The
+analysis writes raw schedule comparisons, per-job observations, offset
+summaries, repair-buffer calibration summaries and JSON metadata to
+`06_Evaluation/results`.
 
 This is a post-solve robustness experiment, not a service-constrained
 optimization. A job is successful in one Monte-Carlo replication when its
@@ -65,8 +72,8 @@ Evaluate only selected files or use fewer replications for a smoke test:
 ```bash
 python3 06_Evaluation/evaluate_solutions.py \
   02_data/fjsp_solutions/gurobi_gnn/fixed_candidate/\
-sage_sum_global_add_layers1_hidden4/\
-solution_i3_k3_o3-5_15_gurobi_gnn_layers1_hidden4_seed42.txt \
+sage_sum_global_add_layers2_hidden32/\
+solution_i3_k3_o3-5_15_gurobi_gnn_layers2_hidden32_seed42.txt \
   --replications 500
 ```
 

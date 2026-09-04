@@ -42,8 +42,8 @@ def controlled_due_date(nominal_makespan, relative_offset):
     relative_offset = float(relative_offset)
     if nominal_makespan <= 0.0:
         raise ValueError("nominal_makespan must be positive.")
-    if relative_offset < 0.0:
-        raise ValueError("relative_offset must be nonnegative.")
+    if not math.isfinite(relative_offset) or relative_offset <= -1.0:
+        raise ValueError("relative_offset must be finite and greater than -1.")
     return float(math.ceil((1.0 + relative_offset) * nominal_makespan - 1e-12))
 
 
@@ -500,8 +500,10 @@ def run_analysis(
             else adaptive["relative_makespan_offsets"]
         )
     ]
-    if not offsets or any(value < 0.0 for value in offsets):
-        raise ValueError("offsets must contain nonnegative values.")
+    if not offsets or any(
+        not math.isfinite(value) or value <= -1.0 for value in offsets
+    ):
+        raise ValueError("offsets must be finite and greater than -1.")
     replications = int(
         config["evaluation"]["replications"]
         if replications is None else replications

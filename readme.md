@@ -24,23 +24,23 @@ Auswertezeitpunkt wegen eines Ausfalls noch in Reparatur ist:
 Pd_{ik}(t_i)=\int_0^{t_i} f_k(x)e^{-\lambda_k(t_i-x)}\,dx.
 \]
 
-## Wirtschaftliche Zielfunktion
+## Wirtschaftliche Zielfunktion und weiches Serviceziel
 
 Die produktiven Modelle minimieren gemeinsam
 
 \[
 \sum_{i,k} c_k p_{ik}Y_{ik}
 +c_{Halle}\,C_{\max}
-+c_L\sum_{u\in\mathcal J}L_u.
++c_{SL}\sum_{u\in\mathcal J}L_u^{SL}.
 \]
 
 Der erste Term erfasst die Maschinenkosten während der Bearbeitung. Der zweite
 Term bildet die Hallenbetriebskosten bis zum Makespan ab. Der dritte Term
-bestraft die Summe der jobspezifischen Verspätungen. Die Kostenraten werden
-über `objective.facility_cost_per_time` und
-`objective.tardiness_cost_per_time` konfiguriert. Beide stehen aktuell auf
-eins. Dieselbe Zielfunktion wird im Grundmodell, im nichtlinearen Modell, im
-GNN-Modell und bei der Erzeugung der Kandidatenschedules verwendet.
+bestraft die zeitliche Verletzung des weichen Service-Level-Ziels. Die
+Kostenraten werden über `objective.facility_cost_per_time` und
+`objective.service_violation_cost_per_time` konfiguriert. Beide stehen aktuell
+auf eins. Dieselbe Kostenstruktur wird im Grundmodell, im nichtlinearen Modell
+und im GNN-Modell verwendet.
 
 ## Maschinenprofile
 
@@ -55,14 +55,61 @@ Maschinenarten:
 Kosten, Geschwindigkeit, Weibull-Skala, Weibull-Form und Reparaturrate sind
 innerhalb jedes Profils über alle Instanzen konstant; der Parameter-Jitter ist
 deaktiviert. Jede Operation kann auf Maschinen aus mindestens zwei
-Profilklassen ausgeführt werden. Ihre Bearbeitungszeit entsteht
-aus einer Basiszeit, dem Geschwindigkeitsfaktor des Profils und einem kleinen
-Operationsrauschen. Die
+Profilklassen ausgeführt werden. Ihre Bearbeitungszeit entsteht aus einer
+ganzzahligen Basiszeit im konfigurierten Bereich `[10, 30]`, dem
+Geschwindigkeitsfaktor des Profils und einem kleinen Operationsrauschen. Die
 Profile werden unter `instances.generation.machine_profiles` konfiguriert und
 bleiben bei der analytischen Erzeugung der Trainingslabels unverändert.
-Eine Zeiteinheit entspricht zehn Minuten. Die mittleren exponentiellen
-Reparaturzeiten betragen 30 ZE beziehungsweise fünf Stunden für `old` und
-15 ZE beziehungsweise zweieinhalb Stunden für `new`.
+Eine Zeiteinheit entspricht zehn Minuten. Weil der Basiszeitbereich gegenüber
+der früheren Konfiguration auf `[10, 30]` verdoppelt wurde, wurden auch die
+Weibull-Skalen und mittleren Reparaturzeiten proportional verdoppelt. Damit
+bleiben Bearbeitungszeit/Ausfallskala und Bearbeitungszeit/Reparaturdauer
+vergleichbar. Die Weibull-Skalen betragen 120 ZE (`old`) und 200 ZE (`new`),
+die mittleren exponentiellen Reparaturzeiten 60 ZE beziehungsweise zehn Stunden
+für `old` und 30 ZE beziehungsweise fünf Stunden für `new`.
+
+## Due Dates der generierten Instanzen
+
+Die reguläre Instanz- und Benchmarkgenerierung verwendet jobspezifische Due
+Dates nach der Total-Work-Content-Methode (TWK). Da die Maschinenzuordnung zum
+Generierungszeitpunkt noch nicht feststeht, wird für jede Operation die mittlere
+Bearbeitungszeit über ihre zulässigen Maschinen verwendet:
+
+\[
+\bar p_i=\frac{1}{|\mathcal M_i|}\sum_{k\in\mathcal M_i}p_{ik},
+\qquad
+d_u=\left\lceil h\sum_{i\in\mathcal O_u}\bar p_i\right\rceil.
+\]
+
+Der Faktor \(h\) wird über `instances.generation.due_dates.factors`
+konfiguriert und zyklisch den Instanzen zugewiesen. Dadurch erhalten Jobs mit
+unterschiedlichem Arbeitsinhalt im Allgemeinen unterschiedliche Due Dates. Die
+unter `training.data_generation.adaptive_due_dates` konfigurierte spätere
+Kalibrierung der Trainingskopien ist davon getrennt. Dazu wird einmal ein
+nominaler Makespan \(C^*_{\max}\) bestimmt und der instanzspezifische
+Ausgangsfaktor
+
+\[
+h_0=\frac{C^*_{\max}}{\frac{1}{|J|}\sum_{u\in J}\sum_{i\in\mathcal O_u}\bar p_i}
+\]
+
+berechnet. Für Offset \(\delta\) gilt dann
+\(h=(1+\delta)h_0\) und jeder Job behält seine TWK-Due-Date
+\(d_u=\lceil h\sum_i\bar p_i\rceil\). Die Standardoffsets
+`[0.00, 0.15, 0.30, 0.45]` erzeugen enge, mittlere und lockere
+Trainingsvarianten derselben physischen Instanz.
+
+Der Solverbenchmark verwendet dieselbe Kalibrierung mit den Offsets
+`[0.00, 0.15, 0.30]`. Die drei Varianten einer Instanz besitzen dieselbe
+physische Struktur, Maschinenparameter und nominale Makespan-Kalibrierung; nur
+der Faktor \(h=(1+\delta)h_0\) und damit die Due Dates ändern sich. Sie werden
+getrennt unter `benchmark/twk_d0p00`, `benchmark/twk_d0p15` und
+`benchmark/twk_d0p30` gespeichert und je Stufe von allen Solvern unverändert
+wiederverwendet. So lassen sich enge bis lockere Termine als kontrollierter
+Faktor testen, ohne die Instanzstruktur oder die Maschinenknappheit mitzuwandeln.
+Für lokale und mittlere Läufe ist die nominale Kalibrierung auf zehn Sekunden
+pro physischer Instanz eingestellt; auf dem Cluster kann dieses Budget bei
+größeren Instanzen weiter erhöht werden.
 
 ## Referenzmodell
 
@@ -88,50 +135,56 @@ bestimmt. Für jeden Job wird daraus der erwartete Reparaturpuffer
 B_u^{NL}=\sum_{i\in\mathcal O_u}\Delta_i
 \]
 
-gebildet. Mit der nichtnegativen Verspätungsvariablen (L_u) lautet die
-nicht fortgepflanzte Due-Date-Constraint
+gebildet. Mit dem Servicegrad \(\alpha\) und der nichtnegativen weichen
+Verletzungsvariablen \(L_u^{SL}\) lautet die konservative Markov-Constraint
 
 \[
-C_u+B_u^{NL}\le d_u+L_u,
-\qquad L_u\ge0,
+C_u+\frac{B_u^{NL}}{1-\alpha}\le d_u+L_u^{SL},
+\qquad L_u^{SL}\ge0,
 \qquad\forall u\in\mathcal J.
 \]
 
-Im Grundmodell gilt (B_u=0). Due Dates sind daher in allen drei Modellen
-weich: Eine Überschreitung bleibt zulässig, wird aber mit (c_L L_u) in der
-Zielfunktion bestraft. Die Variable (L_u) ist eine deterministische
-Optimierungsgröße und nicht mit der später simulierten stochastischen
-Verspätung gleichzusetzen.
+Aktuell gilt \(\alpha=0{,}9\), also der Skalierungsfaktor zehn. Bei
+\(L_u^{SL}=0\) fordert die Constraint die konservative Markov-Untergrenze von
+90 Prozent. Bei positiver Verletzung ist sie ausdrücklich ein weiches Ziel und
+keine Wahrscheinlichkeitsgarantie. Im Grundmodell gilt \(B_u=0\); dort misst
+dieselbe Kostenkomponente nur die nominale Due-Date-Verletzung. Zusammen mit
+den Weibull-Integralen bleibt das Referenzmodell ein MINLP.
 
-Der Alpha-Servicegrad ist keine Optimierungsconstraint. Die Optimierung fordert
-insbesondere keine vorgegebene Wahrscheinlichkeit für die Einhaltung der Due
-Dates. Der konfigurierte Servicewert wird erst in der nachgelagerten Auswertung
-als diagnostische Referenzschwelle verwendet. Zusammen mit den
-Weibull-Integralen bleibt das Referenzmodell ein MINLP. `service_scope` steht
-für diese Auswertung auf `"job"`.
+Die einzige aktive Simulation zieht je Replikation und eingesetzter Maschine
+einen Weibull-verteilten ersten Ausfallzeitpunkt sowie eine exponentielle
+Reparaturdauer. Daraus entsteht ein gemeinsames Ausfallintervall der Maschine.
+Beginnt eine Operation innerhalb dieses Intervalls, wartet sie bis zum Ende der
+Reparatur. Tritt der Ausfall während der Bearbeitung auf, gilt Preempt-Resume:
+Die bereits geleistete Arbeit bleibt erhalten und die Bearbeitung wird nach der
+Reparatur fortgesetzt. Die resultierende Verzögerung wird über die festen Job-
+und Maschinenkanten nach rechts fortgepflanzt.
 
-Die einzige aktive Simulation verwendet dieselbe operationsbezogene
-Midpoint-Snapshot-Wahrscheinlichkeit wie das Referenzmodell. Bedingt auf einen
-Ausfall wird eine verbleibende exponentielle Reparaturdauer gezogen. Die
-resultierende Verzögerung wird über die festen Job- und Maschinenkanten nach
-rechts fortgepflanzt. Damit gilt je Operation konsistent
-\(E[\Delta_i]=Pd_i(t_i)/\lambda_i\); es gibt weder eine zusätzliche Skalierung
-noch einen Renewal-Prozess oder Leerlaufausfälle.
+Damit bildet die Simulation im Gegensatz zur operationsbezogenen
+Midpoint-Näherung auch Ausfälle in Leerlaufzeiten und eine konsistente
+Maschinenhistorie ab. Nach der ersten Reparatur wird jedoch kein weiterer
+Ausfall erzeugt; es handelt sich also nicht um einen Renewal-Prozess. Die
+simulierten Verzögerungen sind bewusst ein eigenständiges Trainings- und
+Evaluationsziel und müssen nicht operationsweise mit
+\(Pd_i(t_i)/\lambda_i\) übereinstimmen.
 
-Die Simulation ist ein unabhängiges Post-Solve-Experiment: Sie verändert den
-Schedule nicht und gibt keine Nebenbedingung an den Solver zurück. Ein Job gilt
+Die Simulation verändert einen festen Schedule nicht und gibt keine
+Nebenbedingung an den Solver zurück. Sie wird sowohl für simulationsbasierte
+GNN-Trainingslabels als auch mit frischen Seeds für die unabhängige
+Post-Solve-Evaluation verwendet. Ein Job gilt
 in einer Replikation als pünktlich, wenn seine simulierte Fertigstellungszeit
 seine Due Date nicht überschreitet. Über viele Replikationen entsteht daraus
 für jeden Job eine empirische On-Time-Wahrscheinlichkeit. Die Evaluation
 vergleicht damit, wie viele beziehungsweise welche Schedules unter
 unterschiedlichen Due-Date-, Ausfall- und Reparaturparametern robust
-funktionieren. Eine Einteilung anhand des konfigurierten Servicewerts ist dabei
-nur eine Auswertungskennzahl und kein Bestandteil des mathematischen Modells.
+funktionieren.
 
 ## GNN-Ersatzmodell
 
-`gurobi_gnn` schätzt für jeden Job den nichtlinearen Reparaturpuffer
-\(\widehat B_u\). Die Knotenfeatures sind:
+`gurobi_gnn` schätzt für jeden Job die simulierte erwartete
+Fertigstellungsverzögerung \(\widehat B_u^{MC}\). Diese schließt die
+Right-Shift-Weitergabe über Job- und Maschinenkanten ein. Die Knotenfeatures
+sind:
 
 1. nominaler Start und nominale Fertigstellung,
 2. Bearbeitungszeit relativ zum Weibull-Skalenparameter,
@@ -161,11 +214,11 @@ Auftrag vorgegebenen Kanten und benötigt deshalb weder \(U_{ijk}\) noch eine
 Linearisierung von \(U_{ijk}h_j^{(\ell-1)}\). `linear` verwendet überhaupt
 keine Kanten. Ein jobspezifisches Pooling fasst in allen drei Varianten die
 Operationsknoten jedes Jobs zusammen. Für jeden Job gilt im eingebetteten
-Modell dieselbe unskalierte Constraint wie im Referenzmodell:
+Modell dieselbe weiche Service-Level-Struktur wie im Referenzmodell:
 
 \[
-C_u+\widehat B_u\le d_u+L_u,
-\qquad L_u\ge0.
+C_u+\frac{\widehat B_u^{MC}}{1-\alpha}\le d_u+L_u^{SL},
+\qquad L_u^{SL}\ge0.
 \]
 
 Das GNN-Modell ist ein MILP, während das Referenzmodell das schwierige MINLP
@@ -175,21 +228,24 @@ bleibt.
 
 Fix-and-Optimize erzeugt Maschinenzuordnungen und unmittelbare
 Maschinenfolgen. Im Modus `nonlinear_evaluated` werden die von Gurobi
-optimierten Start- und Fertigstellungszeiten übernommen. Für diesen festen
-Schedule wird der jobspezifische erwartete Reparaturpuffer mit derselben
-Midpoint-Weibull-Gleichung wie im Referenzmodell analytisch ausgewertet. Jeder
-Schedule-Graph wird in genau einer CSV-Zeile gespeichert.
+optimierten Start- und Fertigstellungszeiten übernommen. Der feste Schedule
+wird anschließend mit der maschinenbezogenen Single-Failure-Simulation
+simuliert. Das Label ist
+der Stichprobenmittelwert von \(C_u^{sim}-C_u^{nom}\), einschließlich der
+Weitergabe vorgelagerter Verzögerungen. Jeder Schedule-Graph wird in genau
+einer CSV-Zeile gespeichert.
 
-Die Trainings-Due-Date wird zunächst durch einen nominalen Makespanlauf
-kalibriert und anschließend einheitlich als
+Die Trainings-Due-Dates werden zunächst durch einen nominalen Makespanlauf
+kalibriert. Mit dem mittleren Work Content \(\bar w\), dem jobspezifischen Work
+Content \(w_j\) und \(f^*=C_{\max}^*/\bar w\) gilt
 
 \[
-d=\left\lceil(1+\delta)C_{\max}^*\right\rceil,
-\qquad \delta\in\{0{,}02,0{,}05,0{,}10,0{,}20\},
+d_j=\left\lceil(1+\delta)f^*w_j\right\rceil,
+\qquad \delta\in\{0{,}00,0{,}15,0{,}30,0{,}45\},
 \]
 
-gesetzt. Dadurch besitzen Training und kontrollierte Modellvergleiche dieselbe
-Definition der relativen Due-Date-Slack.
+Dadurch behalten Jobs mit unterschiedlichem Work Content unterschiedliche Due
+Dates, während die Stufen relativ zum nominalen Makespan kalibriert sind.
 
 Ein fehlgeschlagener Instanzlauf beendet die Erzeugung nicht mehr. Bleiben für
 eine Instanz nach dem normalen Kandidatenlauf zu wenige lösbare Kandidaten
@@ -197,21 +253,38 @@ eine Instanz nach dem normalen Kandidatenlauf zu wenige lösbare Kandidaten
 Instanz atomar in
 `02_data/gnn_dataset/generation_summary.json` gesichert. Die Datei enthält pro
 Split alle erfolgreichen und übersprungenen Instanzen einschließlich
-Fehlermeldung.
+Fehlermeldung. Zusätzlich wird pro Split und insgesamt ein kompakter,
+nicht blockierender Qualitätsbericht gespeichert und auf der Konsole
+ausgegeben. Er enthält die Graphenzahl, die Verteilungen der Weibull-Faktoren
+und Auswahlkategorien sowie Mittelwert und Standardabweichung der Joblabels
+und Mittelwert und Median ihrer Monte-Carlo-Standardfehler.
 Diese Zeile enthält unter anderem
 
 ```text
 job_ids=[1,2,3,...]
-nonlinear_expected_repair_buffer=[B_1^NL,B_2^NL,B_3^NL,...]
+simulated_expected_completion_delay=[B_1^MC,B_2^MC,B_3^MC,...]
 operation_job_indices=[...]
 ```
 
 Damit kann ein Graph beliebig viele Jobs und ebenso viele unterschiedliche
-Joblabels enthalten. Die Trainingslabels sind analytische erwartete
-Reparaturpuffer; Monte-Carlo-Pünktlichkeitsanteile werden nicht in die
-Trainings-CSV geschrieben. Die aus dem erwarteten Puffer und dem nominalen
-Due-Date-Slack abgeleitete Markov-Untergrenze wird nur intern zur ausgewogenen
-Kandidatenauswahl verwendet.
+Joblabels enthalten. Zusätzlich speichert die CSV Standardfehler,
+Replikationszahl, Seed und Monte-Carlo-Pünktlichkeitsanteile. In der aktuellen
+Pilotkonfiguration werden 256 Replikationen pro Kandidat verwendet; für die
+endgültigen Trainingsdaten ist dieser Wert zu erhöhen. Für die
+Zuverlässigkeitsvariation werden die ursprünglichen Weibull-Skalen einer
+Instanz mit 0,8, 1,0 und 1,2 multipliziert. Die Reihenfolge dieser Faktoren
+wird instanzspezifisch und reproduzierbar rotiert, sodass bei vier Poolläufen
+jede Instanz alle drei Stufen sieht und die zusätzliche Stufe nicht immer
+dieselbe ist.
+
+Die adaptive Auswahl hält weiterhin Kandidaten unmittelbar unter und über der
+empirischen Servicegrenze von 0,9. Zusätzlich werden Kandidaten mit niedriger,
+mittlerer und hoher simulierter erwarteter Fertigstellungsverzögerung direkt
+ausgewählt. Wirtschaftlich gute, Pareto-günstige und strukturell verschiedene
+Schedules bleiben als Anker erhalten. Die früheren Kategorien mit lediglich
+minimaler beziehungsweise maximaler Pünktlichkeit entfallen, weil sie neben
+den beiden Servicegrenzen wenig zusätzliche Information für das eigentliche
+Verzögerungslabel lieferten.
 
 Die Daten werden unter `02_data/gnn_dataset` geschrieben. Die aktiven Modelle
 liegen in den architekturspezifischen Unterverzeichnissen von

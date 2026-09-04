@@ -8,12 +8,12 @@ import gurobipy as gp
 from gurobipy import GRB
 
 
-RELIABILITY_GRAPH_SCHEMA = "job_expected_repair_buffer_v5"
+RELIABILITY_GRAPH_SCHEMA = "job_expected_completion_delay_v6"
 RELIABILITY_GNN_GRAPH_SCHEMA = (
-    "direct_machine_and_job_predecessor_node_messages_v8"
+    "direct_machine_and_job_predecessor_node_messages_v9"
 )
 RELIABILITY_GNN_OUTPUT_HEAD = (
-    "per_job_expected_repair_buffer_relu_v4"
+    "per_job_expected_completion_delay_relu_v5"
 )
 RELIABILITY_NODE_FEATURE_NAMES = [
     "nominal_start_over_horizon",

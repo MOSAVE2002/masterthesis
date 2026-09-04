@@ -9,7 +9,7 @@ from gurobipy import GRB
 from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
     add_economic_cost_objective,
-    add_robust_due_date_constraints,
+    add_soft_service_level_constraints,
 )
 import torch
 
@@ -93,10 +93,12 @@ def _load_metadata(metadata_path):
         )
     if metadata.get("target_column") != target_column(CONSTRAINT_WEIBULL):
         raise ValueError(
-            "The embedded GNN requires jobspecific expected repair buffers."
+            "The embedded GNN requires job-specific expected completion delays."
         )
-    if metadata.get("job_target") != "job_expected_repair_buffer":
-        raise ValueError("The embedded GNN requires one repair buffer per job.")
+    if metadata.get("job_target") != "job_expected_completion_delay":
+        raise ValueError(
+            "The embedded GNN requires one expected completion delay per job."
+        )
     if (
         convolution in {CONV_SAGE, CONV_JOB}
         and not metadata.get("include_job_precedence_edges", False)
@@ -741,15 +743,15 @@ def _add_relational_gnn_output(
                 skip_weight[0], pooled_local, bias=skip_bias[0]
             )
         raw = model.addVar(
-            lb=-GRB.INFINITY, name=f"gnn_raw_job_repair_buffer[{job}]"
+            lb=-GRB.INFINITY, name=f"gnn_raw_job_completion_delay[{job}]"
         )
         buffer = model.addVar(
-            lb=0.0, name=f"gnn_job_expected_repair_buffer[{job}]"
+            lb=0.0, name=f"gnn_job_expected_completion_delay[{job}]"
         )
         model.addConstr(raw == expression, name=f"gnn_raw_output_def[{job}]")
         model.addGenConstrMax(
             buffer, [raw], constant=0.0,
-            name=f"gnn_repair_buffer_relu[{job}]",
+            name=f"gnn_completion_delay_relu[{job}]",
         )
         raw_outputs[job] = raw
         output_expressions[job] = buffer
@@ -757,7 +759,7 @@ def _add_relational_gnn_output(
         "gnn_job_output_expressions": output_expressions,
         "gnn_raw_job_outputs": raw_outputs,
         "job_expected_delays": output_expressions,
-        "job_repair_buffer_postprocess": "relu_inside_model",
+        "job_completion_delay_postprocess": "relu_inside_model",
     })
     return output_expressions
 
@@ -843,10 +845,12 @@ def build_fjsp(
     constraint_type=CONSTRAINT_WEIBULL,
     reliability_graph_config=None,
     analytic_bounds=True,
+    service_level=0.90,
     facility_cost_per_time=1.0,
-    tardiness_cost_per_time=1.0,
+    service_violation_cost_per_time=1.0,
+    tardiness_cost_per_time=None,
 ):
-    """Build the ReLU-GNN MILP with one expected repair buffer per job."""
+    """Build the ReLU-GNN MILP with one expected completion delay per job."""
     model = fjsp
     analytic_bounds = bool(analytic_bounds)
     constraint_type = validate_constraint_type(constraint_type)
@@ -989,7 +993,7 @@ def build_fjsp(
         _add_schedule_upper_bounds(variables)
         if analytic_bounds:
             _add_job_time_bounds(variables, instance)
-    job_repair_buffers = _add_relational_gnn_output(
+    job_expected_delays = _add_relational_gnn_output(
         model, variables, instance, state_dict, metadata,
         constraint_type,
     )
@@ -1004,20 +1008,22 @@ def build_fjsp(
             "constraint_type": constraint_type,
         }
     )
-    add_robust_due_date_constraints(
+    add_soft_service_level_constraints(
         model,
         variables,
         instance,
-        job_repair_buffers,
+        job_expected_delays,
+        service_level=service_level,
     )
     add_economic_cost_objective(
         model,
         variables,
         instance,
         facility_cost_per_time=facility_cost_per_time,
+        service_violation_cost_per_time=service_violation_cost_per_time,
         tardiness_cost_per_time=tardiness_cost_per_time,
     )
-    formulation = "gnn_expected_repair_buffer_tardiness_cost_v13"
+    formulation = "gnn_simulated_delay_markov_soft_service_level_v14"
     variables.update({
         "formulation": formulation,
     })

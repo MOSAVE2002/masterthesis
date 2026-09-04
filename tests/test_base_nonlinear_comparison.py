@@ -18,7 +18,7 @@ class BaseNonlinearComparisonTests(unittest.TestCase):
         self.assertNotIn("relative_lower_bound_offsets", adaptive)
         self.assertEqual(
             adaptive["relative_makespan_offsets"],
-            [0.02, 0.05, 0.10, 0.20],
+            [0.00, 0.15, 0.30, 0.45],
         )
 
     def test_controlled_due_date_is_relative_to_nominal_makespan(self):
@@ -26,12 +26,13 @@ class BaseNonlinearComparisonTests(unittest.TestCase):
         self.assertEqual(comparison.controlled_due_date(45.0, 0.05), 48.0)
         self.assertEqual(comparison.controlled_due_date(45.0, 0.10), 50.0)
         self.assertEqual(comparison.controlled_due_date(45.0, 0.20), 54.0)
+        self.assertEqual(comparison.controlled_due_date(45.0, -0.10), 41.0)
 
     def test_controlled_due_date_rejects_invalid_inputs(self):
         with self.assertRaises(ValueError):
             comparison.controlled_due_date(0.0, 0.10)
         with self.assertRaises(ValueError):
-            comparison.controlled_due_date(45.0, -0.10)
+            comparison.controlled_due_date(45.0, -1.0)
 
     def test_buffer_alignment_is_unscaled(self):
         rows = []

@@ -56,6 +56,16 @@ _JOB_PATTERN = re.compile(
     r"robust_slack=(?P<slack>[^,]+), "
     r"tardiness=(?P<tardiness>[^,]+)$"
 )
+_SERVICE_JOB_PATTERN = re.compile(
+    r"^job (?P<job>-?\d+): "
+    r"completion=(?P<completion>[^,]+), "
+    r"due_date=(?P<due_date>[^,]+), "
+    r"expected_completion_delay=(?P<delay>[^,]+), "
+    r"service_buffer=(?P<buffer>[^,]+), "
+    r"service_protected_completion=(?P<protected>[^,]+), "
+    r"service_slack=(?P<slack>[^,]+), "
+    r"service_violation=(?P<violation>[^,]+)$"
+)
 _OPERATION_PATTERN = re.compile(
     r"^op (?P<operation>-?\d+): "
     r"machine=(?P<machine>-?\d+), "
@@ -154,6 +164,20 @@ def parse_solution(solution_path):
     operations = {}
     machine_edges = []
     for line in lines:
+        service_job_match = _SERVICE_JOB_PATTERN.match(line)
+        if service_job_match:
+            values = service_job_match.groupdict()
+            job = int(values["job"])
+            jobs[job] = {
+                "nominal_completion": float(values["completion"]),
+                "due_date_from_solution": float(values["due_date"]),
+                "internal_repair_buffer": float(values["delay"]),
+                "service_buffer": float(values["buffer"]),
+                "protected_completion": float(values["protected"]),
+                "robust_slack": float(values["slack"]),
+                "optimization_tardiness": float(values["violation"]),
+            }
+            continue
         job_match = _JOB_PATTERN.match(line)
         if job_match:
             values = job_match.groupdict()
@@ -162,6 +186,7 @@ def parse_solution(solution_path):
                 "nominal_completion": float(values["completion"]),
                 "due_date_from_solution": float(values["due_date"]),
                 "internal_repair_buffer": float(values["buffer"]),
+                "service_buffer": float(values["buffer"]),
                 "protected_completion": float(values["protected"]),
                 "robust_slack": float(values["slack"]),
                 "optimization_tardiness": float(values["tardiness"]),
@@ -195,8 +220,20 @@ def parse_solution(solution_path):
         "makespan": _optional_float(_field(lines, "Makespan")),
         "processing_cost": _optional_float(_field(lines, "Processing cost")),
         "operating_cost": _optional_float(_field(lines, "Operating cost")),
-        "tardiness_cost": _optional_float(_field(lines, "Tardiness cost")),
-        "total_tardiness": _optional_float(_field(lines, "Total tardiness")),
+        "tardiness_cost": _optional_float(
+            _field(
+                lines,
+                "Service violation cost",
+                _field(lines, "Tardiness cost"),
+            )
+        ),
+        "total_tardiness": _optional_float(
+            _field(
+                lines,
+                "Total service-level violation",
+                _field(lines, "Total tardiness"),
+            )
+        ),
         "total_cost": _optional_float(_field(lines, "Total cost")),
         "best_bound": _optional_float(_field(lines, "Best bound")),
         "mip_gap": _optional_float(_field(lines, "MIP gap")),
@@ -208,7 +245,9 @@ def parse_solution(solution_path):
             _field(lines, "Optimizer wall runtime [s]")
         ),
         "repair_buffer_label_method": _field(
-            lines, "Repair buffer label method"
+            lines,
+            "Completion delay label method",
+            _field(lines, "Repair buffer label method"),
         ),
         "jobs": jobs,
         "operations": operations,

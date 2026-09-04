@@ -1,4 +1,4 @@
-"""Fix-and-optimize graphs labelled by nonlinear expected repair buffers."""
+"""Fix-and-optimize graphs labelled by simulated expected completion delays."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import importlib
 import json
 import math
 import random
+import statistics
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ _base = importlib.import_module("03_Gurobi.build_fjsp")
 _nonlinear = importlib.import_module("03_Gurobi.build_fjsp_with_nonlinear")
 _simulation = importlib.import_module("05_Simulation.preempt_resume")
 FixedSchedule = _simulation.FixedSchedule
+SIMULATION_LABEL_METHOD = _simulation.EXPECTED_COMPLETION_DELAY_LABEL_METHOD
 TARGET_COLUMN = target_column(configured_constraint_type())
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
@@ -51,16 +53,21 @@ FIELDNAMES = [
     "due_date_factor",
     "training_due_date_scale",
     "nominal_makespan_calibration",
-    "nominal_due_date_factor",
+    "nominal_twk_due_date_factor",
     "training_due_date_delta",
     "training_effective_due_date_factor",
-    "training_common_due_date",
+    "training_mean_due_date",
+    "training_due_dates",
     "training_weibull_scale_factor",
     "candidate_generation_mode",
     "schedule_timing_method",
     "candidate_probability_band",
     "job_ids",
     TARGET_COLUMN,
+    "simulated_completion_delay_standard_errors",
+    "simulation_job_ontime_probabilities",
+    "simulation_replications",
+    "simulation_seed",
     "operation_job_indices",
     "gnn_feature_names",
     "gnn_node_features",
@@ -76,13 +83,21 @@ FIELDNAMES = [
 ]
 
 DEFAULT_SELECTION_RATIOS = {
-    "service_boundary_below": 0.25,
+    "service_boundary_below": 0.15,
     "service_boundary_above": 0.15,
-    "high_min_job_probability": 0.15,
-    "low_min_job_probability": 0.10,
-    "good_nominal_objective": 0.15,
+    "low_expected_completion_delay": 0.15,
+    "medium_expected_completion_delay": 0.10,
+    "high_expected_completion_delay": 0.15,
+    "good_nominal_objective": 0.10,
     "pareto_tradeoff": 0.10,
     "structurally_diverse": 0.10,
+}
+ADAPTIVE_SELECTION_CATEGORIES = tuple(DEFAULT_SELECTION_RATIOS)
+DEFAULT_ADAPTIVE_CANDIDATE_SELECTION = {
+    "ensure_all_categories": False,
+    "rotate_repeated_categories": True,
+    "rotate_surplus_offsets": True,
+    "prefer_unique_structures": True,
 }
 
 PROBABILITY_BINS = (
@@ -93,15 +108,17 @@ PROBABILITY_BINS = (
 )
 ANCHOR_CATEGORIES = (
     "good_nominal_objective",
-    "high_min_job_probability",
+    "low_expected_completion_delay",
+    "high_expected_completion_delay",
     "pareto_tradeoff",
     "structurally_diverse",
 )
 DEFAULT_HYBRID_ANCHOR_RATIOS = {
-    "good_nominal_objective": 0.30,
-    "high_min_job_probability": 0.20,
-    "pareto_tradeoff": 0.20,
-    "structurally_diverse": 0.30,
+    "good_nominal_objective": 0.25,
+    "low_expected_completion_delay": 0.20,
+    "high_expected_completion_delay": 0.20,
+    "pareto_tradeoff": 0.15,
+    "structurally_diverse": 0.20,
 }
 DEFAULT_JOB_PROBABILITY_TARGET_RATIOS = {
     "low": 0.20,
@@ -163,6 +180,135 @@ def _utc_timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _quality_distribution_key(value):
+    """Return stable JSON keys for numeric configuration levels."""
+    text = format(float(value), ".12g")
+    return f"{text}.0" if "." not in text and "e" not in text.lower() else text
+
+
+def _new_quality_accumulator(expected_scale_factors):
+    return {
+        "expected_scale_factors": [
+            _quality_distribution_key(value)
+            for value in expected_scale_factors
+        ],
+        "weibull_scale_factors": Counter(),
+        "candidate_categories": Counter(),
+        "labels": [],
+        "label_standard_errors": [],
+    }
+
+
+def _quality_numeric_values(raw):
+    """Read a scalar or compact JSON list without making reporting fatal."""
+    if raw is None or raw == "":
+        return []
+    try:
+        values = raw if isinstance(raw, (list, tuple)) else json.loads(str(raw))
+        if not isinstance(values, (list, tuple)):
+            values = [values]
+        result = [float(value) for value in values]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return [value for value in result if math.isfinite(value)]
+
+
+def _update_quality_accumulator(accumulator, rows):
+    for row in rows:
+        factor = row.get("training_weibull_scale_factor")
+        try:
+            factor_value = float(factor)
+        except (TypeError, ValueError):
+            factor_value = math.nan
+        if math.isfinite(factor_value):
+            accumulator["weibull_scale_factors"][
+                _quality_distribution_key(factor_value)
+            ] += 1
+
+        category = str(row.get("pool_selection_category") or "").strip()
+        if category:
+            # Adaptive and mixed generation prefix the actual selection role
+            # with due-date or generation-mode information.
+            base_category = category.rsplit(":", 1)[-1]
+            accumulator["candidate_categories"][base_category] += 1
+
+        accumulator["labels"].extend(
+            _quality_numeric_values(row.get(TARGET_COLUMN))
+        )
+        accumulator["label_standard_errors"].extend(
+            _quality_numeric_values(
+                row.get("simulated_completion_delay_standard_errors")
+            )
+        )
+
+
+def _descriptive_quality_statistics(values):
+    values = [float(value) for value in values]
+    if not values:
+        return {
+            "count": 0,
+            "mean": None,
+            "standard_deviation": None,
+            "median": None,
+            "minimum": None,
+            "maximum": None,
+        }
+    return {
+        "count": len(values),
+        "mean": statistics.fmean(values),
+        "standard_deviation": statistics.pstdev(values),
+        "median": statistics.median(values),
+        "minimum": min(values),
+        "maximum": max(values),
+    }
+
+
+def _quality_report(accumulator):
+    factor_keys = set(accumulator["expected_scale_factors"])
+    factor_keys.update(accumulator["weibull_scale_factors"])
+    category_keys = set(ADAPTIVE_SELECTION_CATEGORIES)
+    category_keys.update(accumulator["candidate_categories"])
+    return {
+        "weibull_scale_factor_graph_counts": {
+            key: int(accumulator["weibull_scale_factors"].get(key, 0))
+            for key in sorted(factor_keys, key=float)
+        },
+        "candidate_category_graph_counts": {
+            key: int(accumulator["candidate_categories"].get(key, 0))
+            for key in sorted(category_keys)
+        },
+        "label_statistics": _descriptive_quality_statistics(
+            accumulator["labels"]
+        ),
+        "label_standard_error_statistics": (
+            _descriptive_quality_statistics(
+                accumulator["label_standard_errors"]
+            )
+        ),
+    }
+
+
+def _quality_number(value):
+    return "n/a" if value is None else f"{float(value):.6g}"
+
+
+def _quality_report_text(label, report):
+    labels = report["label_statistics"]
+    standard_errors = report["label_standard_error_statistics"]
+    return (
+        f"[Training-data quality] {label} | "
+        f"instances={report['successful_instances']} successful/"
+        f"{report['skipped_instances']} skipped | "
+        f"graphs={report['written_graphs']} | "
+        f"weibull={report['weibull_scale_factor_graph_counts']} | "
+        f"categories={report['candidate_category_graph_counts']} | "
+        f"labels(n={labels['count']}, mean={_quality_number(labels['mean'])}, "
+        f"std={_quality_number(labels['standard_deviation'])}) | "
+        f"label_se(mean={_quality_number(standard_errors['mean'])}, "
+        f"median={_quality_number(standard_errors['median'])})"
+    )
+
+
 def _write_generation_summary(path, summary):
     """Atomically persist progress so interrupted cluster runs stay auditable."""
     summary["updated_at_utc"] = _utc_timestamp()
@@ -184,6 +330,23 @@ def _write_generation_summary(path, summary):
             values["written_graphs"] for values in split_values
         ),
     }
+    for values in split_values:
+        report = values.setdefault("quality_report", {})
+        report.update({
+            "successful_instances": len(values["successful_instances"]),
+            "skipped_instances": len(values["skipped_instances"]),
+            "written_graphs": values["written_graphs"],
+        })
+    report = summary.setdefault("quality_report", {})
+    report.update({
+        "successful_instances": successful,
+        "skipped_instances": skipped,
+        "written_graphs": summary["totals"]["written_graphs"],
+        "graphs_per_split": {
+            split: values["written_graphs"]
+            for split, values in summary["splits"].items()
+        },
+    })
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     temporary_path.write_text(
@@ -274,7 +437,13 @@ def _sample_reliability(instance, rng, generation, run_index):
         values = [float(value) for value in scale_factors]
         if not values or any(value <= 0.0 for value in values):
             raise ValueError("weibull_scale_factors must be positive.")
-        scale_factor = values[int(run_index) % len(values)]
+        rotation = _sample_seed(
+            getattr(instance, "instance_name", "instance"),
+            0,
+            generation.get("random_seed", 42),
+            "weibull_scale_rotation",
+        ) % len(values)
+        scale_factor = values[(int(run_index) + rotation) % len(values)]
         instance.weibull_alpha = {
             machine: scale_factor * float(value)
             for machine, value in instance.weibull_alpha.items()
@@ -283,7 +452,7 @@ def _sample_reliability(instance, rng, generation, run_index):
 
 
 def _sample_training_due_dates(instance, rng, generation, run_index):
-    """Vary due-date slack on the copied training instance only."""
+    """Vary calibrated TWK due-date slack on the training copy only."""
     adaptive = dict(generation.get("adaptive_due_dates") or {})
     if bool(adaptive.get("enabled", False)):
         if generation.get("due_date_scale_factors") is not None or generation.get(
@@ -293,19 +462,32 @@ def _sample_training_due_dates(instance, rng, generation, run_index):
                 "adaptive_due_dates cannot be combined with legacy due-date "
                 "scale factors."
             )
+        method = str(
+            adaptive.get("method", "calibrated_total_work_content")
+        )
+        if method != "calibrated_total_work_content":
+            raise ValueError(
+                "adaptive_due_dates.method must be "
+                "'calibrated_total_work_content'."
+            )
+        aggregation = str(adaptive.get("machine_aggregation", "mean"))
+        if aggregation != "mean":
+            raise ValueError(
+                "adaptive_due_dates.machine_aggregation must be 'mean'."
+            )
         offsets = [
             float(value)
             for value in adaptive.get(
-                "relative_makespan_offsets", [0.02, 0.05, 0.10, 0.20]
+                "relative_makespan_offsets", [0.00, 0.15, 0.30, 0.45]
             )
         ]
-        if not offsets or any(value < 0.0 for value in offsets):
+        if not offsets or any(
+            not math.isfinite(value) or value <= -1.0 for value in offsets
+        ):
             raise ValueError(
                 "adaptive_due_dates.relative_makespan_offsets must "
-                "contain nonnegative values."
+                "contain finite values greater than -1."
             )
-        lower_bound = _fjsp_processing_lower_bound(instance)
-        calibration = _nominal_makespan_calibration(instance, adaptive)
         rotation = _sample_seed(
             getattr(instance, "instance_name", "instance"),
             0,
@@ -318,23 +500,22 @@ def _sample_training_due_dates(instance, rng, generation, run_index):
             + int(run_index) // len(offsets)
         ) % len(offsets)
         offset = offsets[offset_index]
-        effective_factor = (
-            (1.0 + offset) * calibration["makespan"] / lower_bound
+        calibrated = calibrated_total_work_content_due_dates(
+            instance, adaptive, offset
         )
-        common_due_date = float(math.ceil(
-            (1.0 + offset) * calibration["makespan"] - 1e-12
-        ))
-        instance.due_dates = {
-            job: common_due_date for job in instance.jobs
-        }
+        calibration = calibrated["calibration"]
+        nominal_factor = calibrated["nominal_factor"]
+        effective_factor = calibrated["effective_factor"]
+        instance.due_dates = dict(calibrated["due_dates"])
         instance.training_due_date_scale = 1.0
         instance.nominal_makespan_calibration = calibration["makespan"]
-        instance.nominal_due_date_factor = (
-            calibration["makespan"] / lower_bound
-        )
+        instance.nominal_twk_due_date_factor = nominal_factor
         instance.training_due_date_delta = offset
         instance.training_effective_due_date_factor = effective_factor
-        instance.training_common_due_date = common_due_date
+        instance.training_mean_due_date = (
+            sum(instance.due_dates.values()) / len(instance.due_dates)
+        )
+        instance.training_due_dates = dict(instance.due_dates)
         instance.due_date_calibration_status = calibration["status"]
         instance.due_date_calibration_gap = calibration["gap"]
         instance.nominal_calibration_assignment = dict(
@@ -370,27 +551,65 @@ def _sample_training_due_dates(instance, rng, generation, run_index):
     return scale
 
 
-def _fjsp_processing_lower_bound(instance):
-    minimum_times = {
-        operation: min(
-            float(instance.processing_times[operation, machine])
-            for machine in instance.eligible_machines[operation]
-        )
-        for operation in instance.real_operations
+def calibrated_total_work_content_due_dates(instance, config, relative_offset):
+    """Return job-specific TWK dates anchored to a nominal makespan."""
+    relative_offset = float(relative_offset)
+    if not math.isfinite(relative_offset) or relative_offset <= -1.0:
+        raise ValueError("relative_offset must be finite and greater than -1.")
+    calibration = _nominal_makespan_calibration(instance, config)
+    work_content = _total_work_content_by_job(instance)
+    mean_work_content = sum(work_content.values()) / len(work_content)
+    nominal_factor = calibration["makespan"] / mean_work_content
+    effective_factor = (1.0 + relative_offset) * nominal_factor
+    due_dates = {
+        job: float(math.ceil(
+            effective_factor * work_content[job] - 1e-12
+        ))
+        for job in instance.jobs
     }
-    return max(
-        sum(minimum_times.values()) / float(instance.num_machines),
-        max(
-            sum(minimum_times[operation] for operation in operations)
-            for operations in instance.jobs.values()
-        ),
-    )
+    return {
+        "calibration": calibration,
+        "work_content": work_content,
+        "nominal_factor": nominal_factor,
+        "effective_factor": effective_factor,
+        "relative_offset": relative_offset,
+        "due_dates": due_dates,
+        "mean_due_date": sum(due_dates.values()) / len(due_dates),
+    }
+
+
+def _total_work_content_by_job(instance):
+    """Return TWK using each operation's mean eligible-machine duration."""
+    work_content = {
+        job: sum(
+            sum(
+                float(instance.processing_times[operation, machine])
+                for machine in instance.eligible_machines[operation]
+            ) / len(instance.eligible_machines[operation])
+            for operation in operations
+        )
+        for job, operations in instance.jobs.items()
+    }
+    if not work_content or any(
+        not math.isfinite(value) or value <= 0.0
+        for value in work_content.values()
+    ):
+        raise ValueError("Every job must have positive total work content.")
+    return work_content
 
 
 def _nominal_makespan_calibration(instance, config):
     """Return a cached feasible nominal makespan for adaptive due dates."""
     signature = (
-        getattr(instance, "instance_name", None),
+        tuple(sorted(
+            (job, tuple(operations))
+            for job, operations in instance.jobs.items()
+        )),
+        tuple(sorted(
+            (operation, tuple(sorted(machines)))
+            for operation, machines in instance.eligible_machines.items()
+            if operation in set(instance.real_operations)
+        )),
         tuple(sorted(
             (operation, machine, float(value))
             for (operation, machine), value in instance.processing_times.items()
@@ -524,7 +743,10 @@ def _build_candidate_model(
         model,
         instance,
         include_makespan=True,
-        horizon_upper_bound=max(instance.due_dates.values()),
+        # Due dates are soft. In particular, negative calibration offsets may
+        # put every due date below the feasible makespan, so they must not cap
+        # completion-variable bounds.
+        horizon_upper_bound=None,
     )
     parameters = stochastic_parameters(instance)
     variables.update({
@@ -729,8 +951,8 @@ def _candidate_from_solution(
             "nominal_makespan_calibration": getattr(
                 instance, "nominal_makespan_calibration", ""
             ),
-            "nominal_due_date_factor": getattr(
-                instance, "nominal_due_date_factor", ""
+            "nominal_twk_due_date_factor": getattr(
+                instance, "nominal_twk_due_date_factor", ""
             ),
             "training_due_date_delta": getattr(
                 instance, "training_due_date_delta", ""
@@ -738,9 +960,12 @@ def _candidate_from_solution(
             "training_effective_due_date_factor": getattr(
                 instance, "training_effective_due_date_factor", ""
             ),
-            "training_common_due_date": getattr(
-                instance, "training_common_due_date", ""
+            "training_mean_due_date": getattr(
+                instance, "training_mean_due_date", ""
             ),
+            "training_due_dates": _compact(getattr(
+                instance, "training_due_dates", {}
+            )) if hasattr(instance, "training_due_dates") else "",
             "training_weibull_scale_factor": getattr(
                 instance, "training_weibull_scale_factor", 1.0
             ),
@@ -752,6 +977,10 @@ def _candidate_from_solution(
             ),
             "job_ids": _compact(job_ids),
             TARGET_COLUMN: "",
+            "simulated_completion_delay_standard_errors": "",
+            "simulation_job_ontime_probabilities": "",
+            "simulation_replications": "",
+            "simulation_seed": "",
             "operation_job_indices": _compact([
                 job_to_index[operation_job[operation]]
                 for operation in operations
@@ -831,9 +1060,53 @@ def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
         "service_risk": 1.0 - min(job_probabilities),
         "effective_objective": candidate.get("pool_objective", 0.0),
     })
-    candidate.setdefault("row", {})[TARGET_COLUMN] = _compact(
-        job_expected_repair_buffers
+    return candidate
+
+
+def _evaluate_fixed_schedule_simulation(candidate, simulation_config):
+    """Create propagated expected-completion-delay labels by Monte Carlo."""
+    simulation_config = _simulation.normalize_simulation_config(
+        simulation_config
     )
+    instance_name = str(
+        candidate.get("row", {}).get("instance_name", "")
+    ).strip()
+    if instance_name:
+        seed_payload = (
+            f"{simulation_config.random_seed}:{instance_name}"
+        ).encode("utf-8")
+        simulation_seed = int.from_bytes(
+            hashlib.sha256(seed_payload).digest()[:4], "big"
+        )
+    else:
+        simulation_seed = simulation_config.random_seed
+    result = _simulation.simulate_fixed_schedule(
+        candidate["simulation_schedule"],
+        replications=simulation_config.label_replications,
+        seed=simulation_seed,
+        config=simulation_config,
+    )
+    delays = list(result.job_mean_completion_delays)
+    probabilities = list(result.job_ontime_probabilities)
+    standard_errors = list(result.job_completion_delay_standard_errors)
+    candidate.update({
+        "simulated_job_expected_completion_delays": delays,
+        "simulation_job_ontime_probabilities": probabilities,
+        "simulation_job_completion_delay_standard_errors": standard_errors,
+        "simulation_result": result,
+        "job_probabilities": probabilities,
+        "min_job_probability": min(probabilities),
+        "service_risk": 1.0 - min(probabilities),
+        "effective_objective": candidate.get("pool_objective", 0.0),
+    })
+    row = candidate.setdefault("row", {})
+    row[TARGET_COLUMN] = _compact(delays)
+    row["simulated_completion_delay_standard_errors"] = _compact(
+        standard_errors
+    )
+    row["simulation_job_ontime_probabilities"] = _compact(probabilities)
+    row["simulation_replications"] = result.replications
+    row["simulation_seed"] = simulation_seed
     return candidate
 
 
@@ -937,20 +1210,86 @@ def _adaptive_due_date_offsets(generation):
     return [
         float(value)
         for value in config.get(
-            "relative_makespan_offsets", [0.02, 0.05, 0.10, 0.20]
+            "relative_makespan_offsets", [0.00, 0.15, 0.30, 0.45]
         )
     ]
 
 
-def _adaptive_due_date_coverage_met(candidates, limit, generation):
+def _adaptive_candidate_selection(generation):
+    adaptive = dict(generation.get("adaptive_due_dates") or {})
+    raw = adaptive.get("candidate_selection")
+    if raw is None:
+        return dict(DEFAULT_ADAPTIVE_CANDIDATE_SELECTION)
+    raw = dict(raw)
+    unknown = set(raw) - set(DEFAULT_ADAPTIVE_CANDIDATE_SELECTION)
+    if unknown:
+        raise ValueError(
+            "Unknown adaptive_due_dates.candidate_selection settings: "
+            f"{sorted(unknown)}"
+        )
+    result = dict(DEFAULT_ADAPTIVE_CANDIDATE_SELECTION)
+    result.update({name: bool(value) for name, value in raw.items()})
+    return result
+
+
+def _rotating_targets(values, total, selection_index, *, stride=1):
+    values = list(values)
+    if not values:
+        return []
+    rotation = int(selection_index) % len(values)
+    return [
+        values[(rotation + int(stride) * position) % len(values)]
+        for position in range(int(total))
+    ]
+
+
+def _adaptive_offset_targets(generation, limit, selection_index=0):
+    offsets = _adaptive_due_date_offsets(generation)
+    if not offsets:
+        return []
+    config = _adaptive_candidate_selection(generation)
+    rotation_index = (
+        2 * int(selection_index)
+        if config["rotate_surplus_offsets"] else 0
+    )
+    # The doubled instance rotation and reverse stride break the common
+    # factors between four offsets and eight selection categories. Thus each
+    # category is paired with every offset across physical instances.
+    return _rotating_targets(
+        offsets, limit, rotation_index, stride=max(1, len(offsets) - 1)
+    )
+
+
+def _adaptive_category_targets(generation, limit, selection_index=0):
+    config = _adaptive_candidate_selection(generation)
+    if not config["ensure_all_categories"]:
+        return []
+    if int(limit) < len(ADAPTIVE_SELECTION_CATEGORIES):
+        raise ValueError(
+            "adaptive_due_dates.candidate_selection.ensure_all_categories "
+            f"requires at least {len(ADAPTIVE_SELECTION_CATEGORIES)} "
+            "samples_per_instance."
+        )
+    rotation_index = (
+        int(selection_index)
+        if config["rotate_repeated_categories"] else 0
+    )
+    return _rotating_targets(
+        ADAPTIVE_SELECTION_CATEGORIES,
+        limit,
+        rotation_index,
+    )
+
+
+def _adaptive_due_date_coverage_met(
+    candidates, limit, generation, selection_index=0
+):
     offsets = _adaptive_due_date_offsets(generation)
     if not offsets:
         return True
-    quotas = _quota_counts(
-        int(limit),
-        {offset: 1.0 / len(offsets) for offset in offsets},
-        offsets,
-    )
+    quotas = Counter(_adaptive_offset_targets(
+        generation, limit, selection_index
+    ))
     structures = {
         offset: {
             candidate["structure"]
@@ -976,8 +1315,9 @@ def _select_adaptive_due_date_candidates(
     service_level,
     boundary_width,
     generation,
+    selection_index=0,
 ):
-    """Select an approximately equal number of graphs per adaptive offset."""
+    """Select balanced adaptive-offset graphs, optionally by category cycle."""
     offsets = _adaptive_due_date_offsets(generation)
     if not offsets:
         return _select_candidates(
@@ -989,6 +1329,19 @@ def _select_adaptive_due_date_candidates(
             hybrid_selection=_hybrid_selection_for_split(
                 generation["fixed_y"]
             ),
+        )
+    category_targets = _adaptive_category_targets(
+        generation, limit, selection_index
+    )
+    if category_targets:
+        return _select_balanced_adaptive_candidates(
+            candidates,
+            limit,
+            service_level,
+            boundary_width,
+            generation,
+            selection_index,
+            category_targets,
         )
     quotas = _quota_counts(
         int(limit),
@@ -1058,6 +1411,112 @@ def _select_adaptive_due_date_candidates(
             hybrid_selection=None,
         ))
     return selected[:int(limit)]
+
+
+def _category_ranking(
+    candidates, category, service_level, boundary_width, selected
+):
+    if category == "structurally_diverse":
+        chosen = [entry["candidate"] for entry in selected]
+        return sorted(
+            candidates,
+            key=lambda item: (
+                -min(
+                    (
+                        _structure_distance(item, existing)
+                        for existing in chosen
+                    ),
+                    default=1.0,
+                ),
+                item.get("balanced_score", 0.0),
+            ),
+        )
+    one_hot = {
+        name: float(name == category)
+        for name in ADAPTIVE_SELECTION_CATEGORIES
+    }
+    return [
+        entry["candidate"]
+        for entry in _select_candidates_legacy(
+            candidates,
+            len(candidates),
+            one_hot,
+            service_level,
+            boundary_width,
+        )
+    ]
+
+
+def _select_balanced_adaptive_candidates(
+    candidates,
+    limit,
+    service_level,
+    boundary_width,
+    generation,
+    selection_index,
+    category_targets,
+):
+    offset_targets = _adaptive_offset_targets(
+        generation, limit, selection_index
+    )
+    config = _adaptive_candidate_selection(generation)
+    selected, used_ids, used_graph_signatures = [], set(), set()
+    used_structures = set()
+
+    for category, offset in zip(category_targets, offset_targets):
+        group = [
+            candidate for candidate in candidates
+            if math.isclose(
+                float(candidate["row"]["training_due_date_delta"]),
+                offset,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            and candidate["candidate_id"] not in used_ids
+            and (offset, candidate["structure"])
+            not in used_graph_signatures
+        ]
+        ranked = _category_ranking(
+            group, category, service_level, boundary_width, selected
+        )
+        preferred = (
+            [
+                candidate for candidate in ranked
+                if candidate["structure"] not in used_structures
+            ]
+            if config["prefer_unique_structures"] else ranked
+        )
+        available = preferred or ranked
+        if not available:
+            raise RuntimeError(
+                "Adaptive candidate pool does not contain enough distinct "
+                f"graphs for due-date offset {offset:.3f}."
+            )
+        candidate = available[0]
+        selected.append({
+            "candidate": candidate,
+            "category": f"adaptive_delta_{offset:.3f}:{category}",
+        })
+        used_ids.add(candidate["candidate_id"])
+        used_graph_signatures.add((offset, candidate["structure"]))
+        used_structures.add(candidate["structure"])
+
+    actual_categories = {
+        entry["category"].split(":", 1)[1] for entry in selected
+    }
+    if set(ADAPTIVE_SELECTION_CATEGORIES) - actual_categories:
+        raise RuntimeError(
+            "Adaptive candidate selection failed to cover every configured "
+            "selection category."
+        )
+    if Counter(
+        float(entry["candidate"]["row"]["training_due_date_delta"])
+        for entry in selected
+    ) != Counter(offset_targets):
+        raise RuntimeError(
+            "Adaptive candidate selection failed to meet its offset quotas."
+        )
+    return selected
 
 
 def _probability_bin(value, service_level, boundary_width):
@@ -1142,6 +1601,53 @@ def _prepare_candidate_scores(candidates):
         item["pareto_rank"] = rank
 
 
+def _candidate_mean_completion_delay(candidate):
+    values = candidate.get("simulated_job_expected_completion_delays")
+    if not values:
+        raise ValueError(
+            "Candidate selection requires simulated completion-delay "
+            "labels for every job."
+        )
+    values = [float(value) for value in values]
+    if any(not math.isfinite(value) or value < 0.0 for value in values):
+        raise ValueError(
+            "Simulated completion-delay labels must be finite and "
+            "nonnegative."
+        )
+    return sum(values) / len(values)
+
+
+def _completion_delay_rankings(candidates):
+    delay_by_id = {
+        candidate["candidate_id"]: _candidate_mean_completion_delay(candidate)
+        for candidate in candidates
+    }
+    median_delay = statistics.median(delay_by_id.values())
+    return {
+        "low_expected_completion_delay": sorted(
+            candidates,
+            key=lambda item: (
+                delay_by_id[item["candidate_id"]],
+                item["pool_objective"],
+            ),
+        ),
+        "medium_expected_completion_delay": sorted(
+            candidates,
+            key=lambda item: (
+                abs(delay_by_id[item["candidate_id"]] - median_delay),
+                item["pool_objective"],
+            ),
+        ),
+        "high_expected_completion_delay": sorted(
+            candidates,
+            key=lambda item: (
+                -delay_by_id[item["candidate_id"]],
+                item["pool_objective"],
+            ),
+        ),
+    }
+
+
 def _select_hybrid_candidates(
     candidates,
     limit,
@@ -1207,9 +1713,6 @@ def _select_hybrid_candidates(
         "good_nominal_objective": sorted(
             candidates, key=lambda item: item["pool_objective"]
         ),
-        "high_min_job_probability": sorted(
-            candidates, key=lambda item: -item["min_job_probability"]
-        ),
         "pareto_tradeoff": sorted(
             candidates,
             key=lambda item: (
@@ -1218,6 +1721,7 @@ def _select_hybrid_candidates(
                 item["balanced_score"],
             ),
         ),
+        **_completion_delay_rankings(candidates),
     }
     selected, used = [], set()
     for category in ANCHOR_CATEGORIES[:-1]:
@@ -1443,14 +1947,8 @@ def _select_candidates_legacy(
         "good_nominal_objective": sorted(
             candidates, key=lambda item: item["pool_objective"]
         ),
-        "high_min_job_probability": sorted(
-            candidates, key=lambda item: -item["min_job_probability"]
-        ),
         "service_boundary_below": boundary_fallback(below),
         "service_boundary_above": boundary_fallback(above),
-        "low_min_job_probability": sorted(
-            candidates, key=lambda item: item["min_job_probability"]
-        ),
         "pareto_tradeoff": sorted(
             candidates,
             key=lambda item: (
@@ -1459,6 +1957,7 @@ def _select_candidates_legacy(
                 item["balanced_score"],
             ),
         ),
+        **_completion_delay_rankings(candidates),
     }
     for category, ranked in rankings.items():
         for item in ranked:
@@ -1664,9 +2163,12 @@ def _run_neighborhood(
         local_structures.add(candidate["structure"])
         candidate["row"]["instance_name"] = instance_name
         _evaluate_fixed_schedule_nonlinear(candidate, graph_config)
+        _evaluate_fixed_schedule_simulation(
+            candidate, generation.get("simulation")
+        )
         candidates.append(candidate)
     print(
-        f"[Nonlinear labels] {instance_name} | run={run_index + 1} | "
+        f"[Simulation labels] {instance_name} | run={run_index + 1} | "
         f"mode={candidate_generation_mode} | "
         f"band={candidate_probability_band or 'service_feasible'} | "
         f"candidates={len(candidates)}",
@@ -1872,6 +2374,7 @@ def _collect_instance_candidates(
     minimum_runs_override=None,
     maximum_runs_override=None,
     probability_band_generation=None,
+    selection_index=0,
 ):
     candidate_generation_mode = _validate_candidate_generation_mode(
         candidate_generation_mode
@@ -1964,7 +2467,7 @@ def _collect_instance_candidates(
             run_offset + 1 >= minimum_runs
             and len(candidates) >= minimum_count
             and _adaptive_due_date_coverage_met(
-                candidates, minimum_count, generation
+                candidates, minimum_count, generation, selection_index
             )
         ):
             if not hybrid_selection or _hybrid_boundary_targets_met(
@@ -2055,6 +2558,7 @@ def _collect_and_select_instance_candidates(
     split=None,
     start_run=0,
     progress=None,
+    selection_index=0,
 ):
     fixed = generation["fixed_y"]
     hybrid_selection = _hybrid_selection_for_split(fixed, split)
@@ -2079,6 +2583,7 @@ def _collect_and_select_instance_candidates(
             hybrid_selection=hybrid_selection,
             candidate_generation_mode=candidate_generation_mode,
             probability_band_generation=probability_band_generation,
+            selection_index=selection_index,
         )
         if _adaptive_due_date_offsets(generation):
             selected = _select_adaptive_due_date_candidates(
@@ -2087,6 +2592,7 @@ def _collect_and_select_instance_candidates(
                 fixed.get("pool_selection_ratios"),
                 *_label_distribution_parameters(fixed),
                 generation,
+                selection_index,
             )
         else:
             selected = _select_candidates(
@@ -2175,6 +2681,12 @@ def generate_from_config(generation):
     )
     generation["fixed_y"] = fixed
     generation["random_seed"] = int(generation.get("random_seed", 42))
+    simulation_config = _simulation.normalize_simulation_config(
+        generation.get("simulation")
+    )
+    generation["simulation"] = _simulation.simulation_config_dict(
+        simulation_config
+    )
     output_root = Path(generation["output_directory"])
     if not output_root.is_absolute():
         output_root = ROOT_DIR / output_root
@@ -2182,9 +2694,15 @@ def generate_from_config(generation):
     splits = selected_instance_splits(
         generation["instance_splits"], generation.get("generate_splits")
     )
+    expected_scale_factors = generation.get("weibull_scale_factors", [1.0])
+    split_quality = {
+        split: _new_quality_accumulator(expected_scale_factors)
+        for split in splits
+    }
+    total_quality = _new_quality_accumulator(expected_scale_factors)
     summary_path = output_root / failure_handling["summary_filename"]
     summary = {
-        "schema_version": 7,
+        "schema_version": 12,
         "status": "running",
         "started_at_utc": _utc_timestamp(),
         "completed_at_utc": None,
@@ -2203,8 +2721,11 @@ def generate_from_config(generation):
         ),
         "label": {
             "target_column": TARGET_COLUMN,
-            "label_method": "weibull_expected_repair_buffer_v1",
-            "source": "fixed_schedule_nonlinear_weibull_repair_equation",
+            "label_method": SIMULATION_LABEL_METHOD,
+            "source": "fixed_schedule_monte_carlo_propagated_completion_delay",
+            "simulation": _simulation.simulation_config_dict(
+                simulation_config
+            ),
         },
         "graph": {
             "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
@@ -2220,9 +2741,11 @@ def generate_from_config(generation):
                 "successful_instances": [],
                 "skipped_instances": [],
                 "written_graphs": 0,
+                "quality_report": _quality_report(split_quality[split]),
             }
             for split, instance_names in splits.items()
         },
+        "quality_report": _quality_report(total_quality),
     }
     _write_generation_summary(summary_path, summary)
 
@@ -2239,7 +2762,7 @@ def generate_from_config(generation):
                 writer = csv.DictWriter(file, fieldnames=FIELDNAMES)
                 writer.writeheader()
                 file.flush()
-                for instance_name in instance_names:
+                for selection_index, instance_name in enumerate(instance_names):
                     def report(run_index, fix_ratio, candidate_count):
                         print(
                             f"[Fix-and-optimize] {split} | "
@@ -2261,6 +2784,7 @@ def generate_from_config(generation):
                                 samples_per_instance,
                                 split=split,
                                 progress=report,
+                                selection_index=selection_index,
                             )
                         )
                         if len(selected) < samples_per_instance:
@@ -2304,6 +2828,12 @@ def generate_from_config(generation):
                     split_probability_counts.update(
                         instance_probability_counts
                     )
+                    _update_quality_accumulator(split_quality[split], rows)
+                    _update_quality_accumulator(total_quality, rows)
+                    split_summary["quality_report"] = _quality_report(
+                        split_quality[split]
+                    )
+                    summary["quality_report"] = _quality_report(total_quality)
                     split_summary["written_graphs"] += len(rows)
                     split_summary["successful_instances"].append({
                         "instance_name": instance_name,
@@ -2343,9 +2873,19 @@ def generate_from_config(generation):
                 f"{_distribution_text(split_probability_counts)}",
                 flush=True,
             )
+            print(
+                _quality_report_text(
+                    split, split_summary["quality_report"]
+                ),
+                flush=True,
+            )
         summary["status"] = "completed"
         summary["completed_at_utc"] = _utc_timestamp()
         _write_generation_summary(summary_path, summary)
+        print(
+            _quality_report_text("overall", summary["quality_report"]),
+            flush=True,
+        )
         print(
             f"[Fix-and-optimize] generation summary -> {summary_path}",
             flush=True,
@@ -2377,6 +2917,9 @@ def generate_rows_for_instance(
     )
     generation["fixed_y"] = dict(generation.get("fixed_y") or {})
     generation["random_seed"] = int(generation.get("random_seed", 42))
+    generation["simulation"] = _simulation.simulation_config_dict(
+        generation.get("simulation")
+    )
     instance = load_generated_instance(instance_name)
     candidates, selected = _collect_and_select_instance_candidates(
         instance,
@@ -2401,7 +2944,7 @@ def generate_rows_for_instance(
                 candidate.get("nonlinear_job_probabilities", [])
             )
             row["_label_method"] = (
-                "weibull_expected_repair_buffer_v1"
+                SIMULATION_LABEL_METHOD
             )
         row["pool_selection_category"] = entry["category"]
         rows.append(row)

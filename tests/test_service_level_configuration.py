@@ -13,16 +13,17 @@ sequence_setup = importlib.import_module("helper.sequence_setup")
 
 
 class ServiceLevelConfigurationTests(unittest.TestCase):
-    def test_active_pipeline_uses_cost_and_repair_buffer_formulation(self):
+    def test_active_pipeline_uses_soft_service_level_formulation(self):
         config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(
             config["objective"],
             {
                 "type": (
-                    "minimize_processing_plus_operating_plus_tardiness_cost"
+                    "minimize_processing_plus_operating_plus_"
+                    "service_violation_cost"
                 ),
                 "facility_cost_per_time": 1.0,
-                "tardiness_cost_per_time": 1.0,
+                "service_violation_cost_per_time": 1.0,
             },
         )
         profiles = config["instances"]["generation"]["machine_profiles"]
@@ -37,15 +38,21 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
             config["training"]["data_generation"][
                 "samples_per_instance"
             ],
-            4,
+            10,
         )
         generation = config["instances"]["generation"]
         self.assertEqual(generation["time_unit_minutes"], 10)
         self.assertAlmostEqual(
-            profiles["profiles"]["old"]["repair_rate"], 1.0 / 30.0
+            profiles["profiles"]["old"]["repair_rate"], 1.0 / 60.0
         )
         self.assertAlmostEqual(
-            profiles["profiles"]["new"]["repair_rate"], 1.0 / 15.0
+            profiles["profiles"]["new"]["repair_rate"], 1.0 / 30.0
+        )
+        self.assertEqual(
+            profiles["profiles"]["old"]["weibull_alpha"], 120.0
+        )
+        self.assertEqual(
+            profiles["profiles"]["new"]["weibull_alpha"], 200.0
         )
         self.assertEqual(generation["num_jobs"], [3, 4, 5])
         self.assertEqual(generation["num_machines"], [3, 4, 5])
@@ -60,19 +67,48 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
                 "samples_per_instance"
             ]
         )
-        self.assertEqual(training_graphs_per_size * 9, 2016)
+        self.assertEqual(training_graphs_per_size * 9, 1440)
         self.assertNotIn(
             "service_level",
             config["constraint"]["weibull"]["reliability_graph"],
+        )
+        self.assertEqual(
+            config["constraint"]["weibull"]["service_level"], 0.90
+        )
+        self.assertTrue(
+            config["constraint"]["weibull"]["soft_constraint"]
+        )
+        self.assertEqual(
+            config["training"]["data_generation"]["simulation"]
+            ["label_replications"],
+            256,
         )
         self.assertEqual(
             config["instances"]["generation"]["due_dates"]["factors"],
             [1.25, 1.30, 1.40, 1.55],
         )
         self.assertEqual(
-            config["solve"]["evaluation"]["benchmark"]["due_date_factors"],
-            [1.60],
+            config["instances"]["generation"]["due_dates"]["method"],
+            "total_work_content",
         )
+        self.assertEqual(
+            config["instances"]["generation"]["due_dates"][
+                "machine_aggregation"
+            ],
+            "mean",
+        )
+        benchmark_due_dates = config["solve"]["evaluation"]["benchmark"][
+            "due_dates"
+        ]
+        self.assertEqual(
+            benchmark_due_dates["method"],
+            "calibrated_total_work_content",
+        )
+        self.assertEqual(
+            benchmark_due_dates["relative_makespan_offsets"],
+            [0.00, 0.15, 0.30],
+        )
+        self.assertEqual(benchmark_due_dates["time_limit_seconds"], 10)
         self.assertTrue(config["solve"]["create_instances"])
         self.assertEqual(
             config["solve"]["evaluation"]["stress"]["due_date_factor"],
@@ -100,7 +136,17 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
         self.assertEqual(
             config["training"]["data_generation"]["adaptive_due_dates"]
             ["relative_makespan_offsets"],
-            [0.02, 0.05, 0.10, 0.20],
+            [0.00, 0.15, 0.30, 0.45],
+        )
+        self.assertEqual(
+            config["training"]["data_generation"]["adaptive_due_dates"]
+            ["method"],
+            "calibrated_total_work_content",
+        )
+        self.assertEqual(
+            config["training"]["data_generation"]["adaptive_due_dates"]
+            ["time_limit_seconds"],
+            10,
         )
         self.assertNotIn(
             "repair_buffer_scale",
@@ -114,9 +160,19 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
             ["maximum_candidate_pool_runs"],
             4,
         )
+        self.assertEqual(
+            config["training"]["data_generation"]["adaptive_due_dates"]
+            ["candidate_selection"],
+            {
+                "ensure_all_categories": True,
+                "rotate_repeated_categories": True,
+                "rotate_surplus_offsets": True,
+                "prefer_unique_structures": True,
+            },
+        )
         self.assertEqual(configured_convolutions, {"linear", "sage", "job"})
-        self.assertEqual(fixed["label_distribution_center"], 0.50)
-        self.assertEqual(fixed["label_distribution_half_width"], 0.25)
+        self.assertEqual(fixed["label_distribution_center"], 0.90)
+        self.assertEqual(fixed["label_distribution_half_width"], 0.05)
         self.assertEqual(
             fixed["candidate_generation_mode"], "nonlinear_evaluated"
         )
@@ -143,11 +199,11 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
             4,
         )
         self.assertEqual(
-            training.TARGET_COLUMN, "nonlinear_expected_repair_buffer"
+            training.TARGET_COLUMN, "simulated_expected_completion_delay"
         )
         self.assertEqual(
             sequence_setup.RELIABILITY_GNN_OUTPUT_HEAD,
-            "per_job_expected_repair_buffer_relu_v4",
+            "per_job_expected_completion_delay_relu_v5",
         )
         self.assertFalse(
             hasattr(sequence_setup.ReliabilityGraphConfig(), "service_level")

@@ -147,6 +147,7 @@ def generate_data(args):
         "output_directory": str(dataset_dir),
         "random_seed": int(args.seed),
         "samples_per_instance": int(args.samples_per_instance),
+        "simulation": source.get("simulation"),
         "instance_failure_handling": source.get("instance_failure_handling"),
         "reliability_graph": config["constraint"]["weibull"]["reliability_graph"],
         "fixed_y": fixed,

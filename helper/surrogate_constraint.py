@@ -15,7 +15,7 @@ CONSTRAINT_WEIBULL = "weibull"
 VALID_CONSTRAINT_TYPES = {CONSTRAINT_WEIBULL}
 
 TARGET_COLUMNS = {
-    CONSTRAINT_WEIBULL: "nonlinear_expected_repair_buffer",
+    CONSTRAINT_WEIBULL: "simulated_expected_completion_delay",
 }
 
 

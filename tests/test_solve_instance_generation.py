@@ -1,4 +1,5 @@
 import copy
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,8 @@ def _config(instance_directory, *, create_instances):
                 "operations_per_job": [1, 1],
                 "processing_times": {"base_range": [2, 4]},
                 "due_dates": {
-                    "method": "fjsp_lower_bound_factors",
+                    "method": "total_work_content",
+                    "machine_aggregation": "mean",
                     "factors": [1.6],
                     "assignment": "cyclic",
                 },
@@ -30,7 +32,15 @@ def _config(instance_directory, *, create_instances):
                     "num_jobs": [2, 3],
                     "num_machines": [2],
                     "instances_per_size": 1,
-                    "due_date_factors": [1.6],
+                    "due_dates": {
+                        "method": "calibrated_total_work_content",
+                        "machine_aggregation": "mean",
+                        "relative_makespan_offsets": [0.0, 0.15, 0.30],
+                        "time_limit_seconds": 2,
+                        "mip_gap": 0.01,
+                        "output_flag": 0,
+                        "seed": 42,
+                    },
                 },
             },
         },
@@ -43,17 +53,59 @@ class SolveInstanceGenerationTests(unittest.TestCase):
             config = _config(temporary_directory, create_instances=True)
             plan = main._generated_tier_plan(config, "benchmark")
 
-            self.assertEqual(len(plan), 2)
-            generated = sorted(
-                path.name
-                for path in (
-                    Path(temporary_directory) / "benchmark" / "df1p60"
-                ).glob("*.pkl")
+            self.assertEqual(len(plan), 6)
+            expected_offsets = [0.0, 0.15, 0.30]
+            self.assertEqual(
+                sorted({
+                    item["relative_makespan_offset"] for item in plan
+                }),
+                expected_offsets,
             )
-            self.assertEqual(generated, [
-                "i2_k2_o1-1_1_benchmark_df1p60.pkl",
-                "i3_k2_o1-1_1_benchmark_df1p60.pkl",
-            ])
+            instances_by_offset = {}
+            for offset, slug in (
+                (0.0, "twk_d0p00"),
+                (0.15, "twk_d0p15"),
+                (0.30, "twk_d0p30"),
+            ):
+                directory = Path(temporary_directory) / "benchmark" / slug
+                generated = sorted(
+                    path.name for path in directory.glob("*.pkl")
+                )
+                self.assertEqual(generated, [
+                    f"i2_k2_o1-1_1_benchmark_{slug}.pkl",
+                    f"i3_k2_o1-1_1_benchmark_{slug}.pkl",
+                ])
+                instances_by_offset[offset] = (
+                    main._instances.load_generated_instance(
+                        generated[0].removesuffix(".pkl"), directory
+                    )
+                )
+            instance = instances_by_offset[0.0]
+            self.assertEqual(
+                instance.due_date_method,
+                "calibrated_total_work_content",
+            )
+            self.assertEqual(instance.due_date_relative_makespan_offset, 0.0)
+            self.assertAlmostEqual(
+                instance.due_date_factor,
+                instance.nominal_twk_due_date_factor,
+            )
+            baseline = instances_by_offset[0.0]
+            for offset, candidate in instances_by_offset.items():
+                self.assertEqual(
+                    candidate.processing_times, baseline.processing_times
+                )
+                self.assertEqual(
+                    candidate.eligible_machines, baseline.eligible_machines
+                )
+                self.assertEqual(
+                    candidate.nominal_makespan_calibration,
+                    baseline.nominal_makespan_calibration,
+                )
+                self.assertAlmostEqual(
+                    candidate.due_date_factor,
+                    (1.0 + offset) * baseline.nominal_twk_due_date_factor,
+                )
 
     def test_create_false_reuses_only_complete_matching_set(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -71,12 +123,43 @@ class SolveInstanceGenerationTests(unittest.TestCase):
             config = _config(temporary_directory, create_instances=True)
             main._generated_tier_plan(config, "benchmark")
             directory = (
-                Path(temporary_directory) / "benchmark" / "df1p60"
+                Path(temporary_directory) / "benchmark" / "twk_d0p00"
             )
             next(directory.glob("*.pkl")).unlink()
             config["solve"]["create_instances"] = False
 
             with self.assertRaisesRegex(ValueError, "do not match"):
+                main._generated_tier_plan(config, "benchmark")
+
+    def test_reuse_rejects_mismatching_calibration_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = _config(temporary_directory, create_instances=True)
+            plan = main._generated_tier_plan(config, "benchmark")
+            first = plan[0]
+            instance = main._instances.load_generated_instance(
+                first["instance_name"], first["instance_directory"]
+            )
+            instance.due_date_relative_makespan_offset = 0.15
+            path = (
+                Path(first["instance_directory"])
+                / f"{first['instance_name']}.pkl"
+            )
+            with path.open("wb") as output_file:
+                pickle.dump(instance, output_file)
+            config["solve"]["create_instances"] = False
+
+            with self.assertRaisesRegex(ValueError, "calibrated TWK"):
+                main._generated_tier_plan(config, "benchmark")
+
+    def test_calibrated_offsets_reject_scalar_and_list_combination(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = _config(temporary_directory, create_instances=True)
+            due_dates = config["solve"]["evaluation"]["benchmark"][
+                "due_dates"
+            ]
+            due_dates["relative_makespan_offset"] = 0.0
+
+            with self.assertRaisesRegex(ValueError, "either"):
                 main._generated_tier_plan(config, "benchmark")
 
 

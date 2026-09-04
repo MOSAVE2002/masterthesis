@@ -1,5 +1,6 @@
 import importlib
 import json
+import math
 import random
 import tempfile
 import unittest
@@ -94,7 +95,7 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
             (ROOT / "config.json").read_text(encoding="utf-8")
         )
         generation = config["instances"]["generation"]
-        self.assertEqual(generation["processing_times"]["base_range"], [5, 15])
+        self.assertEqual(generation["processing_times"]["base_range"], [10, 30])
         self.assertEqual(
             set(generation["machine_profiles"]["profiles"]),
             {"old", "new"},
@@ -104,9 +105,9 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
             {
                 "cost_rate": 1.0,
                 "speed": 0.8,
-                "weibull_alpha": 60.0,
+                "weibull_alpha": 120.0,
                 "weibull_beta": 3.0,
-                "repair_rate": 1.0 / 30.0,
+                "repair_rate": 1.0 / 60.0,
             },
         )
         self.assertEqual(
@@ -114,9 +115,9 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
             {
                 "cost_rate": 1.6,
                 "speed": 1.25,
-                "weibull_alpha": 100.0,
+                "weibull_alpha": 200.0,
                 "weibull_beta": 2.0,
-                "repair_rate": 1.0 / 15.0,
+                "repair_rate": 1.0 / 30.0,
             },
         )
         self.assertTrue(all(
@@ -149,7 +150,7 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
             config["training"]["data_generation"][
                 "weibull_scale_factors"
             ],
-            [1.0],
+            [0.8, 1.0, 1.2],
         )
 
     def test_saved_instances_are_validated_against_generator_config(self):
@@ -206,10 +207,10 @@ class MachineProfileGeneratorTests(unittest.TestCase):
             processing_time_range=[5, 15],
             machine_profile_config=stochastic.DEFAULT_MACHINE_PROFILE_CONFIG,
             due_date_config={
-                "method": "fjsp_lower_bound_factors",
+                "method": "total_work_content",
+                "machine_aggregation": "mean",
                 "factors": [1.25, 1.35, 1.45],
                 "assignment": "cyclic",
-                "service_level": 0.95,
             },
             random_source=random.Random(seed),
         )
@@ -297,6 +298,46 @@ class MachineProfileGeneratorTests(unittest.TestCase):
         self.assertEqual(first.due_date_factor, 1.25)
         self.assertEqual(second.due_date_factor, 1.35)
         self.assertFalse(hasattr(first, "service_levels"))
+
+    def test_due_dates_use_mean_total_work_content_per_job(self):
+        instance = self._instance()
+        expected_work_content = {
+            job: sum(
+                sum(
+                    instance.processing_times[operation, machine]
+                    for machine in instance.eligible_machines[operation]
+                ) / len(instance.eligible_machines[operation])
+                for operation in operations
+            )
+            for job, operations in instance.jobs.items()
+        }
+        self.assertEqual(instance.due_date_method, "total_work_content")
+        self.assertEqual(instance.due_date_machine_aggregation, "mean")
+        self.assertEqual(instance.due_date_work_content, expected_work_content)
+        self.assertEqual(
+            instance.due_dates,
+            {
+                job: float(math.ceil(
+                    instance.due_date_factor * expected_work_content[job]
+                ))
+                for job in instance.jobs
+            },
+        )
+        self.assertGreater(len(set(instance.due_dates.values())), 1)
+
+    def test_due_date_configuration_rejects_unknown_methods(self):
+        with self.assertRaisesRegex(ValueError, "due_dates.method"):
+            instances.FJSPData(
+                nb_instance=1,
+                num_jobs=2,
+                num_machines=2,
+                operations_per_job_min=1,
+                operations_per_job_max=1,
+                flag_save_file=False,
+                machine_profile_config=stochastic.DEFAULT_MACHINE_PROFILE_CONFIG,
+                due_date_config={"method": "unknown"},
+                random_source=random.Random(5),
+            )
 
 
 if __name__ == "__main__":

@@ -26,16 +26,16 @@ DEFAULT_MACHINE_PROFILE_CONFIG = {
         "old": {
             "cost_rate": 1.0,
             "speed": 0.8,
-            "weibull_alpha": 60.0,
+            "weibull_alpha": 120.0,
             "weibull_beta": 3.0,
-            "repair_rate": 1.0 / 30.0,
+            "repair_rate": 1.0 / 60.0,
         },
         "new": {
             "cost_rate": 1.6,
             "speed": 1.25,
-            "weibull_alpha": 100.0,
+            "weibull_alpha": 200.0,
             "weibull_beta": 2.0,
-            "repair_rate": 1.0 / 15.0,
+            "repair_rate": 1.0 / 30.0,
         },
     },
     "parameter_jitter": {

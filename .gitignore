@@ -3,3 +3,12 @@ __pycache__/
 *.py[cod]
 .venv/
 .uv-cache/
+
+# Generated project artifacts
+02_data/
+04_GraphNeuralNetworks/trained_gnn_models/
+06_Evaluation/results/
+plots/
+
+# Local editor configuration
+*.code-workspace

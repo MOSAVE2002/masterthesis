@@ -39,7 +39,8 @@ _instances = importlib.import_module("01_generator.instance_generator")
 _architectures = importlib.import_module(
     "04_GraphNeuralNetworks.models.gnn_architecture"
 )
-NONLINEAR_LABEL_METHOD = "weibull_expected_repair_buffer_v1"
+_simulation = importlib.import_module("05_Simulation.preempt_resume")
+SIMULATION_LABEL_METHOD = _simulation.EXPECTED_COMPLETION_DELAY_LABEL_METHOD
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
 SPLIT_CSV_FILENAMES = _instances.SPLIT_CSV_FILENAMES
@@ -136,9 +137,9 @@ def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
             f"{target_name!r}."
         )
     label_method = label.get("label_method")
-    if label_method != NONLINEAR_LABEL_METHOD:
+    if label_method != SIMULATION_LABEL_METHOD:
         raise ValueError(
-            "The active GNN pipeline requires nonlinear Weibull/Markov "
+            "The active GNN pipeline requires propagated Monte-Carlo "
             f"labels, got {label_method!r}."
         )
     graph = summary.get("graph") or {}
@@ -153,7 +154,10 @@ def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
             "The active GNN pipeline requires direct U machine edges and "
             "fixed job edges. Regenerate the dataset with schema_version >= 3."
         )
-    return label_method, {"source": label.get("source")}
+    return label_method, {
+        "source": label.get("source"),
+        "simulation": label.get("simulation"),
+    }
 
 
 def _validate_dataset_context(
@@ -655,7 +659,7 @@ def train_from_file(
         "num_graphsage_layers": int(num_graphsage_layers),
         "hidden_channels": int(hidden_channels),
         "output_head": RELIABILITY_GNN_OUTPUT_HEAD,
-        "job_target": "job_expected_repair_buffer",
+        "job_target": "job_expected_completion_delay",
         "job_repair_buffer_label_method": label_method,
         "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
         "message_passing": (

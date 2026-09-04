@@ -16,7 +16,7 @@ dataset_evaluation = importlib.import_module(
 prediction_evaluation = importlib.import_module(
     "06_Evaluation.evaluate_gnn_predictions"
 )
-TARGET_COLUMN = "nonlinear_expected_repair_buffer"
+TARGET_COLUMN = "simulated_expected_completion_delay"
 
 
 def _write_dataset(path, rows):

@@ -25,11 +25,17 @@ _architectures = importlib.import_module(
 
 
 BUILD_KEYS = {
-    "gurobi": {"facility_cost_per_time", "tardiness_cost_per_time"},
+    "gurobi": {
+        "facility_cost_per_time",
+        "service_violation_cost_per_time",
+        "tardiness_cost_per_time",
+    },
     "gurobi_nonlinear": {
         "constraint_type",
         "reliability_graph_config",
+        "service_level",
         "facility_cost_per_time",
+        "service_violation_cost_per_time",
         "tardiness_cost_per_time",
     },
     "gurobi_gnn": {
@@ -43,8 +49,10 @@ BUILD_KEYS = {
         "add_schedule_upper_bounds",
         "constraint_type",
         "reliability_graph_config",
+        "service_level",
         "analytic_bounds",
         "facility_cost_per_time",
+        "service_violation_cost_per_time",
         "tardiness_cost_per_time",
     },
 }
@@ -203,7 +211,8 @@ def solveModel(**kwargs):
             print(
                 f"  processing cost={variables['processing_cost'].getValue():.6f} | "
                 f"operating cost={variables['operating_cost'].getValue():.6f} | "
-                f"tardiness cost={variables['tardiness_cost'].getValue():.6f}"
+                "service violation cost="
+                f"{variables['service_violation_cost'].getValue():.6f}"
             )
     if write_solution:
         path = _solution_path(solver, instance_name, variables)

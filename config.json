@@ -1,10 +1,10 @@
 {
-  "schema_version": 31,
+  "schema_version": 41,
 
   "workflow": {
-    "create_instances": false,
-    "generate_training_data": false,
-    "train_gnn": false,
+    "create_instances": true,
+    "generate_training_data": true,
+    "train_gnn": true,
     "solve": true,
     "evaluate": false
   },
@@ -14,27 +14,27 @@
       "num_jobs": [3, 4, 5],
       "num_machines": [3, 4, 5],
       "operations_per_job": [3, 5],
-      "instances_per_size": 70,
+      "instances_per_size": 20,
       "random_seed": 19,
       "time_unit_minutes": 10,
       "processing_times": {
-        "base_range": [5, 15]
+        "base_range": [10, 30]
       },
       "machine_profiles": {
         "profiles": {
           "old": {
             "cost_rate": 1.00,
             "speed": 0.80,
-            "weibull_alpha": 60.0,
+            "weibull_alpha": 120.0,
             "weibull_beta": 3.0,
-            "repair_rate": 0.03333333333333333
+            "repair_rate": 0.016666666666666666
           },
           "new": {
             "cost_rate": 1.60,
             "speed": 1.25,
-            "weibull_alpha": 100.0,
+            "weibull_alpha": 200.0,
             "weibull_beta": 2.0,
-            "repair_rate": 0.06666666666666667
+            "repair_rate": 0.03333333333333333
           }
         },
         "parameter_jitter": {
@@ -49,7 +49,8 @@
         "additional_same_profile_machine_probability": 0.25
       },
       "due_dates": {
-        "method": "fjsp_lower_bound_factors",
+        "method": "total_work_content",
+        "machine_aggregation": "mean",
         "factors": [1.25, 1.30, 1.40, 1.55],
         "assignment": "cyclic"
       },
@@ -62,9 +63,9 @@
   },
 
   "objective": {
-    "type": "minimize_processing_plus_operating_plus_tardiness_cost",
+    "type": "minimize_processing_plus_operating_plus_service_violation_cost",
     "facility_cost_per_time": 1.0,
-    "tardiness_cost_per_time": 1.0
+    "service_violation_cost_per_time": 1.0
   },
 
   "solve": {
@@ -82,8 +83,16 @@
         "reuse_existing_instances": true,
         "num_jobs": [3,5],
         "num_machines": [3,5],
-        "instances_per_size": 5,
-        "due_date_factors": [1.60]
+        "instances_per_size": 2,
+        "due_dates": {
+          "method": "calibrated_total_work_content",
+          "machine_aggregation": "mean",
+          "relative_makespan_offsets": [0.00, 0.15, 0.30],
+          "time_limit_seconds": 10,
+          "mip_gap": 0.01,
+          "output_flag": 0,
+          "seed": 42
+        }
       },
       "extrapolation": {
         "enabled": false,
@@ -108,7 +117,7 @@
     "solutions_directory": "02_data/fjsp_solutions",
     "instances_directory": "02_data/fjsp_instances",
     "output_directory": "06_Evaluation/results",
-    "replications": 2000,
+    "replications": 1000,
     "random_seed": 900042,
     "wilson_confidence": 0.95,
     "simulation": {
@@ -128,6 +137,8 @@
   "constraint": {
     "type": "weibull",
     "weibull": {
+      "service_level": 0.90,
+      "soft_constraint": true,
       "reliability_graph": {
         "quadrature_points": 12,
         "service_scope": "job"
@@ -138,7 +149,7 @@
   "training": {
     "data_generation": {
       "method": "fix_and_optimize",
-      "samples_per_instance": 4,
+      "samples_per_instance": 10,
       "output_directory": "02_data/gnn_dataset",
       "generate_splits": {
         "training": true,
@@ -146,15 +157,27 @@
         "test": true
       },
       "random_seed": 42,
-      "weibull_scale_factors": [1.0],
+      "simulation": {
+        "label_replications": 256,
+        "random_seed": 42
+      },
+      "weibull_scale_factors": [0.8, 1.0, 1.2],
       "adaptive_due_dates": {
         "enabled": true,
-        "relative_makespan_offsets": [0.02, 0.05, 0.10, 0.20],
-        "time_limit_seconds": 2,
+        "method": "calibrated_total_work_content",
+        "machine_aggregation": "mean",
+        "relative_makespan_offsets": [0.00, 0.15, 0.30, 0.45],
+        "time_limit_seconds": 10,
         "mip_gap": 0.01,
         "output_flag": 0,
         "seed": 42,
-        "maximum_candidate_pool_runs": 4
+        "maximum_candidate_pool_runs": 4,
+        "candidate_selection": {
+          "ensure_all_categories": true,
+          "rotate_repeated_categories": true,
+          "rotate_surplus_offsets": true,
+          "prefer_unique_structures": true
+        }
       },
       "instance_failure_handling": {
         "summary_filename": "generation_summary.json"
@@ -169,8 +192,8 @@
         "mip_gap": 0.05,
         "mip_focus": 1,
         "fix_ratios": [0.25, 0.50, 0.75],
-        "label_distribution_center": 0.50,
-        "label_distribution_half_width": 0.25,
+        "label_distribution_center": 0.90,
+        "label_distribution_half_width": 0.05,
         "candidate_generation_mode": "nonlinear_evaluated",
         "nonlinear_probability_bands": {
           "enabled": false,
@@ -185,10 +208,11 @@
           "enabled": true,
           "anchor_fraction": 0.10,
           "anchor_ratios": {
-            "good_nominal_objective": 0.30,
-            "high_min_job_probability": 0.20,
-            "pareto_tradeoff": 0.20,
-            "structurally_diverse": 0.30
+            "good_nominal_objective": 0.25,
+            "low_expected_completion_delay": 0.20,
+            "high_expected_completion_delay": 0.20,
+            "pareto_tradeoff": 0.15,
+            "structurally_diverse": 0.20
           },
           "job_probability_target_ratios": {
             "low": 0.25,
@@ -207,11 +231,12 @@
           }
         },
         "pool_selection_ratios": {
-          "service_boundary_below": 0.25,
+          "service_boundary_below": 0.15,
           "service_boundary_above": 0.15,
-          "high_min_job_probability": 0.15,
-          "low_min_job_probability": 0.10,
-          "good_nominal_objective": 0.15,
+          "low_expected_completion_delay": 0.15,
+          "medium_expected_completion_delay": 0.10,
+          "high_expected_completion_delay": 0.15,
+          "good_nominal_objective": 0.10,
           "pareto_tradeoff": 0.10,
           "structurally_diverse": 0.10
         }
@@ -225,26 +250,26 @@
         {
           "variant": "linear_baseline",
           "convolution": "linear",
-          "layers": [1],
-          "hidden_channels": [4]
+          "layers": [2],
+          "hidden_channels": [32]
         },
         {
           "variant": "fixed_job_graphsage",
           "convolution": "job",
-          "layers": [1],
-          "hidden_channels": [4]
+          "layers": [2],
+          "hidden_channels": [32]
         },
         {
           "variant": "decision_dependent_direct_machine_job_graphsage",
           "convolution": "sage",
-          "layers": [1],
-          "hidden_channels": [4]
+          "layers": [2],
+          "hidden_channels": [32]
         }
       ],
 
       "optimizer": {
-        "epochs": 1000,
-        "batch_size": 64,
+        "epochs": 1500,
+        "batch_size": 32,
         "learning_rate": 0.001
       },
 
@@ -253,8 +278,8 @@
       },
 
       "validation": {
-        "interval_epochs": 100,
-        "patience_epochs": 100,
+        "interval_epochs": 25,
+        "patience_epochs": 200,
         "enforce_graph_influence": false
       }
     }
@@ -264,9 +289,9 @@
     "gurobi": {
       "common": {
         "OutputFlag": 0,
-        "TimeLimit": 3600,
-        "MIPGap": 0.000,
-        "Threads": 0,
+        "TimeLimit": 60,
+        "MIPGap": 0.01,
+        "Threads": 4,
         "Seed": 42
       },
       "gnn": {

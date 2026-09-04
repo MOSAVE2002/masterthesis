@@ -54,7 +54,7 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             "num_graphsage_layers": 1,
             "hidden_channels": 2,
             "output_head": sequence_setup.RELIABILITY_GNN_OUTPUT_HEAD,
-            "job_target": "job_expected_repair_buffer",
+            "job_target": "job_expected_completion_delay",
             "graph_schema": sequence_setup.RELIABILITY_GNN_GRAPH_SCHEMA,
             "message_passing": message_passing,
             "include_machine_predecessor_edges": convolution == "sage",
@@ -108,15 +108,18 @@ class GNNEdgeFormulationTests(unittest.TestCase):
         )
         return model, variables
 
-    def test_gnn_constraint_uses_unscaled_expected_repair_buffer(self):
+    def test_gnn_constraint_scales_expected_delay_for_service_level(self):
         with tempfile.TemporaryDirectory() as directory:
             model, variables = self._build(directory, "linear")
             try:
-                self.assertIn("job_expected_repair_buffers", variables)
-                self.assertIn("job_tardiness", variables)
-                self.assertIn("tardiness_cost", variables)
-                self.assertNotIn("job_scaled_repair_buffers", variables)
-                self.assertNotIn("repair_buffer_scale", variables)
+                self.assertIn("job_expected_delays", variables)
+                self.assertIn("job_service_level_buffers", variables)
+                self.assertIn("job_service_level_violation", variables)
+                self.assertIn("service_violation_cost", variables)
+                self.assertAlmostEqual(variables["service_level"], 0.90)
+                self.assertAlmostEqual(
+                    variables["service_buffer_scale"], 10.0
+                )
             finally:
                 model.dispose()
 

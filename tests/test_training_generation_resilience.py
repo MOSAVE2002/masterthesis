@@ -20,8 +20,14 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
         calls = Counter()
 
         def candidate():
+            row = {field: "" for field in generator.FIELDNAMES}
+            row.update({
+                generator.TARGET_COLUMN: "[2.0,4.0]",
+                "simulated_completion_delay_standard_errors": "[0.2,0.4]",
+                "training_weibull_scale_factor": 0.8,
+            })
             return {
-                "row": {field: "" for field in generator.FIELDNAMES},
+                "row": row,
                 "job_probabilities": [0.75],
             }
 
@@ -90,14 +96,19 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
                 reader = csv.DictReader(file)
                 rows = list(reader)
             self.assertEqual(len(rows), 1)
-            self.assertIn("nonlinear_expected_repair_buffer", reader.fieldnames)
+            self.assertIn(
+                "simulated_expected_completion_delay", reader.fieldnames
+            )
             self.assertNotIn("simulation_parameters", reader.fieldnames)
             self.assertNotIn("job_ontime_probabilities", reader.fieldnames)
             self.assertEqual(
                 summary["label"]["label_method"],
-                "weibull_expected_repair_buffer_v1",
+                generator.SIMULATION_LABEL_METHOD,
             )
-            self.assertNotIn("simulation", summary["label"])
+            self.assertEqual(
+                summary["label"]["simulation"]["label_replications"],
+                10_000,
+            )
             self.assertEqual(
                 summary["graph"]["machine_predecessor_edge_scope"],
                 "direct",
@@ -106,6 +117,30 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
                 summary["graph"]["include_machine_predecessor_edges"]
             )
             self.assertTrue(summary["graph"]["include_job_precedence_edges"])
+            quality = summary["quality_report"]
+            self.assertEqual(
+                quality["graphs_per_split"],
+                {"test": 0, "train": 1, "valid": 0},
+            )
+            self.assertEqual(quality["successful_instances"], 1)
+            self.assertEqual(quality["skipped_instances"], 1)
+            self.assertEqual(
+                quality["weibull_scale_factor_graph_counts"]["0.8"], 1
+            )
+            self.assertEqual(
+                quality["candidate_category_graph_counts"]["test"], 1
+            )
+            self.assertEqual(quality["label_statistics"]["count"], 2)
+            self.assertAlmostEqual(quality["label_statistics"]["mean"], 3.0)
+            self.assertAlmostEqual(
+                quality["label_statistics"]["standard_deviation"], 1.0
+            )
+            self.assertAlmostEqual(
+                quality["label_standard_error_statistics"]["mean"], 0.3
+            )
+            self.assertAlmostEqual(
+                quality["label_standard_error_statistics"]["median"], 0.3
+            )
 
 
 if __name__ == "__main__":

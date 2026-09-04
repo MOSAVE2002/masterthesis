@@ -141,16 +141,22 @@ def write_comparable_solution(
         file.write(f"Makespan: {_number(variables.get('C_max'))}\n")
         file.write(f"Processing cost: {_number(variables.get('processing_cost'))}\n")
         file.write(f"Operating cost: {_number(variables.get('operating_cost'))}\n")
-        file.write(f"Tardiness cost: {_number(variables.get('tardiness_cost'))}\n")
-        file.write(f"Total tardiness: {_number(variables.get('total_tardiness'))}\n")
+        file.write(
+            "Service violation cost: "
+            f"{_number(variables.get('service_violation_cost'))}\n"
+        )
+        file.write(
+            "Total service-level violation: "
+            f"{_number(variables.get('total_service_level_violation'))}\n"
+        )
         file.write(f"Total cost: {_number(variables.get('total_cost'))}\n")
         file.write(
             "Facility cost per time: "
             f"{_number(variables.get('facility_cost_per_time'))}\n"
         )
         file.write(
-            "Tardiness cost per time: "
-            f"{_number(variables.get('tardiness_cost_per_time'))}\n"
+            "Service violation cost per time: "
+            f"{_number(variables.get('service_violation_cost_per_time'))}\n"
         )
         file.write(f"Objective mode: {variables.get('objective_mode', '')}\n")
         file.write(
@@ -180,6 +186,15 @@ def write_comparable_solution(
         file.write("\nStochastic formulation:\n")
         file.write(f"Constraint type: {variables.get('constraint_type', '')}\n")
         file.write(f"Service scope: {variables.get('service_scope', '')}\n")
+        file.write(f"Service level alpha: {_number(variables.get('service_level'))}\n")
+        file.write(
+            "Service buffer scale: "
+            f"{_number(variables.get('service_buffer_scale'))}\n"
+        )
+        file.write(
+            "Service constraint soft: "
+            f"{variables.get('service_constraint_is_soft', '')}\n"
+        )
         file.write(f"Due dates: {variables.get('due_dates', {})}\n")
         file.write(f"GNN convolution: {metadata.get('convolution', '')}\n")
         file.write(f"GNN layers: {metadata.get('num_graphsage_layers', '')}\n")
@@ -188,35 +203,41 @@ def write_comparable_solution(
         if not has_solution:
             return path
 
-        file.write("\nExpected repair-buffer summary:\n")
-        buffers = variables.get("job_expected_repair_buffers", {})
-        buffer_values = {
-            job: _value(buffers[job]) for job in sorted(buffers)
+        file.write("\nExpected completion-delay summary:\n")
+        delays = variables.get("job_expected_delays", {})
+        delay_values = {
+            job: _value(delays[job]) for job in sorted(delays)
         }
-        if buffer_values:
+        if delay_values:
             file.write(
-                "Maximum expected job repair buffer: "
-                f"{max(buffer_values.values()):.6f}\n"
+                "Maximum expected job completion delay: "
+                f"{max(delay_values.values()):.6f}\n"
             )
         file.write(
-            "Repair buffer label method: "
+            "Completion delay label method: "
             f"{variables.get('job_repair_buffer_label_method', '')}\n"
         )
 
-        file.write("\nPer-job expected repair buffers:\n")
-        for job in sorted(buffers):
+        file.write("\nPer-job soft service levels:\n")
+        service_buffers = variables.get("job_service_level_buffers", delays)
+        for job in sorted(delays):
             completion = variables["C"][instance.job_end_operations[job]]
             due_date = float(variables["due_dates"][job])
-            buffer = buffer_values[job]
-            tardiness = variables.get("job_tardiness", {}).get(job)
+            delay = delay_values[job]
+            service_buffer = _value(service_buffers[job])
+            violation = variables.get(
+                "job_service_level_violation", {}
+            ).get(job)
             file.write(
                 f"job {job}: completion={_number(completion)}, "
                 f"due_date={due_date:.6f}, "
-                f"expected_repair_buffer={buffer:.6f}, "
-                f"protected_completion={_value(completion) + buffer:.6f}, "
-                "robust_slack="
-                f"{due_date - _value(completion) - buffer:.6f}, "
-                f"tardiness={_number(tardiness)}\n"
+                f"expected_completion_delay={delay:.6f}, "
+                f"service_buffer={service_buffer:.6f}, "
+                "service_protected_completion="
+                f"{_value(completion) + service_buffer:.6f}, "
+                "service_slack="
+                f"{due_date - _value(completion) - service_buffer:.6f}, "
+                f"service_violation={_number(violation)}\n"
             )
 
         file.write("\nOperation values:\n")

@@ -66,9 +66,7 @@ class FJSPData:
             for machine, rate in self.repair_rate.items()
         }
 
-    def _set_profile_machine_parameters(
-        self, rng, config, due_date_config=None
-    ):
+    def _set_profile_machine_parameters(self, rng, config):
         from helper.stochastic_fjsp import (
             PROFILE_GENERATION_MODEL,
             normalize_machine_profile_config,
@@ -185,36 +183,57 @@ class FJSPData:
             for operation in self.real_operations
         ]
 
+    def _set_due_dates(self, due_date_config=None):
+        """Assign reproducible job-specific total-work-content due dates."""
         due_cfg = dict(due_date_config or {})
+        method = str(due_cfg.get("method", "total_work_content"))
+        if method != "total_work_content":
+            raise ValueError(
+                "due_dates.method must be 'total_work_content'."
+            )
+        machine_aggregation = str(
+            due_cfg.get("machine_aggregation", "mean")
+        )
+        if machine_aggregation != "mean":
+            raise ValueError(
+                "due_dates.machine_aggregation must be 'mean'."
+            )
+        assignment = str(due_cfg.get("assignment", "cyclic"))
+        if assignment != "cyclic":
+            raise ValueError("due_dates.assignment must be 'cyclic'.")
         factors = [
             float(value)
             for value in due_cfg.get(
-                "factors", [1.55, 1.60, 1.65, 1.70]
+                "factors", [1.25, 1.30, 1.40, 1.55]
             )
         ]
-        lower_bound = max(
-            sum(
-                min(
-                    self.processing_times[operation, machine]
-                    for machine in self.eligible_machines[operation]
-                )
-                for operation in self.real_operations
-            ) / self.num_machines,
-            max(
-                sum(
-                    min(
-                        self.processing_times[operation, machine]
-                        for machine in self.eligible_machines[operation]
-                    )
-                    for operation in operations
-                )
-                for operations in self.jobs.values()
-            ),
-        )
+        if not factors or any(
+            not math.isfinite(value) or value <= 0.0
+            for value in factors
+        ):
+            raise ValueError("due_dates.factors must contain positive values.")
         factor = factors[(int(self.nb_instance) - 1) % len(factors)]
-        due = float(math.ceil(factor * lower_bound))
+        work_content = {
+            job: sum(
+                sum(
+                    float(self.processing_times[operation, machine])
+                    for machine in self.eligible_machines[operation]
+                ) / len(self.eligible_machines[operation])
+                for operation in operations
+            )
+            for job, operations in self.jobs.items()
+        }
+        if any(value <= 0.0 for value in work_content.values()):
+            raise ValueError("Every job must have positive total work content.")
+        self.due_date_method = method
+        self.due_date_machine_aggregation = machine_aggregation
+        self.due_date_assignment = assignment
         self.due_date_factor = factor
-        self.due_dates = {job: due for job in self.jobs}
+        self.due_date_work_content = work_content
+        self.due_dates = {
+            job: float(math.ceil(factor * work_content[job]))
+            for job in self.jobs
+        }
 
     def _build_operation_metadata(self):
         """
@@ -418,13 +437,12 @@ class FJSPData:
         self.lines = lines
         self._build_operation_metadata()
         if machine_profile_config is not None:
-            self._set_profile_machine_parameters(
-                rng, machine_profile_config, due_date_config
-            )
+            self._set_profile_machine_parameters(rng, machine_profile_config)
         else:
             self._set_independent_machine_parameters(
                 rng, machine_parameter_ranges
             )
+        self._set_due_dates(due_date_config)
         from helper.stochastic_fjsp import ensure_stochastic_parameters
         ensure_stochastic_parameters(self)
         
@@ -550,6 +568,7 @@ def generate_evaluation_instance_specs(
     machine_parameter_ranges=None,
     machine_profile_config=None,
     due_date_config=None,
+    instance_postprocessor=None,
     instance_name_suffix=None,
     time_unit_minutes=1.0,
 ):
@@ -586,6 +605,9 @@ def generate_evaluation_instance_specs(
         for instance in instances:
             instance.instance_name = f"{instance.instance_name}_{suffix}"
         names = [instance.instance_name for instance in instances]
+    if instance_postprocessor is not None:
+        for instance in instances:
+            instance_postprocessor(instance)
     if len(names) != len(set(names)):
         raise ValueError("Evaluation instance names must be unique.")
 

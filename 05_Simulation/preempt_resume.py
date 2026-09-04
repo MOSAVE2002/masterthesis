@@ -1,10 +1,10 @@
-"""Constraint-consistent Monte-Carlo simulation for fixed FJSP schedules.
+"""Machine-level single-failure simulation for fixed FJSP schedules.
 
-For every operation, the simulator evaluates the same nonlinear machine-down
-probability at the nominal operation midpoint as the reference MINLP. A single
-Bernoulli snapshot decides whether the operation is disrupted. Conditional on
-a disruption, the remaining exponential repair duration is added to the
-operation and propagated over all fixed job and machine arcs by right shift.
+Each replication draws one Weibull failure time and one exponential repair
+duration per used machine.  The resulting common downtime interval affects all
+operations assigned to that machine consistently.  Operations wait when they
+would start during the downtime and use preempt-resume when the failure occurs
+during processing.  Delays propagate over fixed job and machine arcs.
 """
 
 from __future__ import annotations
@@ -14,12 +14,13 @@ from typing import Hashable, Mapping
 
 import numpy as np
 
-from helper.stochastic_fjsp import weibull_down_probability
-
 
 LABEL_METHOD = (
-    "monte_carlo_weibull_midpoint_snapshot_exponential_repair_"
-    "preempt_resume_right_shift_v1"
+    "monte_carlo_machine_single_weibull_failure_exponential_repair_"
+    "preempt_resume_right_shift_v2"
+)
+EXPECTED_COMPLETION_DELAY_LABEL_METHOD = (
+    f"{LABEL_METHOD}_job_mean_completion_delay_v2"
 )
 
 
@@ -53,6 +54,8 @@ class SimulationResult:
     job_ontime_probabilities: tuple[float, ...]
     job_probability_standard_errors: tuple[float, ...]
     job_mean_completion_times: tuple[float, ...]
+    job_mean_completion_delays: tuple[float, ...]
+    job_completion_delay_standard_errors: tuple[float, ...]
     operation_failure_probabilities: tuple[float, ...]
     operation_mean_repair_delays: tuple[float, ...]
     operation_mean_repair_durations: tuple[float, ...]
@@ -143,11 +146,37 @@ def _validated_topology(schedule: FixedSchedule):
     }
 
 
-def _midpoint_disruption(rng, probability, repair_rate):
-    """Draw one midpoint disruption and its remaining repair duration."""
-    if float(rng.random()) >= float(probability):
-        return 0, 0.0
-    return 1, float(rng.exponential(1.0 / float(repair_rate)))
+def _draw_machine_downtime(rng, weibull_scale, weibull_shape, repair_rate):
+    """Draw the common first-failure time and repair duration of a machine."""
+    failure_time = float(
+        weibull_scale * rng.weibull(float(weibull_shape))
+    )
+    repair_duration = float(rng.exponential(1.0 / float(repair_rate)))
+    return failure_time, repair_duration
+
+
+def _preempt_resume_completion(
+    start,
+    processing_time,
+    failure_time,
+    repair_duration,
+):
+    """Return completion and direct delay under one machine downtime."""
+    start = float(start)
+    processing_time = float(processing_time)
+    failure_time = float(failure_time)
+    repair_end = failure_time + float(repair_duration)
+    nominal_completion = start + processing_time
+
+    if repair_end <= start or failure_time >= nominal_completion:
+        return nominal_completion, 0.0
+    if failure_time <= start < repair_end:
+        direct_delay = repair_end - start
+    else:
+        # The failure occurs during processing. Work completed before the
+        # failure is retained and processing resumes after the full repair.
+        direct_delay = float(repair_duration)
+    return nominal_completion + direct_delay, direct_delay
 
 
 def simulate_fixed_schedule(
@@ -157,7 +186,7 @@ def simulate_fixed_schedule(
     seed: int,
     config=None,
 ) -> SimulationResult:
-    """Evaluate one fixed schedule under midpoint-snapshot disruptions."""
+    """Evaluate one fixed schedule under common machine-level downtimes."""
     normalize_simulation_config(config)
     replications = int(replications)
     if replications <= 0:
@@ -167,15 +196,17 @@ def simulate_fixed_schedule(
     operation_index = {
         operation: index for index, operation in enumerate(operations)
     }
-    stable_operation_order = sorted(operations, key=repr)
-    operation_stream = {
-        operation: index
-        for index, operation in enumerate(stable_operation_order)
+    machines = tuple(sorted(
+        {schedule.selected_machines[operation] for operation in operations},
+        key=repr,
+    ))
+    all_machines = tuple(sorted(schedule.weibull_scale, key=repr))
+    machine_stream = {
+        machine: index for index, machine in enumerate(all_machines)
     }
     job_ids = tuple(sorted(schedule.jobs))
     job_index = {job: index for index, job in enumerate(job_ids)}
 
-    disruption_probabilities = {}
     for operation in operations:
         machine = schedule.selected_machines[operation]
         processing_time = float(schedule.processing_times[operation])
@@ -190,38 +221,37 @@ def simulate_fixed_schedule(
             raise ValueError("Weibull shapes must exceed one.")
         if float(schedule.repair_rate[machine]) <= 0.0:
             raise ValueError("Repair rates must be positive.")
-        midpoint = planned_start + 0.5 * processing_time
-        disruption_probabilities[operation] = weibull_down_probability(
-            midpoint,
-            schedule.weibull_scale[machine],
-            schedule.weibull_shape[machine],
-            schedule.repair_rate[machine],
-        )
 
     ontime = np.zeros(len(job_ids), dtype=np.int64)
     completion_sum = np.zeros(len(job_ids), dtype=float)
+    completion_square_sum = np.zeros(len(job_ids), dtype=float)
     operation_failure_runs = np.zeros(len(operations), dtype=np.int64)
     operation_failure_counts = np.zeros(len(operations), dtype=np.int64)
     operation_repair_delay = np.zeros(len(operations), dtype=float)
     operation_repair_sum = np.zeros(len(operations), dtype=float)
     total_failures = 0
     total_repair_delay = 0.0
+    total_repair_duration = 0.0
 
     for replication_index in range(replications):
-        completion = {}
-        for operation in topology:
-            machine = schedule.selected_machines[operation]
-            index = operation_index[operation]
+        downtime = {}
+        for machine in machines:
             rng = np.random.default_rng(np.random.SeedSequence([
                 int(seed),
                 int(replication_index),
-                int(operation_stream[operation]),
+                int(machine_stream[machine]),
             ]))
-            failed, repair_delay = _midpoint_disruption(
+            downtime[machine] = _draw_machine_downtime(
                 rng,
-                disruption_probabilities[operation],
-                schedule.repair_rate[machine],
+                float(schedule.weibull_scale[machine]),
+                float(schedule.weibull_shape[machine]),
+                float(schedule.repair_rate[machine]),
             )
+        completion = {}
+        affected_machines = set()
+        for operation in topology:
+            machine = schedule.selected_machines[operation]
+            index = operation_index[operation]
             start = (
                 max(
                     float(schedule.planned_starts[operation]),
@@ -230,22 +260,33 @@ def simulate_fixed_schedule(
                 if predecessors[operation]
                 else float(schedule.planned_starts[operation])
             )
-            completion[operation] = (
-                start
-                + float(schedule.processing_times[operation])
-                + repair_delay
+            failure_time, repair_duration = downtime[machine]
+            operation_completion, repair_delay = _preempt_resume_completion(
+                start,
+                float(schedule.processing_times[operation]),
+                failure_time,
+                repair_duration,
             )
-            operation_failure_runs[index] += failed
-            operation_failure_counts[index] += failed
+            completion[operation] = operation_completion
+            affected = int(repair_delay > 0.0)
+            operation_failure_runs[index] += affected
+            operation_failure_counts[index] += affected
             operation_repair_delay[index] += repair_delay
-            operation_repair_sum[index] += repair_delay
-            total_failures += failed
+            operation_repair_sum[index] += affected * repair_duration
             total_repair_delay += repair_delay
+            if affected:
+                affected_machines.add(machine)
+
+        total_failures += len(affected_machines)
+        total_repair_duration += sum(
+            downtime[machine][1] for machine in affected_machines
+        )
 
         for job in job_ids:
             value = completion[schedule.job_end_operations[job]]
             index = job_index[job]
             completion_sum[index] += value
+            completion_square_sum[index] += value * value
             ontime[index] += int(
                 value <= float(schedule.due_dates[job]) + 1e-12
             )
@@ -255,6 +296,25 @@ def simulate_fixed_schedule(
         probabilities * (1.0 - probabilities) / replications
     )
     failure_counts_safe = np.maximum(operation_failure_counts, 1)
+    mean_completions = completion_sum / replications
+    if replications > 1:
+        completion_variances = np.maximum(
+            0.0,
+            (
+                completion_square_sum
+                - replications * mean_completions * mean_completions
+            ) / (replications - 1),
+        )
+        completion_standard_errors = np.sqrt(
+            completion_variances / replications
+        )
+    else:
+        completion_standard_errors = np.zeros(len(job_ids), dtype=float)
+    nominal_completions = np.asarray([
+        float(schedule.planned_starts[schedule.job_end_operations[job]])
+        + float(schedule.processing_times[schedule.job_end_operations[job]])
+        for job in job_ids
+    ])
     return SimulationResult(
         replications=replications,
         job_ids=job_ids,
@@ -262,8 +322,13 @@ def simulate_fixed_schedule(
         job_probability_standard_errors=tuple(
             float(value) for value in standard_errors
         ),
-        job_mean_completion_times=tuple(
-            float(value / replications) for value in completion_sum
+        job_mean_completion_times=tuple(float(value) for value in mean_completions),
+        job_mean_completion_delays=tuple(
+            float(value)
+            for value in np.maximum(0.0, mean_completions - nominal_completions)
+        ),
+        job_completion_delay_standard_errors=tuple(
+            float(value) for value in completion_standard_errors
         ),
         operation_failure_probabilities=tuple(
             float(value / replications) for value in operation_failure_runs
@@ -276,7 +341,9 @@ def simulate_fixed_schedule(
             for total, count in zip(operation_repair_sum, failure_counts_safe)
         ),
         mean_total_repair_delay=float(total_repair_delay / replications),
-        mean_total_repair_duration=float(total_repair_delay / replications),
+        mean_total_repair_duration=float(
+            total_repair_duration / replications
+        ),
         mean_failures=float(total_failures / replications),
         label_method=LABEL_METHOD,
     )

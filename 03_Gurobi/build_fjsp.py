@@ -31,7 +31,8 @@ def build_fjsp(
     enforce_due_dates=None,
     economic_objective=None,
     facility_cost_per_time=1.0,
-    tardiness_cost_per_time=1.0,
+    service_violation_cost_per_time=1.0,
+    tardiness_cost_per_time=None,
 ):
     operations = list(instance.real_operations)
     machines = list(range(instance.num_machines))
@@ -161,13 +162,14 @@ def build_fjsp(
             variables,
             instance,
             facility_cost_per_time=facility_cost_per_time,
+            service_violation_cost_per_time=service_violation_cost_per_time,
             tardiness_cost_per_time=tardiness_cost_per_time,
         )
     elif include_makespan:
         model.setObjective(makespan, GRB.MINIMIZE)
     variables.update({
-        "formulation": "nominal_fjsp_with_tardiness_cost_v1",
-        "constraint_type": "nominal_completion_plus_tardiness",
+        "formulation": "nominal_fjsp_with_soft_due_date_violation_v2",
+        "constraint_type": "nominal_completion_plus_soft_violation",
         "service_scope": "none",
     })
     model.update()

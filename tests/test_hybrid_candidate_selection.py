@@ -24,6 +24,10 @@ def _candidate(
         "service_risk": 1.0 - min(probabilities),
         "min_job_probability": min(probabilities),
         "job_probabilities": list(probabilities),
+        "simulated_job_expected_completion_delays": [
+            float(identifier + job_index + 1)
+            for job_index in range(len(probabilities))
+        ],
         "candidate_generation_mode": generation_mode,
         "structure": ((identifier,), ()),
         "structure_tokens": frozenset({
@@ -49,10 +53,11 @@ class HybridCandidateSelectionTests(unittest.TestCase):
             "enabled": True,
             "anchor_fraction": 0.40,
             "anchor_ratios": {
-                "good_nominal_objective": 0.30,
-                "high_min_job_probability": 0.20,
+                "good_nominal_objective": 0.20,
+                "low_expected_completion_delay": 0.20,
+                "high_expected_completion_delay": 0.20,
                 "pareto_tradeoff": 0.20,
-                "structurally_diverse": 0.30,
+                "structurally_diverse": 0.20,
             },
             "job_probability_target_ratios": {
                 "low": 0.20,
@@ -78,10 +83,11 @@ class HybridCandidateSelectionTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 25)
         self.assertEqual(len(identifiers), 25)
-        self.assertEqual(categories["good_nominal_objective"], 3)
-        self.assertEqual(categories["high_min_job_probability"], 2)
+        self.assertEqual(categories["good_nominal_objective"], 2)
+        self.assertEqual(categories["low_expected_completion_delay"], 2)
+        self.assertEqual(categories["high_expected_completion_delay"], 2)
         self.assertEqual(categories["pareto_tradeoff"], 2)
-        self.assertEqual(categories["structurally_diverse"], 3)
+        self.assertEqual(categories["structurally_diverse"], 2)
         self.assertIn(0, identifiers)
         self.assertIn(3, identifiers)
 
@@ -107,6 +113,37 @@ class HybridCandidateSelectionTests(unittest.TestCase):
                 for entry in selected
             ),
             15,
+        )
+
+    def test_delay_rankings_select_low_medium_and_high_targets(self):
+        ratios = {
+            name: float(name in {
+                "low_expected_completion_delay",
+                "medium_expected_completion_delay",
+                "high_expected_completion_delay",
+            })
+            for name in generator.DEFAULT_SELECTION_RATIOS
+        }
+        selected = generator._select_candidates(
+            self.candidates,
+            3,
+            ratios,
+            0.80,
+            0.10,
+            hybrid_selection=None,
+        )
+        by_category = {
+            entry["category"]: entry["candidate"]["candidate_id"]
+            for entry in selected
+        }
+        self.assertEqual(
+            by_category["low_expected_completion_delay"], 0
+        )
+        self.assertIn(
+            by_category["medium_expected_completion_delay"], {19, 20}
+        )
+        self.assertEqual(
+            by_category["high_expected_completion_delay"], 39
         )
 
     def test_hybrid_selection_is_limited_to_configured_splits(self):
@@ -421,6 +458,46 @@ class HybridCandidateSelectionTests(unittest.TestCase):
             )
 
         self.assertEqual(candidate["nonlinear_job_probabilities"], [0.0])
+
+    def test_fixed_schedule_uses_propagated_simulation_delay_as_gnn_label(self):
+        schedule = generator.FixedSchedule(
+            operations=(0,),
+            selected_machines={0: 0},
+            processing_times={0: 10.0},
+            planned_starts={0: 5.0},
+            job_predecessors={0: ()},
+            machine_edges=(),
+            jobs={0: (0,)},
+            job_end_operations={0: 0},
+            due_dates={0: 25.0},
+            weibull_scale={0: 30.0},
+            weibull_shape={0: 2.0},
+            repair_rate={0: 0.5},
+        )
+        candidate = {"simulation_schedule": schedule, "row": {}}
+        result = SimpleNamespace(
+            job_mean_completion_delays=(4.5,),
+            job_ontime_probabilities=(0.875,),
+            job_completion_delay_standard_errors=(0.25,),
+            replications=8,
+        )
+        with patch.object(
+            generator._simulation,
+            "simulate_fixed_schedule",
+            return_value=result,
+        ) as simulate:
+            generator._evaluate_fixed_schedule_simulation(
+                candidate,
+                {"label_replications": 8, "random_seed": 7},
+            )
+
+        simulate.assert_called_once()
+        self.assertEqual(
+            candidate["row"][generator.TARGET_COLUMN], "[4.5]"
+        )
+        self.assertEqual(candidate["job_probabilities"], [0.875])
+        self.assertEqual(candidate["min_job_probability"], 0.875)
+        self.assertEqual(candidate["row"]["simulation_replications"], 8)
 
     def test_candidate_uses_stored_gurobi_timing(self):
         def variable(value):
