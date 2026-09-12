@@ -22,10 +22,10 @@ set -e
 # =============================================================================
 
 # Default values (can be overridden via environment variables)
-export walltime=16:00:00   # maximum time for one benchmark case
+export walltime=48:00:00   # maximum time for three benchmark cases
 export memory=16G          # memory per job
 export partition=gpu       # cluster partition
-export job_array=0-119%8   # 120 benchmark cases, at most 8 at the same time
+export job_array=0-39%8    # 40 jobs with 3 cases each, at most 8 at the same time
 
 # Get the directory of this script (use SLURM_SUBMIT_DIR when running in SLURM)
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}/cluster_files"

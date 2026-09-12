@@ -1,6 +1,8 @@
 #!/bin/bash -l
 #SBATCH --ntasks=1
 
+set -e
+
 # =============================================================================
 # JOB SCRIPT - Runs on the compute node
 # =============================================================================
@@ -41,9 +43,14 @@ echo ""
 echo "Checking whether PyTorch can use the requested GPU..."
 uv run python -c 'import torch; assert torch.cuda.is_available(), "CUDA GPU is not available"; print(torch.cuda.get_device_name(0))'
 echo ""
-echo "Running benchmark case $SLURM_ARRAY_TASK_ID"
-echo ""
-uv run main.py --workflow solve --solve-plan-index "$SLURM_ARRAY_TASK_ID"
+first_case=$((SLURM_ARRAY_TASK_ID * 3))
+last_case=$((first_case + 2))
+
+for solve_plan_index in $(seq "$first_case" "$last_case"); do
+    echo "Running benchmark case $solve_plan_index"
+    echo ""
+    uv run main.py --workflow solve --solve-plan-index "$solve_plan_index"
+done
 
 echo ""
 echo "Job finished at: $(date)"
