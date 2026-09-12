@@ -6,6 +6,8 @@ import importlib
 import json
 from pathlib import Path
 
+from helper.time_units import normalize_time_unit
+
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT_DIR / "config.json"
@@ -44,15 +46,16 @@ def _generation_from_project_config(config):
             machine_profile_config=instance_generation.get(
                 "machine_profiles"
             ),
-            time_unit_minutes=instance_generation.get(
-                "time_unit_minutes", 1.0
+            training_parameter_jitter=instance_generation.get(
+                "training_parameter_jitter"
             ),
+            time_unit=normalize_time_unit(instance_generation),
         ),
         "generate_splits": source.get("generate_splits"),
         "output_directory": source["output_directory"],
         "random_seed": int(source.get("random_seed", 42)),
         "samples_per_instance": int(source["samples_per_instance"]),
-        "simulation": source.get("simulation"),
+        "labels": source.get("labels"),
         "instance_failure_handling": source.get(
             "instance_failure_handling"
         ),
@@ -66,9 +69,10 @@ def _generation_from_project_config(config):
         "machine_profile_config": instance_generation.get(
             "machine_profiles"
         ),
-        "time_unit_minutes": instance_generation.get(
-            "time_unit_minutes", 1.0
+        "training_parameter_jitter": instance_generation.get(
+            "training_parameter_jitter"
         ),
+        "time_unit": normalize_time_unit(instance_generation),
         "adaptive_due_dates": source.get("adaptive_due_dates"),
         "fixed_y": source["fixed_y"],
     }

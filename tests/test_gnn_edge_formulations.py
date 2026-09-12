@@ -4,6 +4,7 @@ import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import gurobipy as gp
 import torch
@@ -16,6 +17,7 @@ training = importlib.import_module(
 embedding = importlib.import_module("03_Gurobi.build_fjsp_with_gnn")
 sequence_setup = importlib.import_module("helper.sequence_setup")
 stochastic = importlib.import_module("helper.stochastic_fjsp")
+validator = importlib.import_module("tests.validate_gnn_embedding")
 
 
 class GNNEdgeFormulationTests(unittest.TestCase):
@@ -29,7 +31,7 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             num_operations=[2],
             flag_save_file=False,
             machine_profile_config=stochastic.DEFAULT_MACHINE_PROFILE_CONFIG,
-            time_unit_minutes=10.0,
+            time_unit="ZE",
             random_source=random.Random(42),
         )
 
@@ -54,7 +56,8 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             "num_graphsage_layers": 1,
             "hidden_channels": 2,
             "output_head": sequence_setup.RELIABILITY_GNN_OUTPUT_HEAD,
-            "job_target": "job_expected_completion_delay",
+            "job_target": training.JOB_TARGET,
+            "job_repair_buffer_label_method": training.SIMULATION_LABEL_METHOD,
             "graph_schema": sequence_setup.RELIABILITY_GNN_GRAPH_SCHEMA,
             "message_passing": message_passing,
             "include_machine_predecessor_edges": convolution == "sage",
@@ -68,7 +71,7 @@ class GNNEdgeFormulationTests(unittest.TestCase):
             "machine_profile_config": (
                 stochastic.normalize_machine_profile_config()
             ),
-            "time_unit_minutes": 10.0,
+            "time_unit": "ZE",
         }
 
     def _build(self, directory, convolution):
@@ -108,7 +111,7 @@ class GNNEdgeFormulationTests(unittest.TestCase):
         )
         return model, variables
 
-    def test_gnn_constraint_scales_expected_delay_for_service_level(self):
+    def test_gnn_constraint_uses_unscaled_repair_buffer(self):
         with tempfile.TemporaryDirectory() as directory:
             model, variables = self._build(directory, "linear")
             try:
@@ -116,10 +119,10 @@ class GNNEdgeFormulationTests(unittest.TestCase):
                 self.assertIn("job_service_level_buffers", variables)
                 self.assertIn("job_service_level_violation", variables)
                 self.assertIn("service_violation_cost", variables)
-                self.assertAlmostEqual(variables["service_level"], 0.90)
-                self.assertAlmostEqual(
-                    variables["service_buffer_scale"], 10.0
-                )
+                self.assertNotIn("service_level", variables)
+                self.assertNotIn("service_buffer_scale", variables)
+                self.assertEqual(variables["service_constraint_bound"],
+                                 "unscaled_expected_local_repair_buffer")
             finally:
                 model.dispose()
 
@@ -152,6 +155,52 @@ class GNNEdgeFormulationTests(unittest.TestCase):
                                 gate.VarName.startswith("U_direct")
                                 for gate in machine_gates
                             ))
+                    finally:
+                        model.dispose()
+
+    def test_legacy_units_produce_identical_gnn_optimization_models(self):
+        original_metadata = self._metadata
+
+        def legacy_metadata(convolution, graph_config):
+            metadata = original_metadata(convolution, graph_config)
+            metadata.pop("time_unit")
+            metadata["time_unit_minutes"] = 10.0
+            return metadata
+
+        with tempfile.TemporaryDirectory() as directory, torch.random.fork_rng():
+            for convolution in ("linear", "job", "sage"):
+                with self.subTest(convolution=convolution):
+                    fingerprints = []
+                    for metadata_factory in (original_metadata, legacy_metadata):
+                        torch.manual_seed(42)
+                        with patch.object(self, "_metadata", metadata_factory):
+                            model, _variables = self._build(directory, convolution)
+                        try:
+                            model.update()
+                            fingerprints.append(model.Fingerprint)
+                        finally:
+                            model.dispose()
+                    self.assertEqual(fingerprints[0], fingerprints[1])
+
+    def test_four_input_gnn_matches_pytorch_for_all_architectures(self):
+        with tempfile.TemporaryDirectory() as directory, torch.random.fork_rng():
+            for convolution in ("linear", "job", "sage"):
+                with self.subTest(convolution=convolution):
+                    torch.manual_seed(42)
+                    model, variables = self._build(directory, convolution)
+                    try:
+                        model.Params.TimeLimit = 5
+                        model.optimize()
+                        self.assertGreater(model.SolCount, 0)
+                        graph, _jobs = validator._pytorch_graph(
+                            variables, self._instance()
+                        )
+                        self.assertEqual(graph.x.shape[1], 4)
+                        validator.validate_result({
+                            "solution_count": model.SolCount,
+                            "variables": variables,
+                            "instance": self._instance(),
+                        })
                     finally:
                         model.dispose()
 

@@ -126,6 +126,21 @@ class IndependentInstanceGeneratorTests(unittest.TestCase):
                 "parameter_jitter"
             ].values()
         ))
+        self.assertEqual(generation["instances_per_size"], 580)
+        self.assertEqual(
+            generation["training_parameter_jitter"],
+            {
+                "enabled": True,
+                "fraction_per_size": 0.2,
+                "random_seed": 20260914,
+                "parameter_jitter": {
+                    "cost_rate": 0.0,
+                    "speed": 0.0,
+                    "weibull_alpha": 0.05,
+                    "repair_rate": 0.05,
+                },
+            },
+        )
         self.assertEqual(
             generation["machine_profiles"]["profiles"]["old"][
                 "weibull_beta"
@@ -261,6 +276,97 @@ class MachineProfileGeneratorTests(unittest.TestCase):
                         getattr(instance, attribute)[machine],
                         expected[profile_name][profile_field],
                     )
+
+    def test_train_only_jitter_uses_exact_reproducible_fraction(self):
+        specs = [{
+            "num_jobs": 3,
+            "num_machines": 3,
+            "operations_per_job": [3, 5],
+            "count": 10,
+        }]
+        mixture = {
+            "enabled": True,
+            "fraction_per_size": 0.2,
+            "random_seed": 1234,
+            "parameter_jitter": {
+                "cost_rate": 0.0,
+                "speed": 0.0,
+                "weibull_alpha": 0.05,
+                "repair_rate": 0.05,
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            instances.generate_instance_specs(
+                specs,
+                split_ratios={"train": 0.8, "valid": 0.1, "test": 0.1},
+                random_seed=19,
+                output_directory=directory,
+                processing_time_range=[5, 15],
+                machine_profile_config=stochastic.DEFAULT_MACHINE_PROFILE_CONFIG,
+                training_parameter_jitter=mixture,
+            )
+            selected = instances.configured_instance_names_by_split(
+                specs,
+                split_ratios={"train": 0.8, "valid": 0.1, "test": 0.1},
+                random_seed=19,
+                instance_directory=directory,
+                processing_time_range=[5, 15],
+                processing_time_deviation=0.2,
+                machine_profile_config=stochastic.DEFAULT_MACHINE_PROFILE_CONFIG,
+                training_parameter_jitter=mixture,
+            )
+            generated = {
+                split: [
+                    instances.load_generated_instance(name, directory)
+                    for name in names
+                ]
+                for split, names in selected.items()
+            }
+
+        self.assertEqual(len(generated["train"]), 8)
+        self.assertEqual(
+            sum(
+                instance.training_parameter_jitter_applied
+                for instance in generated["train"]
+            ),
+            2,
+        )
+        jittered = [
+            instance for instance in generated["train"]
+            if instance.training_parameter_jitter_applied
+        ]
+        for instance in jittered:
+            self.assertEqual(
+                instance.machine_profile_config["parameter_jitter"],
+                mixture["parameter_jitter"],
+            )
+            for machine, profile in instance.machine_profiles.items():
+                base = stochastic.DEFAULT_MACHINE_PROFILE_CONFIG[
+                    "profiles"
+                ][profile]
+                self.assertTrue(
+                    0.95 * base["weibull_alpha"]
+                    <= instance.weibull_alpha[machine]
+                    <= 1.05 * base["weibull_alpha"]
+                )
+                self.assertTrue(
+                    0.95 * base["repair_rate"]
+                    <= instance.repair_rate[machine]
+                    <= 1.05 * base["repair_rate"]
+                )
+        self.assertFalse(any(
+            instance.training_parameter_jitter_applied
+            for split in ("valid", "test")
+            for instance in generated[split]
+        ))
+        for split in ("valid", "test"):
+            for instance in generated[split]:
+                self.assertTrue(all(
+                    width == 0.0
+                    for width in instance.machine_profile_config[
+                        "parameter_jitter"
+                    ].values()
+                ))
 
     def test_each_operation_has_at_least_two_profile_classes(self):
         instance = self._instance()

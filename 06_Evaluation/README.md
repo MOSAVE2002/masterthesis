@@ -1,8 +1,6 @@
 # Standalone post-solve evaluation
 
-Die Planung und offenen Entscheidungen für die spätere integrierte numerische
-Pipeline werden in
-[`NUMERISCHE_PIPELINE_IDEEN.md`](NUMERISCHE_PIPELINE_IDEEN.md) gesammelt.
+Die numerische Analyse ist in den normalen Evaluate-Workflow integriert.
 
 ## Controlled base-model versus nonlinear-model comparison
 
@@ -142,26 +140,43 @@ The dataset evaluator deliberately rejects CSV files whose stored service
 level differs from the active configuration. Regenerate old datasets before
 running diagnostics after changing `service_level`.
 
-## Nonlinear probability-band analysis
+## Chapter-7 numerical analysis
 
-Compare the nonlinear Markov lower bound with independent Monte-Carlo
-probabilities for several small instances:
+When `evaluation.numerical_analysis.enabled` is true, the normal evaluation
+workflow automatically summarizes solver behavior, model sizes, surrogate
+quality and Monte-Carlo robustness. It also writes runtime ECDF and performance
+profile data and plots below `06_Evaluation/results/numerical_analysis`.
+
+Every newly solved model writes a `*_solver_progress.csv` file next to its
+solution text. The callback trajectory contains solver time, incumbent
+(primal bound), best bound (dual bound), relative MIP gap, explored nodes,
+solution count, event type and objective sense. Changes of incumbent, bound or
+solution count are retained, an additional point is retained at the first
+MIP/MIPNODE callback after 0.25 seconds without a change, and the final solver state is
+always added. Existing solution files remain
+readable but cannot retroactively provide this trajectory.
+
+The numerical-analysis step combines and compares these trajectories in:
+
+- `solver_progress.csv` (all raw trajectory rows with instance/model metadata)
+- `solver_progress_summary.csv` (common time grid by model/architecture)
+- `solver_progress_summary_by_size_due.csv` (additional split by tier, size and due-date condition)
+- `solver_gap_over_time.pdf` and `.png` (median relative gap with IQR)
+- `solver_incumbent_over_time.pdf` and `.png` (incumbent and target-gap rates)
+- `solver_incumbent_improvement_over_time.pdf` and `.png` (normalized improvement from the first incumbent)
+
+The median gap is calculated only for runs that already have a finite gap.
+Therefore it must be interpreted together with the displayed incumbent and
+target-gap rates. Raw objective values are not averaged across heterogeneous
+instances; the incumbent comparison uses the percentage improvement within
+each individual run.
+
+Run the complete post-solve evaluation and summary with:
 
 ```bash
-python3 06_Evaluation/analyze_nonlinear_probability_bands.py \
-  --instances 5 --replications 1000 --time-limit 10
+.venv/bin/python main.py --workflow evaluate
 ```
 
-Explicit instances can be selected by repeating `--instance-name`. The script
-runs independently of the workflow flags and writes the raw observations,
-band summary, JSON metadata, PDF, and PNG to `06_Evaluation/results`.
-
-`mc_point_feasible` evaluates the Monte-Carlo point estimate against the
-configured service target. `wilson_feasible` additionally reports whether the
-one-sided Wilson lower confidence bound reaches that target.
-`bonferroni_wilson_feasible` uses the per-job Bonferroni correction required
-for a joint confidence statement over all jobs of one schedule. Both Wilson
-values and every service-target classification are diagnostic only. They are
-used to count and compare schedules that reach the selected reference level
-under different parameters; they are not constraints and are not fed back into
-either optimization model.
+With `evaluation.numerical_analysis.strict: true`, completeness problems are
+reported after the available diagnostic tables have been written. This now
+also checks that every evaluated solver run has a trajectory sidecar.

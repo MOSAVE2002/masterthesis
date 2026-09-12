@@ -46,6 +46,29 @@ def _schedule_row():
 
 
 class EvaluationTableTests(unittest.TestCase):
+    def test_parse_solution_resolves_solver_progress_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "solution_i3_k3_o3-5_1_gurobi.txt"
+            path.write_text(
+                "\n".join((
+                    "Formulation: nominal_fjsp",
+                    "Status: TIME_LIMIT",
+                    "Solution count: 0",
+                    "Solver progress file: solution_progress.csv",
+                    "Solver progress points: 3",
+                )),
+                encoding="utf-8",
+            )
+
+            parsed = evaluation.parse_solution(path)
+
+        self.assertEqual(
+            parsed["solver_progress_path"],
+            (root / "solution_progress.csv").resolve(),
+        )
+        self.assertEqual(parsed["solver_progress_points"], 3)
+
     def test_bonferroni_confidence(self):
         confidence = evaluation.bonferroni_confidence(0.95, 5)
         self.assertAlmostEqual(confidence, 0.99)
@@ -90,6 +113,10 @@ class EvaluationTableTests(unittest.TestCase):
                     "enabled": True,
                     "calibration_bins": 8,
                 },
+                "numerical_analysis": {
+                    "enabled": True,
+                    "strict": True,
+                },
             },
         }
         with patch.object(
@@ -107,6 +134,62 @@ class EvaluationTableTests(unittest.TestCase):
             ],
             8,
         )
+        self.assertEqual(
+            run.call_args.kwargs["numerical_analysis"],
+            {"enabled": True, "strict": True},
+        )
+
+    def test_numerical_analysis_runs_as_part_of_evaluation(self):
+        analysis_result = {"solver_summary": Path("solver_summary.csv")}
+        fake_module = unittest.mock.Mock()
+        fake_module.run_analysis.return_value = analysis_result
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            solution_path = root / "solution.txt"
+            with (
+                patch.object(
+                    evaluation, "_solution_paths", return_value=[solution_path]
+                ),
+                patch.object(
+                    evaluation,
+                    "evaluate_solution",
+                    return_value=(
+                        _schedule_row(),
+                        [{
+                            "evaluation_tier": "in_distribution",
+                            "instance_name": "i3_k3_o3-5_1",
+                            "model": "gnn_sage_layers1_hidden4",
+                            "job_id": 0,
+                        }],
+                    ),
+                ),
+                patch.object(evaluation, "_write_latex_table"),
+                patch.object(evaluation, "_write_pdf_table"),
+                patch.object(
+                    evaluation.importlib,
+                    "import_module",
+                    return_value=fake_module,
+                ),
+            ):
+                result = evaluation.run_evaluation(
+                    config={"evaluation": {}},
+                    solutions=None,
+                    solutions_root=root,
+                    instances_root=root,
+                    output_directory=root,
+                    numerical_analysis={"enabled": True, "strict": True},
+                )
+
+        fake_module.run_analysis.assert_called_once_with(
+            config={"evaluation": {}},
+            result_table=root / "result_table.csv",
+            job_table=root / "job_comparison.csv",
+            manifest=root / "solve_manifest.json",
+            instances_root=root,
+            output_directory=root / "numerical_analysis",
+            strict=True,
+        )
+        self.assertEqual(result["numerical_analysis"], analysis_result)
 
     def test_external_paths_remain_valid(self):
         with tempfile.TemporaryDirectory() as directory:

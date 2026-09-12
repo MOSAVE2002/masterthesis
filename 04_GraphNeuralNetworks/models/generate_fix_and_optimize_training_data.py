@@ -1,4 +1,4 @@
-"""Fix-and-optimize graphs labelled by simulated expected completion delays."""
+"""Fix-and-optimize graphs labelled by deterministic local repair buffers."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from helper.time_units import normalize_time_unit
+
 import gurobipy as gp
 
 from helper.sequence_setup import (
@@ -22,6 +24,7 @@ from helper.sequence_setup import (
     normalize_reliability_graph_config,
     reliability_graph_config_dict,
     reliability_node_feature_names,
+    local_buffer_node_features,
 )
 from helper.stochastic_fjsp import (
     ensure_stochastic_parameters,
@@ -40,7 +43,14 @@ _base = importlib.import_module("03_Gurobi.build_fjsp")
 _nonlinear = importlib.import_module("03_Gurobi.build_fjsp_with_nonlinear")
 _simulation = importlib.import_module("05_Simulation.preempt_resume")
 FixedSchedule = _simulation.FixedSchedule
-SIMULATION_LABEL_METHOD = _simulation.EXPECTED_COMPLETION_DELAY_LABEL_METHOD
+from helper.local_buffer import (
+    LABEL_METHOD as SIMULATION_LABEL_METHOD, LABEL_SOURCE,
+    expected_job_buffers, label_config_dict, service_lower_bounds,
+    InvalidScheduleError,
+)
+from helper.buffer_candidate_selection import (
+    input_signature, unique_input_candidates, select_buffer_candidates,
+)
 TARGET_COLUMN = target_column(configured_constraint_type())
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
@@ -68,6 +78,8 @@ FIELDNAMES = [
     "simulation_job_ontime_probabilities",
     "simulation_replications",
     "simulation_seed",
+    "local_buffer_numerical_errors",
+    "local_buffer_service_lower_bounds",
     "operation_job_indices",
     "gnn_feature_names",
     "gnn_node_features",
@@ -196,6 +208,7 @@ def _new_quality_accumulator(expected_scale_factors):
         "candidate_categories": Counter(),
         "labels": [],
         "label_standard_errors": [],
+        "label_numerical_errors": [],
     }
 
 
@@ -234,6 +247,9 @@ def _update_quality_accumulator(accumulator, rows):
 
         accumulator["labels"].extend(
             _quality_numeric_values(row.get(TARGET_COLUMN))
+        )
+        accumulator["label_numerical_errors"].extend(
+            _quality_numeric_values(row.get("local_buffer_numerical_errors"))
         )
         accumulator["label_standard_errors"].extend(
             _quality_numeric_values(
@@ -280,6 +296,9 @@ def _quality_report(accumulator):
         "label_statistics": _descriptive_quality_statistics(
             accumulator["labels"]
         ),
+        "label_numerical_error_statistics": _descriptive_quality_statistics(
+            accumulator["label_numerical_errors"]
+        ),
         "label_standard_error_statistics": (
             _descriptive_quality_statistics(
                 accumulator["label_standard_errors"]
@@ -294,7 +313,7 @@ def _quality_number(value):
 
 def _quality_report_text(label, report):
     labels = report["label_statistics"]
-    standard_errors = report["label_standard_error_statistics"]
+    errors = report["label_numerical_error_statistics"]
     return (
         f"[Training-data quality] {label} | "
         f"instances={report['successful_instances']} successful/"
@@ -304,8 +323,7 @@ def _quality_report_text(label, report):
         f"categories={report['candidate_category_graph_counts']} | "
         f"labels(n={labels['count']}, mean={_quality_number(labels['mean'])}, "
         f"std={_quality_number(labels['standard_deviation'])}) | "
-        f"label_se(mean={_quality_number(standard_errors['mean'])}, "
-        f"median={_quality_number(standard_errors['median'])})"
+        f"quadrature_difference(max={_quality_number(errors['maximum'])})"
     )
 
 
@@ -319,12 +337,20 @@ def _write_generation_summary(path, summary):
     skipped = sum(
         len(values["skipped_instances"]) for values in split_values
     )
+    jittered = sum(
+        sum(
+            bool(item.get("training_parameter_jitter_applied", False))
+            for item in values["successful_instances"]
+        )
+        for values in split_values
+    )
     summary["totals"] = {
         "configured_instances": sum(
             values["configured_count"] for values in split_values
         ),
         "processed_instances": successful + skipped,
         "successful_instances": successful,
+        "jittered_successful_instances": jittered,
         "skipped_instances": skipped,
         "written_graphs": sum(
             values["written_graphs"] for values in split_values
@@ -334,12 +360,17 @@ def _write_generation_summary(path, summary):
         report = values.setdefault("quality_report", {})
         report.update({
             "successful_instances": len(values["successful_instances"]),
+            "jittered_successful_instances": sum(
+                bool(item.get("training_parameter_jitter_applied", False))
+                for item in values["successful_instances"]
+            ),
             "skipped_instances": len(values["skipped_instances"]),
             "written_graphs": values["written_graphs"],
         })
     report = summary.setdefault("quality_report", {})
     report.update({
         "successful_instances": successful,
+        "jittered_successful_instances": jittered,
         "skipped_instances": skipped,
         "written_graphs": summary["totals"]["written_graphs"],
         "graphs_per_split": {
@@ -852,7 +883,6 @@ def _candidate_from_solution(
         )
         for operation in operations
     }
-    horizon = max(float(value) for value in instance.due_dates.values())
     node_features = []
     for operation in operations:
         machine = selected[operation]
@@ -862,13 +892,9 @@ def _candidate_from_solution(
         alpha = variables["weibull_alpha"][machine]
         beta = variables["weibull_beta"][machine]
         repair_rate = variables["repair_rate"][machine]
-        node_features.append([
-            start / horizon,
-            completion / horizon,
-            processing_time / alpha,
-            repair_rate * alpha / 30.0,
-            beta / 5.0,
-        ])
+        node_features.append(local_buffer_node_features(
+            0.5 * (start + completion), alpha, beta, repair_rate
+        ))
 
     graph_edges = [
         (operation_to_index[source], operation_to_index[target])
@@ -924,7 +950,17 @@ def _candidate_from_solution(
         weibull_shape=dict(variables["weibull_beta"]),
         repair_rate=dict(variables["repair_rate"]),
     )
+    nominal_ends = {
+        j: planned_starts[instance.job_end_operations[j]]
+        + processing_times[instance.job_end_operations[j]] for j in job_ids
+    }
+    nominal_schedule_cost = (
+        sum(float(getattr(instance, "machine_cost", {}).get(selected[o], 0.0)) * processing_times[o] for o in operations)
+        + max(planned_starts[o] + processing_times[o] for o in operations)
+        + sum(max(0.0, nominal_ends[j] - instance.due_dates[j]) for j in job_ids)
+    )
     return {
+        "nominal_schedule_cost": nominal_schedule_cost,
         "candidate_id": (int(run_index), int(solution_number or 0)),
         "candidate_generation_mode": candidate_generation_mode,
         "candidate_probability_band": candidate_probability_band,
@@ -1063,50 +1099,34 @@ def _evaluate_fixed_schedule_nonlinear(candidate, graph_config):
     return candidate
 
 
-def _evaluate_fixed_schedule_simulation(candidate, simulation_config):
-    """Create propagated expected-completion-delay labels by Monte Carlo."""
-    simulation_config = _simulation.normalize_simulation_config(
-        simulation_config
-    )
-    instance_name = str(
-        candidate.get("row", {}).get("instance_name", "")
-    ).strip()
-    if instance_name:
-        seed_payload = (
-            f"{simulation_config.random_seed}:{instance_name}"
-        ).encode("utf-8")
-        simulation_seed = int.from_bytes(
-            hashlib.sha256(seed_payload).digest()[:4], "big"
-        )
-    else:
-        simulation_seed = simulation_config.random_seed
-    result = _simulation.simulate_fixed_schedule(
-        candidate["simulation_schedule"],
-        replications=simulation_config.label_replications,
-        seed=simulation_seed,
-        config=simulation_config,
-    )
-    delays = list(result.job_mean_completion_delays)
-    probabilities = list(result.job_ontime_probabilities)
-    standard_errors = list(result.job_completion_delay_standard_errors)
+def _evaluate_fixed_schedule_simulation(candidate, label_config=None):
+    """Compatibility entry point: deterministic LOCAL labels, no MC draws."""
+    schedule = candidate["simulation_schedule"]
+    buffers, errors = expected_job_buffers(schedule, label_config)
+    jobs = sorted(schedule.jobs)
+    values = [buffers[j] for j in jobs]
+    lower_bounds = [service_lower_bounds(schedule, buffers)[j] for j in jobs]
     candidate.update({
-        "simulated_job_expected_completion_delays": delays,
-        "simulation_job_ontime_probabilities": probabilities,
-        "simulation_job_completion_delay_standard_errors": standard_errors,
-        "simulation_result": result,
-        "job_probabilities": probabilities,
-        "min_job_probability": min(probabilities),
-        "service_risk": 1.0 - min(probabilities),
-        "effective_objective": candidate.get("pool_objective", 0.0),
+        "local_job_repair_buffers": values,
+        "nonlinear_job_expected_repair_buffers": values,
+        "nonlinear_job_probabilities": lower_bounds,
+        "nonlinear_min_job_probability": min(lower_bounds),
+        "local_buffer_numerical_errors": [errors[j] for j in jobs],
+        "simulated_job_expected_completion_delays": values,  # legacy ranking alias
+        "job_probabilities": lower_bounds,
+        "min_job_probability": min(lower_bounds),
+        "service_risk": 1.0 - min(lower_bounds),
     })
     row = candidate.setdefault("row", {})
-    row[TARGET_COLUMN] = _compact(delays)
-    row["simulated_completion_delay_standard_errors"] = _compact(
-        standard_errors
-    )
-    row["simulation_job_ontime_probabilities"] = _compact(probabilities)
-    row["simulation_replications"] = result.replications
-    row["simulation_seed"] = simulation_seed
+    row.update({
+        TARGET_COLUMN: _compact(values),
+        "local_buffer_numerical_errors": _compact([errors[j] for j in jobs]),
+        "local_buffer_service_lower_bounds": _compact(lower_bounds),
+        "simulated_completion_delay_standard_errors": "",
+        "simulation_job_ontime_probabilities": "",
+        "simulation_replications": 0,
+        "simulation_seed": "",
+    })
     return candidate
 
 
@@ -2158,17 +2178,19 @@ def _run_neighborhood(
         candidate["row"]["solver_runtime_seconds"] = (
             reference_runtime + float(model.Runtime)
         )
-        if candidate["structure"] in local_structures:
+        signature = input_signature(candidate)
+        if signature in local_structures:
             continue
-        local_structures.add(candidate["structure"])
         candidate["row"]["instance_name"] = instance_name
-        _evaluate_fixed_schedule_nonlinear(candidate, graph_config)
-        _evaluate_fixed_schedule_simulation(
-            candidate, generation.get("simulation")
-        )
+        try:
+            _evaluate_fixed_schedule_simulation(candidate, generation.get("labels"))
+        except InvalidScheduleError as error:
+            print(f"[Invalid candidate] {instance_name}: {error}", flush=True)
+            continue
+        local_structures.add(signature)
         candidates.append(candidate)
     print(
-        f"[Simulation labels] {instance_name} | run={run_index + 1} | "
+        f"[Local buffer labels] {instance_name} | run={run_index + 1} | "
         f"mode={candidate_generation_mode} | "
         f"band={candidate_probability_band or 'service_feasible'} | "
         f"candidates={len(candidates)}",
@@ -2463,6 +2485,11 @@ def _collect_instance_candidates(
                 fix_ratio,
                 len(candidates),
             )
+        if fixed.get("selection_method") == "buffer_structure_cost":
+            if (run_offset + 1 >= minimum_runs
+                    and len(unique_input_candidates(candidates)) >= minimum_count):
+                break
+            continue
         if (
             run_offset + 1 >= minimum_runs
             and len(candidates) >= minimum_count
@@ -2561,6 +2588,17 @@ def _collect_and_select_instance_candidates(
     selection_index=0,
 ):
     fixed = generation["fixed_y"]
+    if fixed.get("selection_method") == "buffer_structure_cost":
+        if graph_config.service_scope != "job":
+            raise ValueError("Local job-buffer training requires service_scope='job'.")
+        candidates = _collect_instance_candidates(
+            instance, instance_name, generation, graph_config, int(count),
+            start_run=start_run, progress=progress,
+            candidate_generation_mode="nonlinear_evaluated",
+            maximum_runs_override=int(fixed.get("maximum_candidate_pool_runs", 4)),
+            selection_index=selection_index,
+        )
+        return candidates, select_buffer_candidates(candidates, count)
     hybrid_selection = _hybrid_selection_for_split(fixed, split)
     mixed_generation = _mixed_candidate_generation_for_split(fixed, split)
     if not mixed_generation:
@@ -2671,6 +2709,8 @@ def generate_from_config(generation):
     graph_config = normalize_reliability_graph_config(
         generation.get("reliability_graph")
     )
+    if graph_config.service_scope != "job":
+        raise ValueError("Local buffer generation requires service_scope='job'.")
     samples_per_instance = int(generation["samples_per_instance"])
     if samples_per_instance <= 0:
         raise ValueError("samples_per_instance must be positive.")
@@ -2681,12 +2721,8 @@ def generate_from_config(generation):
     )
     generation["fixed_y"] = fixed
     generation["random_seed"] = int(generation.get("random_seed", 42))
-    simulation_config = _simulation.normalize_simulation_config(
-        generation.get("simulation")
-    )
-    generation["simulation"] = _simulation.simulation_config_dict(
-        simulation_config
-    )
+    generation["labels"] = label_config_dict(generation.get("labels"))
+    fixed.setdefault("selection_method", "buffer_structure_cost")
     output_root = Path(generation["output_directory"])
     if not output_root.is_absolute():
         output_root = ROOT_DIR / output_root
@@ -2702,7 +2738,7 @@ def generate_from_config(generation):
     total_quality = _new_quality_accumulator(expected_scale_factors)
     summary_path = output_root / failure_handling["summary_filename"]
     summary = {
-        "schema_version": 12,
+        "schema_version": 15,
         "status": "running",
         "started_at_utc": _utc_timestamp(),
         "completed_at_utc": None,
@@ -2716,19 +2752,27 @@ def generate_from_config(generation):
             "weibull_scale_factors", [1.0]
         ),
         "machine_profile_config": generation.get("machine_profile_config"),
-        "time_unit_minutes": float(
-            generation.get("time_unit_minutes", 1.0)
+        "training_parameter_jitter": generation.get(
+            "training_parameter_jitter"
         ),
+        "time_unit": normalize_time_unit(generation),
         "label": {
             "target_column": TARGET_COLUMN,
             "label_method": SIMULATION_LABEL_METHOD,
-            "source": "fixed_schedule_monte_carlo_propagated_completion_delay",
-            "simulation": _simulation.simulation_config_dict(
-                simulation_config
-            ),
+            "source": LABEL_SOURCE,
+            "parameters": generation["labels"],
+            "semantics": "Expected sum of residual repairs at nominal operation midpoints; no propagation or gap absorption.",
+        },
+        "candidate_selection": {
+            "method": fixed.get("selection_method"),
+            "deduplication": "features_rounded7_job_membership_directed_multiedges",
+            "nominal_cost": "processing_cost_plus_nominal_makespan_plus_nominal_tardiness",
+            "probability_diagnostics": "Markov lower bounds for local buffers, not MC service rates",
         },
         "graph": {
             "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
+            "feature_names": reliability_node_feature_names(graph_config),
+            "service_scope": graph_config.service_scope,
             "include_machine_predecessor_edges": True,
             "machine_predecessor_edge_scope": "direct",
             "include_job_precedence_edges": True,
@@ -2747,6 +2791,25 @@ def generate_from_config(generation):
         },
         "quality_report": _quality_report(total_quality),
     }
+    # A partial regeneration must not relabel incompatible files left on disk.
+    retained = [split for split in SPLIT_DIRECTORIES if split not in splits
+                and (output_root / SPLIT_DIRECTORIES[split] / SPLIT_CSV_FILENAMES[split]).exists()]
+    if retained:
+        if not summary_path.exists():
+            raise ValueError("Existing unselected splits have no label metadata; regenerate all splits or use a new directory.")
+        previous = json.loads(summary_path.read_text(encoding="utf-8"))
+        if previous.get("status") != "completed" or any(
+            previous.get(key) != summary[key] for key in (
+                "label", "graph", "time_unit", "machine_profile_config",
+                "training_parameter_jitter",
+            )
+        ):
+            raise ValueError("Existing unselected splits are incompatible; regenerate all splits or use a new directory.")
+        for split in retained:
+            summary["splits"][split] = previous["splits"][split]
+            with (output_root / SPLIT_DIRECTORIES[split] / SPLIT_CSV_FILENAMES[split]).open(newline="", encoding="utf-8") as handle:
+                _update_quality_accumulator(total_quality, csv.DictReader(handle))
+        summary["quality_report"] = _quality_report(total_quality)
     _write_generation_summary(summary_path, summary)
 
     try:
@@ -2837,6 +2900,11 @@ def generate_from_config(generation):
                     split_summary["written_graphs"] += len(rows)
                     split_summary["successful_instances"].append({
                         "instance_name": instance_name,
+                        "training_parameter_jitter_applied": bool(getattr(
+                            instance,
+                            "training_parameter_jitter_applied",
+                            False,
+                        )),
                         "candidate_count": len(candidates),
                         "written_graphs": len(rows),
                         "job_probability_distribution": dict(
@@ -2850,7 +2918,7 @@ def generate_from_config(generation):
                         flush=True,
                     )
                     print(
-                        f"[Job-label distribution] {split} | "
+                        f"[Local Markov-bound distribution] {split} | "
                         f"{instance_name} | "
                         f"{_distribution_text(instance_probability_counts)}",
                         flush=True,
@@ -2869,7 +2937,7 @@ def generate_from_config(generation):
             split_summary["final_job_probability_coverage"] = coverage
             _write_generation_summary(summary_path, summary)
             print(
-                f"[Job-label distribution] finished {split} | "
+                f"[Local Markov-bound distribution] finished {split} | "
                 f"{_distribution_text(split_probability_counts)}",
                 flush=True,
             )
@@ -2917,9 +2985,8 @@ def generate_rows_for_instance(
     )
     generation["fixed_y"] = dict(generation.get("fixed_y") or {})
     generation["random_seed"] = int(generation.get("random_seed", 42))
-    generation["simulation"] = _simulation.simulation_config_dict(
-        generation.get("simulation")
-    )
+    generation["labels"] = label_config_dict(generation.get("labels"))
+    generation["fixed_y"].setdefault("selection_method", "buffer_structure_cost")
     instance = load_generated_instance(instance_name)
     candidates, selected = _collect_and_select_instance_candidates(
         instance,

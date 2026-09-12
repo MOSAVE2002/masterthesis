@@ -4,12 +4,15 @@ import math
 import sys
 from pathlib import Path
 
+from helper.time_units import normalize_time_unit
+from helper.local_buffer import JOB_TARGET, LABEL_METHOD
+
 import gurobipy as gp
 from gurobipy import GRB
 from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
     add_economic_cost_objective,
-    add_soft_service_level_constraints,
+    add_due_date_tardiness_constraints,
 )
 import torch
 
@@ -93,12 +96,14 @@ def _load_metadata(metadata_path):
         )
     if metadata.get("target_column") != target_column(CONSTRAINT_WEIBULL):
         raise ValueError(
-            "The embedded GNN requires job-specific expected completion delays."
+            "The embedded GNN requires local midpoint repair buffers."
         )
-    if metadata.get("job_target") != "job_expected_completion_delay":
+    if metadata.get("job_target") != JOB_TARGET:
         raise ValueError(
-            "The embedded GNN requires one expected completion delay per job."
+            "The embedded GNN requires one local repair buffer per job."
         )
+    if metadata.get("job_repair_buffer_label_method") != LABEL_METHOD:
+        raise ValueError("Old or unknown GNN labels; regenerate local labels and retrain.")
     if (
         convolution in {CONV_SAGE, CONV_JOB}
         and not metadata.get("include_job_precedence_edges", False)
@@ -324,79 +329,37 @@ def _add_linear_layer(
 
 
 def _build_node_feature_expressions(instance, variables, constraint_type):
-    operations = list(variables["real_operations"])
+    """Affine features using the existing exact products T_i * Y_im."""
+    if constraint_type != CONSTRAINT_WEIBULL:
+        raise ValueError("Physical buffer features require Weibull parameters.")
     Y = variables["Y"]
-    horizon = float(variables["service_horizon"])
-    node_features = []
-    node_bounds = []
-    for operation in operations:
-        if constraint_type == CONSTRAINT_WEIBULL:
-            processing_over_alpha = gp.quicksum(
-                Y[operation, machine]
-                * float(instance.processing_times[operation, machine])
-                / variables["weibull_alpha"][machine]
-                for machine in instance.eligible_machines[operation]
-            )
-            rate_times_alpha = gp.quicksum(
-                Y[operation, machine]
-                * variables["repair_rate"][machine]
-                * variables["weibull_alpha"][machine]
-                / 30.0
-                for machine in instance.eligible_machines[operation]
-            )
-            beta_scaled = gp.quicksum(
-                Y[operation, machine] * variables["weibull_beta"][machine] / 5.0
-                for machine in instance.eligible_machines[operation]
-            )
-            node_features.append([
-                variables["S"][operation] / horizon,
-                variables["C"][operation] / horizon,
-                processing_over_alpha,
-                rate_times_alpha,
-                beta_scaled,
-            ])
-            node_bounds.append([
-                (0.0, float(variables["H"]) / horizon),
-                (0.0, float(variables["H"]) / horizon),
-                (
-                    min(
-                        float(instance.processing_times[operation, machine])
-                        / variables["weibull_alpha"][machine]
-                        for machine in instance.eligible_machines[operation]
-                    ),
-                    max(
-                        float(instance.processing_times[operation, machine])
-                        / variables["weibull_alpha"][machine]
-                        for machine in instance.eligible_machines[operation]
-                    ),
-                ),
-                (
-                    min(
-                        variables["repair_rate"][machine]
-                        * variables["weibull_alpha"][machine]
-                        / 30.0
-                        for machine in instance.eligible_machines[operation]
-                    ),
-                    max(
-                        variables["repair_rate"][machine]
-                        * variables["weibull_alpha"][machine]
-                        / 30.0
-                        for machine in instance.eligible_machines[operation]
-                    ),
-                ),
-                (
-                    min(
-                        variables["weibull_beta"][machine] / 5.0
-                        for machine in instance.eligible_machines[operation]
-                    ),
-                    max(
-                        variables["weibull_beta"][machine] / 5.0
-                        for machine in instance.eligible_machines[operation]
-                    ),
-                ),
-            ])
-
-    return node_features, node_bounds
+    horizon = float(variables["H"])
+    products = variables["midpoint_times_assignment"]
+    features, bounds = [], []
+    for operation in variables["real_operations"]:
+        machines = instance.eligible_machines[operation]
+        alpha = variables["weibull_alpha"]
+        beta = variables["weibull_beta"]
+        rate = variables["repair_rate"]
+        constants = [
+            {m: rate[m] * alpha[m] / 10.0 for m in machines},
+            {m: beta[m] / 5.0 for m in machines},
+            {m: 1.0 / (60.0 * rate[m]) for m in machines},
+        ]
+        features.append([
+            gp.quicksum(products[operation, m] / alpha[m] for m in machines),
+            *[gp.quicksum(Y[operation, m] * values[m] for m in machines)
+              for values in constants],
+        ])
+        # S>=0 and C<=H imply p/2 <= T <= H-p/2 for the selected machine.
+        bounds.append([
+            (min(0.5 * instance.processing_times[operation, m] / alpha[m]
+                 for m in machines),
+             max((horizon - 0.5 * instance.processing_times[operation, m]) / alpha[m]
+                 for m in machines)),
+            *[(min(values.values()), max(values.values())) for values in constants],
+        ])
+    return features, bounds
 
 
 def _add_schedule_upper_bounds(variables):
@@ -845,7 +808,6 @@ def build_fjsp(
     constraint_type=CONSTRAINT_WEIBULL,
     reliability_graph_config=None,
     analytic_bounds=True,
-    service_level=0.90,
     facility_cost_per_time=1.0,
     service_violation_cost_per_time=1.0,
     tardiness_cost_per_time=None,
@@ -856,6 +818,8 @@ def build_fjsp(
     constraint_type = validate_constraint_type(constraint_type)
     ensure_stochastic_parameters(instance)
     graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
+    if graph_cfg.service_scope != "job":
+        raise ValueError("Local job-buffer GNN requires service_scope='job'.")
 
     requested_architecture = validate_architecture(
         GRAPH_MODE_FIXED_CANDIDATE,
@@ -908,7 +872,8 @@ def build_fjsp(
     if metadata.get("feature_names") != expected_features:
         raise ValueError(
             "GNN feature order does not match the selected constraint. "
-            f"Expected {expected_features}, got {metadata.get('feature_names')}."
+            f"Expected {expected_features}, got {metadata.get('feature_names')}. "
+            "Regenerate the dataset features and retrain the GNN."
         )
     expected_input_size = int(metadata.get("input_size", len(expected_features)))
     if expected_input_size != len(expected_features):
@@ -950,12 +915,8 @@ def build_fjsp(
             "GNN machine profiles differ from the solved instance. "
             "Regenerate the training data and retrain the GNN."
         )
-    metadata_time_unit = metadata.get("time_unit_minutes")
-    if metadata_time_unit is None or not math.isclose(
-        float(metadata_time_unit),
-        float(getattr(instance, "time_unit_minutes", 1.0)),
-        rel_tol=0.0,
-        abs_tol=1e-12,
+    if normalize_time_unit(metadata, require_metadata=True) != normalize_time_unit(
+        instance
     ):
         raise ValueError(
             "GNN time-unit metadata differs from the solved instance. "
@@ -1008,12 +969,11 @@ def build_fjsp(
             "constraint_type": constraint_type,
         }
     )
-    add_soft_service_level_constraints(
+    add_due_date_tardiness_constraints(
         model,
         variables,
         instance,
         job_expected_delays,
-        service_level=service_level,
     )
     add_economic_cost_objective(
         model,
@@ -1023,7 +983,7 @@ def build_fjsp(
         service_violation_cost_per_time=service_violation_cost_per_time,
         tardiness_cost_per_time=tardiness_cost_per_time,
     )
-    formulation = "gnn_simulated_delay_markov_soft_service_level_v14"
+    formulation = "gnn_unscaled_local_repair_buffer_v16"
     variables.update({
         "formulation": formulation,
     })

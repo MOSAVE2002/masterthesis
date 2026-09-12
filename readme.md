@@ -2,7 +2,9 @@
 
 Die aktive Pipeline verwendet wieder die nichtlineare Ausfallwahrscheinlichkeit
 am Mittelpunkt jeder Operation. Für Maschine (k) gelten eine
-Weibull-Ausfallzeit und eine exponentielle Reparaturzeit:
+Weibull-Ausfallzeit und eine exponentielle Reparaturzeit. Der Codeparameter
+`weibull_alpha` bezeichnet die Weibull-Skala (im Manuskript `eta`), keinen
+Servicegrad:
 
 \[
 f_k(x)=\frac{\beta_k}{\alpha_k}
@@ -24,21 +26,21 @@ Auswertezeitpunkt wegen eines Ausfalls noch in Reparatur ist:
 Pd_{ik}(t_i)=\int_0^{t_i} f_k(x)e^{-\lambda_k(t_i-x)}\,dx.
 \]
 
-## Wirtschaftliche Zielfunktion und weiches Serviceziel
+## Wirtschaftliche Zielfunktion und gepufferte Terminverletzung
 
 Die produktiven Modelle minimieren gemeinsam
 
 \[
 \sum_{i,k} c_k p_{ik}Y_{ik}
 +c_{Halle}\,C_{\max}
-+c_{SL}\sum_{u\in\mathcal J}L_u^{SL}.
++c_D\sum_{u\in\mathcal J}L_u.
 \]
 
 Der erste Term erfasst die Maschinenkosten während der Bearbeitung. Der zweite
 Term bildet die Hallenbetriebskosten bis zum Makespan ab. Der dritte Term
-bestraft die zeitliche Verletzung des weichen Service-Level-Ziels. Die
+bewertet die gepufferte Terminverletzung. Die
 Kostenraten werden über `objective.facility_cost_per_time` und
-`objective.service_violation_cost_per_time` konfiguriert. Beide stehen aktuell
+`objective.tardiness_cost_per_time` konfiguriert. Beide stehen aktuell
 auf eins. Dieselbe Kostenstruktur wird im Grundmodell, im nichtlinearen Modell
 und im GNN-Modell verwendet.
 
@@ -52,21 +54,29 @@ Maschinenarten:
 - `new`: höhere Kosten, höhere Geschwindigkeit, größere Weibull-Skala,
   Weibull-Formparameter \(\beta=2\) und schnellere Reparatur.
 
-Kosten, Geschwindigkeit, Weibull-Skala, Weibull-Form und Reparaturrate sind
-innerhalb jedes Profils über alle Instanzen konstant; der Parameter-Jitter ist
-deaktiviert. Jede Operation kann auf Maschinen aus mindestens zwei
+Kosten, Geschwindigkeit, Weibull-Skala, Weibull-Form und Reparaturrate sind in
+den Basisprofilen konstant. Für 20 % der Trainingsinstanzen je Größenklasse
+wird reproduzierbar ein Jitter von ±5 % auf Weibull-Skala und Reparaturrate
+angewendet; Kostenrate, Geschwindigkeit und Weibull-Form bleiben unverändert.
+Validierungs- und Testinstanzen verwenden ausschließlich die festen
+Basisprofile. Jede Operation kann auf Maschinen aus mindestens zwei
 Profilklassen ausgeführt werden. Ihre Bearbeitungszeit entsteht aus einer
 ganzzahligen Basiszeit im konfigurierten Bereich `[10, 30]`, dem
 Geschwindigkeitsfaktor des Profils und einem kleinen Operationsrauschen. Die
 Profile werden unter `instances.generation.machine_profiles` konfiguriert und
 bleiben bei der analytischen Erzeugung der Trainingslabels unverändert.
-Eine Zeiteinheit entspricht zehn Minuten. Weil der Basiszeitbereich gegenüber
-der früheren Konfiguration auf `[10, 30]` verdoppelt wurde, wurden auch die
-Weibull-Skalen und mittleren Reparaturzeiten proportional verdoppelt. Damit
-bleiben Bearbeitungszeit/Ausfallskala und Bearbeitungszeit/Reparaturdauer
-vergleichbar. Die Weibull-Skalen betragen 120 ZE (`old`) und 200 ZE (`new`),
-die mittleren exponentiellen Reparaturzeiten 60 ZE beziehungsweise zehn Stunden
-für `old` und 30 ZE beziehungsweise fünf Stunden für `new`.
+Alle Modellzeiten werden ausschließlich in abstrakten Zeiteinheiten (ZE)
+angegeben; `instances.generation.time_unit` ist `"ZE"`. Bearbeitungszeiten,
+Start- und Fertigstellungszeiten, Due Dates, Puffer, Weibull-Skalen und
+Reparaturdauern haben die Einheit ZE. Reparaturraten haben die Einheit 1/ZE,
+Kostenraten GE/ZE (GE = Geldeinheiten); Weibull-Formparameter und
+Geschwindigkeitsfaktoren sind dimensionslos. Der MAE der Verzögerungsprognose
+wird in ZE gemessen, der MSE in ZE².
+
+Die Weibull-Skalen betragen 120 ZE (`old`) und 200 ZE (`new`), die mittleren
+exponentiellen Reparaturzeiten 60 ZE für `old` und 30 ZE für `new`. Veraltete Einheitenannotationen werden beim Laden als ZE übernommen.
+Für das neue lokale Labelziel müssen Daten und Gewichte neu erzeugt werden.
+Solver-Zeitlimits und gemessene Rechenzeiten bleiben reale Sekunden (`s`).
 
 ## Due Dates der generierten Instanzen
 
@@ -135,67 +145,71 @@ bestimmt. Für jeden Job wird daraus der erwartete Reparaturpuffer
 B_u^{NL}=\sum_{i\in\mathcal O_u}\Delta_i
 \]
 
-gebildet. Mit dem Servicegrad \(\alpha\) und der nichtnegativen weichen
-Verletzungsvariablen \(L_u^{SL}\) lautet die konservative Markov-Constraint
+gebildet. Die gepufferte Terminbedingung lautet gemäß Manuskript
 
 \[
-C_u+\frac{B_u^{NL}}{1-\alpha}\le d_u+L_u^{SL},
-\qquad L_u^{SL}\ge0,
-\qquad\forall u\in\mathcal J.
+C_u+B_u^{NL}\le d_u+L_u,\qquad L_u\ge0.
 \]
 
-Aktuell gilt \(\alpha=0{,}9\), also der Skalierungsfaktor zehn. Bei
-\(L_u^{SL}=0\) fordert die Constraint die konservative Markov-Untergrenze von
-90 Prozent. Bei positiver Verletzung ist sie ausdrücklich ein weiches Ziel und
-keine Wahrscheinlichkeitsgarantie. Im Grundmodell gilt \(B_u=0\); dort misst
-dieselbe Kostenkomponente nur die nominale Due-Date-Verletzung. Zusammen mit
-den Weibull-Integralen bleibt das Referenzmodell ein MINLP.
+Es gibt keinen Servicegrad und keinen Faktor `1/(1-alpha)` im Modell.
+Die Zielfunktion bewertet die Terminverletzung mit `c_D`; im nominalen
+Grundmodell gilt `B_u=0`. Eine Wahrscheinlichkeit für Termintreue wird hier
+nicht garantiert. Das Referenzmodell bleibt wegen der Integrale ein MINLP.
 
-Die einzige aktive Simulation zieht je Replikation und eingesetzter Maschine
-einen Weibull-verteilten ersten Ausfallzeitpunkt sowie eine exponentielle
-Reparaturdauer. Daraus entsteht ein gemeinsames Ausfallintervall der Maschine.
-Beginnt eine Operation innerhalb dieses Intervalls, wartet sie bis zum Ende der
-Reparatur. Tritt der Ausfall während der Bearbeitung auf, gilt Preempt-Resume:
-Die bereits geleistete Arbeit bleibt erhalten und die Bearbeitung wird nach der
-Reparatur fortgesetzt. Die resultierende Verzögerung wird über die festen Job-
-und Maschinenkanten nach rechts fortgepflanzt.
+Die aktive lokale Pufferdefinition verwendet weiterhin einen ersten Weibull-Ausfall
+und eine exponentielle Reparatur pro Maschine. Für eine Operation mit nominalem
+Mittelpunkt \(t_i\) zählt nur die dort verbleibende Reparaturzeit:
 
-Damit bildet die Simulation im Gegensatz zur operationsbezogenen
-Midpoint-Näherung auch Ausfälle in Leerlaufzeiten und eine konsistente
-Maschinenhistorie ab. Nach der ersten Reparatur wird jedoch kein weiterer
-Ausfall erzeugt; es handelt sich also nicht um einen Renewal-Prozess. Die
-simulierten Verzögerungen sind bewusst ein eigenständiges Trainings- und
-Evaluationsziel und müssen nicht operationsweise mit
-\(Pd_i(t_i)/\lambda_i\) übereinstimmen.
+\[
+Z_i=\mathbf 1(F_k\le t_i)\max(F_k+R_k-t_i,0),\qquad
+B_u=\mathbb E\!\left[\sum_{i\in\mathcal O_u} Z_i\right]
+=\sum_{i\in\mathcal O_u} Pd_{ik}(t_i)/\lambda_k.
+\]
 
-Die Simulation verändert einen festen Schedule nicht und gibt keine
-Nebenbedingung an den Solver zurück. Sie wird sowohl für simulationsbasierte
-GNN-Trainingslabels als auch mit frischen Seeds für die unabhängige
-Post-Solve-Evaluation verwendet. Ein Job gilt
-in einer Replikation als pünktlich, wenn seine simulierte Fertigstellungszeit
-seine Due Date nicht überschreitet. Über viele Replikationen entsteht daraus
-für jeden Job eine empirische On-Time-Wahrscheinlichkeit. Die Evaluation
-vergleicht damit, wie viele beziehungsweise welche Schedules unter
-unterschiedlichen Due-Date-, Ausfall- und Reparaturparametern robust
-funktionieren.
+Es gibt dabei keine Störungsfortpflanzung und keine Verrechnung mit späteren
+Leerlaufzeiten. Trainingslabels sind deterministische Erwartungswerte. Die
+Post-Solve-Auswertung in `05_Simulation/preempt_resume.py` simuliert die
+Ausführung: ein erster Ausfall und eine Reparatur je Maschine, Warten oder
+Unterbrechen/Fortsetzen und Weitergabe der Verzögerung über feste Job- und
+Maschinenreihenfolgen. `evaluation.simulation.model` ist `preempt_resume`.
+`evaluation.service_level_threshold=0.9` dient ausschließlich zur Bewertung
+empirischer Termintreue. Die lokale Simulation `local_midpoint.py` bleibt für
+numerische Prüfungen der Trainingslabels verfügbar; sie bewertet keine
+vollständige Ausführung. Die Trainingslabels bleiben unverändert lokale Puffer.
 
 ## GNN-Ersatzmodell
 
-`gurobi_gnn` schätzt für jeden Job die simulierte erwartete
-Fertigstellungsverzögerung \(\widehat B_u^{MC}\). Diese schließt die
-Right-Shift-Weitergabe über Job- und Maschinenkanten ein. Die Knotenfeatures
-sind:
+`gurobi_gnn` schätzt für jeden Job den lokalen erwarteten Reparaturpuffer
+\(\widehat B_u\). Die vier Knotenfeatures sind:
 
-1. nominaler Start und nominale Fertigstellung,
-2. Bearbeitungszeit relativ zum Weibull-Skalenparameter,
-3. Reparaturrate und Weibull-Formparameter.
+1. nominaler Operationsmittelpunkt relativ zur Weibull-Skala \(t_i/\alpha_k\),
+2. skalierte Reparaturrate \(\lambda_k\alpha_k/10\),
+3. skalierter Weibull-Formparameter \(\beta_k/5\),
+4. mittlere Reparaturdauer relativ zu 60 ZE: \(1/(60\lambda_k)\).
 
-Der Due-Date-Slack wird nicht als separates GNN-Feature verwendet. Die Due
-Date dient als Normalisierungshorizont für Start- und Fertigstellungszeiten.
+Hier ist \(k\) die zugewiesene Maschine und \(t_i=(S_i+C_i)/2\).
+Alle vier Features sind dimensionslos; 60 ZE ist eine feste Zeitreferenz.
+Liefertermine gehen nicht in die Features ein. Die bekannten Maschinenparameter
+und der nominale Mittelpunkt reichen zur Beschreibung des lokalen Erwartungswerts.
+Labels und Vorhersagen bleiben in ZE; der MAE wird nicht umskaliert.
+
+Im MILP wird das erste Feature als \(\sum_k (T_iY_{ik})/\alpha_k\)
+berechnet. Die Produkte \(T_iY_{ik}\) sind bereits exakt linearisiert. Die
+übrigen Features sind affine Summen über \(Y_{ik}\). Die Featureausdrücke
+benötigen keine zusätzlichen Variablen; JOB behält ausschließlich Jobkanten.
+Die Eingangsgrenzen berücksichtigen die zulässigen Bearbeitungszeiten und den
+seriellen Planungshorizont. Das neue Graphschema ist
+`direct_machine_and_job_predecessor_physical_features_v10`.
+
+Alte Datensätze und Gewichte mit fünf oder sieben Eingaben passen nicht zu
+diesem Eingang. Das Skript `migrate_local_buffer_features.py` konvertiert die
+bisherigen sieben Features in einen neuen Datensatz, prüft die rekonstruierte
+Pufferformel und erhält Pläne, Kanten und Labels. Alte Dateien werden dabei
+nicht überschrieben. Anschließend müssen Vier-Input-Netze trainiert werden.
 
 Es werden drei bewusst getrennte Ersatzmodelle trainiert und verglichen:
 
-1. `linear`: knotenseitige lineare Transformation ohne Message Passing,
+1. `linear`: knotenseitiges ReLU-MLP ohne Message Passing,
 2. `job`: Message Passing ausschließlich über feste Jobpräzedenzkanten,
 3. `sage`: vollständiges GraphSAGE über feste Jobpräzedenzkanten und
    entscheidungsabhängige Maschinenkanten.
@@ -214,11 +228,11 @@ Auftrag vorgegebenen Kanten und benötigt deshalb weder \(U_{ijk}\) noch eine
 Linearisierung von \(U_{ijk}h_j^{(\ell-1)}\). `linear` verwendet überhaupt
 keine Kanten. Ein jobspezifisches Pooling fasst in allen drei Varianten die
 Operationsknoten jedes Jobs zusammen. Für jeden Job gilt im eingebetteten
-Modell dieselbe weiche Service-Level-Struktur wie im Referenzmodell:
+Modell dieselbe unskalierte gepufferte Terminbedingung wie im Referenzmodell:
 
 \[
-C_u+\frac{\widehat B_u^{MC}}{1-\alpha}\le d_u+L_u^{SL},
-\qquad L_u^{SL}\ge0.
+C_u+\widehat B_u\le d_u+L_u,
+\qquad L_u\ge0.
 \]
 
 Das GNN-Modell ist ein MILP, während das Referenzmodell das schwierige MINLP
@@ -226,69 +240,62 @@ bleibt.
 
 ## Trainingsdaten
 
-Fix-and-Optimize erzeugt Maschinenzuordnungen und unmittelbare
-Maschinenfolgen. Im Modus `nonlinear_evaluated` werden die von Gurobi
-optimierten Start- und Fertigstellungszeiten übernommen. Der feste Schedule
-wird anschließend mit der maschinenbezogenen Single-Failure-Simulation
-simuliert. Das Label ist
-der Stichprobenmittelwert von \(C_u^{sim}-C_u^{nom}\), einschließlich der
-Weitergabe vorgelagerter Verzögerungen. Jeder Schedule-Graph wird in genau
-einer CSV-Zeile gespeichert.
+Fix-and-Optimize erzeugt Maschinenzuordnungen, unmittelbare Maschinenfolgen und
+nominale Startzeiten. Zulässige Lösungen vom Zeitlimit sind erlaubt. Vor dem
+Labeln werden Jobreihenfolge und Maschinenüberschneidungen geprüft.
 
-Die Trainings-Due-Dates werden zunächst durch einen nominalen Makespanlauf
-kalibriert. Mit dem mittleren Work Content \(\bar w\), dem jobspezifischen Work
-Content \(w_j\) und \(f^*=C_{\max}^*/\bar w\) gilt
+`helper/local_buffer.py` berechnet die Labels mit 128 Quadraturpunkten und prüft
+sie unabhängig mit 256 Punkten. Überschreitet die Summe der absoluten Differenzen
+pro Job 1e-6 ZE, wird der Kandidat nicht als gültiges Label übernommen. Das ist
+ein numerischer Konvergenzcheck, keine mathematisch zertifizierte Fehlerschranke.
+Identische lokale Zustände bekommen damit dieselben Erwartungswerte ohne
+Monte-Carlo-Streuung. Die Zielspalte heißt
+`expected_local_midpoint_repair_buffer`; die CSV enthält zusätzlich
+`local_buffer_numerical_errors`. Markov-Untergrenzen werden nur als Diagnose
+unter `local_buffer_service_lower_bounds` gespeichert.
 
-\[
-d_j=\left\lceil(1+\delta)f^*w_j\right\rceil,
-\qquad \delta\in\{0{,}00,0{,}15,0{,}30,0{,}45\},
-\]
+Pro Instanz werden vier Poolläufe mit bis zu 20 Kandidaten und je einer Sekunde
+Optimierungszeit ausgeführt. Die Due-Date-Kalibrierung behält die relativen
+Offsets `[0.0, 0.15, 0.3, 0.45]`. Die Weibull-Faktoren `[0.8, 1.0, 1.2]` werden
+reproduzierbar rotiert. Die Auswahl `buffer_structure_cost` erzeugt 12 Graphen:
+vier Kosten/Puffer-Kombinationen, sechs zur Abdeckung niedriger, mittlerer und
+hoher Jobpuffer sowie zwei für strukturelle Vielfalt. Fehlen Kosten/Puffer-
+Kombinationen im Pool, werden die Plätze durch Pufferabdeckung aufgefüllt.
+Die Auswahlkosten sind nominale Maschinenkosten plus Makespan plus nominale
+Verspätung (Gewichte eins). Teure zulässige Pläne bleiben ausdrücklich zugelassen.
+Servicegrad-Kategorien steuern diese Auswahl nicht mehr.
 
-Dadurch behalten Jobs mit unterschiedlichem Work Content unterschiedliche Due
-Dates, während die Stufen relativ zum nominalen Makespan kalibriert sind.
+Die Duplikaterkennung berücksichtigt die vier Features (auf sieben
+Nachkommastellen), Jobzugehörigkeiten und gerichtete Kanten einschließlich
+Mehrfachkanten. Gleiche Maschinenfolgen mit anderen Startzeiten bleiben erhalten.
+Trainings-, Validierungs- und Testinstanzen werden getrennt aufgeteilt.
 
-Ein fehlgeschlagener Instanzlauf beendet die Erzeugung nicht mehr. Bleiben für
-eine Instanz nach dem normalen Kandidatenlauf zu wenige lösbare Kandidaten
-übrig, wird sie sofort übersprungen. Der aktuelle Fortschritt wird nach jeder
-Instanz atomar in
-`02_data/gnn_dataset/generation_summary.json` gesichert. Die Datei enthält pro
-Split alle erfolgreichen und übersprungenen Instanzen einschließlich
-Fehlermeldung. Zusätzlich wird pro Split und insgesamt ein kompakter,
-nicht blockierender Qualitätsbericht gespeichert und auf der Konsole
-ausgegeben. Er enthält die Graphenzahl, die Verteilungen der Weibull-Faktoren
-und Auswahlkategorien sowie Mittelwert und Standardabweichung der Joblabels
-und Mittelwert und Median ihrer Monte-Carlo-Standardfehler.
-Diese Zeile enthält unter anderem
+Die Konfiguration erzeugt 579 Instanzen je Größe, für 3–5 Jobs und 3–5
+Maschinen. Der 80/10/10-Split enthält je Größenklasse 463 Trainingsinstanzen
+sowie 58 Validierungs- und 58 Testinstanzen. Bei 12 Graphen pro Instanz sind
+das 50.004 Trainingsgraphen sowie jeweils 6.264 Validierungs- und Testgraphen,
+sofern keine Instanz wegen zu weniger gültiger Kandidaten übersprungen wird.
+93 der 463 Trainingsinstanzen je Größe, insgesamt 837 Instanzen beziehungsweise
+10.044 Graphen, stammen aus dem Jitterarm. Fortschritt, ausgelassene Instanzen,
+Jitterzuordnung, Labelverteilungen und Quadraturdifferenzen stehen in
+`02_data/gnn_dataset/generation_summary.json`.
 
-```text
-job_ids=[1,2,3,...]
-simulated_expected_completion_delay=[B_1^MC,B_2^MC,B_3^MC,...]
-operation_job_indices=[...]
-```
+Neue Daten liegen unter `02_data/gnn_dataset`, neue Modelle
+unter `04_GraphNeuralNetworks/trained_gnn_models`.
+Das Training vergleicht LINEAR, JOB und GraphSAGE mit zwei Schichten und je
+vier oder acht Hidden Nodes. Aktiv bleiben Adam, MSE und ReLU. Die Batchgröße
+beträgt 256. Mit `cache_batches: true` werden einmal gemischte Graphbatches
+wiederverwendet und pro Epoche in neuer Reihenfolge verarbeitet; das spart die
+wiederholte Graphzusammenstellung. Diese Option unterscheidet sich von einer
+neuen Mischung einzelner Graphen je Epoche. `false` verwendet weiterhin den
+normalen PyG-DataLoader.
 
-Damit kann ein Graph beliebig viele Jobs und ebenso viele unterschiedliche
-Joblabels enthalten. Zusätzlich speichert die CSV Standardfehler,
-Replikationszahl, Seed und Monte-Carlo-Pünktlichkeitsanteile. In der aktuellen
-Pilotkonfiguration werden 256 Replikationen pro Kandidat verwendet; für die
-endgültigen Trainingsdaten ist dieser Wert zu erhöhen. Für die
-Zuverlässigkeitsvariation werden die ursprünglichen Weibull-Skalen einer
-Instanz mit 0,8, 1,0 und 1,2 multipliziert. Die Reihenfolge dieser Faktoren
-wird instanzspezifisch und reproduzierbar rotiert, sodass bei vier Poolläufen
-jede Instanz alle drei Stufen sieht und die zusätzliche Stufe nicht immer
-dieselbe ist.
-
-Die adaptive Auswahl hält weiterhin Kandidaten unmittelbar unter und über der
-empirischen Servicegrenze von 0,9. Zusätzlich werden Kandidaten mit niedriger,
-mittlerer und hoher simulierter erwarteter Fertigstellungsverzögerung direkt
-ausgewählt. Wirtschaftlich gute, Pareto-günstige und strukturell verschiedene
-Schedules bleiben als Anker erhalten. Die früheren Kategorien mit lediglich
-minimaler beziehungsweise maximaler Pünktlichkeit entfallen, weil sie neben
-den beiden Servicegrenzen wenig zusätzliche Information für das eigentliche
-Verzögerungslabel lieferten.
-
-Die Daten werden unter `02_data/gnn_dataset` geschrieben. Die aktiven Modelle
-liegen in den architekturspezifischen Unterverzeichnissen von
-`04_GraphNeuralNetworks/trained_gnn_models`.
+`train_from_file(..., test_csv_path=None)` erlaubt Modellwahl ausschließlich
+auf der Validierung. Die Modellmetadaten enthalten dann `test_evaluated: false`.
+Die finale numerische Analyse wird als Teil von `--workflow evaluate`
+ausgeführt und schreibt ihre Tabellen, ECDF- und Performance-Profile sowie
+Gap-over-Time- und Incumbent-over-Time-Vergleiche unter
+`06_Evaluation/results/numerical_analysis`.
 
 ## Ausführung
 
@@ -315,13 +322,76 @@ python3 -m pip check
 ### Pipeline starten
 
 ```bash
-python3 main.py
+.venv/bin/python main.py
+```
+
+Die aktuelle Konfiguration erzeugt die Instanzen und Trainingsdaten neu,
+trainiert die konfigurierten Vier-Feature-Modelle und startet anschließend die
+Solver. Die abschließende Evaluation ist ausgeschaltet.
+Einzelne Phasen lassen sich ausdrücklich starten:
+
+```bash
+.venv/bin/python main.py --workflow create-instances generate-training-data train-gnn
+.venv/bin/python main.py --workflow train-gnn
+.venv/bin/python main.py --workflow solve
+.venv/bin/python main.py --workflow evaluate
 ```
 
 `config.json` steuert die fünf Phasen `create_instances`,
 `generate_training_data`, `train_gnn`, `solve` und `evaluate`. Die optionale
 Auswertung simuliert die gespeicherten Solver-Schedules unabhängig nach und
-schreibt die Vergleichstabellen nach `06_Evaluation/results`. Die Instanzgrößen für
+schreibt die Vergleichstabellen nach `06_Evaluation/results`.
+Die Lösungsdateien liegen unter `02_data/fjsp_solutions`;
+derselbe konfigurierte Pfad wird beim Schreiben und Lesen verwendet. Bei
+`solve evaluate` werden ausschließlich die Dateien des aktuellen Laufs verglichen.
+Ein alleiniger `evaluate`-Aufruf liest den konfigurierten Lösungsordner.
+Kommandozeilenphasen überschreiben die Schalter aus der Konfiguration auch für
+die nachgelagerte Auswertung.
+
+Jede neu erzeugte Lösungsdatei enthält neben Status, Incumbent-Anzahl,
+Zielfunktionswert, finaler Schranke, Gap und Laufzeit auch die Zahl der
+Branch-and-Bound-Knoten, die stärkste während der Bearbeitung des Wurzelknotens
+beobachtete Schranke, Zeitpunkt und Zielfunktionswert des ersten sowie des
+besten Incumbents. Zusätzlich entsteht neben jeder neuen Lösungsdatei eine
+`*_solver_progress.csv` mit dem zeitlichen Verlauf von Incumbent, Best Bound,
+relativem Gap, Knotenzahl und Lösungszahl. Änderungen dieser zentralen Größen,
+der erste weitere MIP-/MIPNODE-Callback nach jeweils mindestens 0,25 Sekunden
+ohne Änderung sowie der Endzustand werden gespeichert. Modellgrößen werden als
+kontinuierliche, binäre und
+ganzzahlige Variablen, lineare Matrix-Nonzeros sowie lineare, quadratische,
+allgemeine und nichtlineare Constraints gespeichert. Die Wurzelknotenschranke
+ist damit eine Callback-basierte Root-Bound einschließlich der am Wurzelknoten
+wirksamen Schnitte, nicht der Wert einer separat gelösten, schnittfreien
+LP-Relaxation. `evaluate_solutions.py` übernimmt diese Werte in die
+Schedule-CSV und ergänzt die Indikatoren Incumbent vorhanden, optimal oder
+Gap höchstens 1 %, Zeitlimit mit Incumbent und keine zulässige Lösung gefunden.
+
+`solve.nominal_warm_start` steuert die gemeinsame nominale Startlösung und ist
+standardmäßig `false`. Bei `false` erhalten die Modelle keine übergebene
+Startlösung und laufen in der Reihenfolge von `solve.solvers`.
+Bei `true` muss `gurobi` in `solve.solvers` stehen: Es wird je Instanz zuerst
+gelöst, und alle GNNs sowie das nichtlineare Modell erhalten dessen gleiche
+Startlösung als veränderbaren Gurobi-Startvorschlag. Liefert das nominale Modell
+keinen Incumbent, laufen die anderen Modelle ohne diesen Vorschlag weiter.
+Alle Solver laufen nacheinander im selben Python-Prozess wie `main.py`.
+Es werden keine zusätzlichen Solverprozesse gestartet. `solve_manifest.json`
+enthält die bereits abgeschlossenen Läufe. Ein nativer Solverabsturz kann den
+gesamten Lauf beenden. Die normale Lösezeitgrenze bleibt 60 Sekunden.
+
+Die Auswertung berechnet die lokale deterministische Pufferformel für alle
+zulässigen Pläne erneut, einschließlich der nominalen Referenz. `result_table.csv`
+enthält `reference_total_cost`, `reference_due_date_violation`,
+`maximum_repair_buffer_underestimation` und `jobs_underestimated_by_more_than_one`.
+Die Referenzkosten verwenden die gespeicherten Kostenkoeffizienten und
+`max(0, C_job + B_reference - due_date)`, auch für die nominalen Pläne. Ein fehlender Incumbent erhält keine erfundenen
+Kosten oder Pufferfehler. `job_comparison.csv` enthält die einzelnen Jobfehler.
+
+Mit `--config PFAD` ist ein separater Versuch ohne Änderung der Hauptkonfiguration
+möglich. Relative Datenpfade beziehen sich weiterhin auf das Repository. Der
+Integrationstest und seine Konfigurationen liegen unter
+`06_Evaluation/results/pipeline_integration_20260910`.
+
+Die Instanzgrößen für
 Training und die in-distribution Evaluation werden zentral über
 `instances.generation.num_jobs` und `num_machines` festgelegt.
 

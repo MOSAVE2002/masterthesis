@@ -97,7 +97,7 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
                 rows = list(reader)
             self.assertEqual(len(rows), 1)
             self.assertIn(
-                "simulated_expected_completion_delay", reader.fieldnames
+                generator.TARGET_COLUMN, reader.fieldnames
             )
             self.assertNotIn("simulation_parameters", reader.fieldnames)
             self.assertNotIn("job_ontime_probabilities", reader.fieldnames)
@@ -106,8 +106,8 @@ class TrainingGenerationResilienceTests(unittest.TestCase):
                 generator.SIMULATION_LABEL_METHOD,
             )
             self.assertEqual(
-                summary["label"]["simulation"]["label_replications"],
-                10_000,
+                summary["label"]["parameters"]["quadrature_points"],
+                128,
             )
             self.assertEqual(
                 summary["graph"]["machine_predecessor_edge_scope"],

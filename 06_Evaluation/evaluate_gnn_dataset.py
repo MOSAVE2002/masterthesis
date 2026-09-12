@@ -293,12 +293,28 @@ def _write_histogram(
         )
         axis.set_title(f"{split}: {len(values)} Job-Labels")
         axis.set_ylabel("Anzahl")
-    axes[-1, 0].set_xlabel("Erwarteter Reparaturpuffer")
+    axes[-1, 0].set_xlabel("Erwarteter Reparaturpuffer [ZE]")
     figure.suptitle("Verteilung der GNN-Reparaturpuffer-Labels", fontsize=14)
     figure.tight_layout()
     figure.savefig(pdf_path, bbox_inches="tight")
     figure.savefig(png_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
+
+
+def _due_factor_plot_groups(graph_rows, maximum_groups=12):
+    """Bound figure height for calibrated, almost-continuous due-date factors."""
+    values_by_factor = defaultdict(list)
+    for row in graph_rows:
+        factor = row["due_date_factor"]
+        if factor is not None:
+            values_by_factor[factor].extend(row["probabilities"])
+    factors = sorted(values_by_factor)
+    if not factors:
+        return []
+    group_size = max(1, math.ceil(len(factors) / maximum_groups))
+    return [(part[0], part[-1], [value for factor in part for value in values_by_factor[factor]])
+            for start in range(0, len(factors), group_size)
+            if (part := factors[start:start + group_size])]
 
 
 def _write_due_factor_histogram(
@@ -310,12 +326,8 @@ def _write_due_factor_histogram(
     histogram_bins,
 ):
     """Plot individual job labels by due-date factor, not graph minima."""
-    values_by_factor = defaultdict(list)
-    for row in graph_rows:
-        factor = row["due_date_factor"]
-        if factor is not None:
-            values_by_factor[factor].extend(row["probabilities"])
-    if not values_by_factor:
+    groups = _due_factor_plot_groups(graph_rows)
+    if not groups:
         return False
 
     cache_directory = Path(tempfile.gettempdir()) / "fjsp-matplotlib-cache"
@@ -327,26 +339,24 @@ def _write_due_factor_histogram(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    factors = sorted(values_by_factor)
     figure, axes = plt.subplots(
-        len(factors),
+        len(groups),
         1,
-        figsize=(10, max(3.2, 3.0 * len(factors))),
+        figsize=(10, max(3.2, 3.0 * len(groups))),
         squeeze=False,
     )
-    for axis, factor in zip(axes[:, 0], factors):
-        values = values_by_factor[factor]
+    for axis, (lower, upper, values) in zip(axes[:, 0], groups):
         axis.hist(
             values,
             bins=int(histogram_bins),
             color="#4C78A8",
             edgecolor="white",
         )
-        axis.set_title(
-            f"Due-Date-Faktor {factor:.2f}: {len(values)} Job-Labels"
-        )
+        label = (f"Due-Date-Faktor {lower:.3f}" if lower == upper
+                 else f"Due-Date-Faktorbereich {lower:.3f}–{upper:.3f}")
+        axis.set_title(f"{label}: {len(values)} Job-Labels")
         axis.set_ylabel("Anzahl")
-    axes[-1, 0].set_xlabel("Erwarteter Reparaturpuffer")
+    axes[-1, 0].set_xlabel("Erwarteter Reparaturpuffer [ZE]")
     figure.suptitle(
         "Job-Level-Trainingslabels nach Due-Date-Faktor", fontsize=14
     )
@@ -407,6 +417,7 @@ def run_dataset_evaluation(
         histogram_bins,
     )
     metadata = {
+        "time_unit": "ZE",
         "status": "evaluated",
         "dataset_directory": str(dataset_directory),
         "available_splits": list(source_paths),

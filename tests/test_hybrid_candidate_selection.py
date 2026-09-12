@@ -459,7 +459,7 @@ class HybridCandidateSelectionTests(unittest.TestCase):
 
         self.assertEqual(candidate["nonlinear_job_probabilities"], [0.0])
 
-    def test_fixed_schedule_uses_propagated_simulation_delay_as_gnn_label(self):
+    def test_fixed_schedule_uses_deterministic_local_buffer_as_gnn_label(self):
         schedule = generator.FixedSchedule(
             operations=(0,),
             selected_machines={0: 0},
@@ -488,16 +488,16 @@ class HybridCandidateSelectionTests(unittest.TestCase):
         ) as simulate:
             generator._evaluate_fixed_schedule_simulation(
                 candidate,
-                {"label_replications": 8, "random_seed": 7},
             )
 
-        simulate.assert_called_once()
+        simulate.assert_not_called()
         self.assertEqual(
-            candidate["row"][generator.TARGET_COLUMN], "[4.5]"
+            json.loads(candidate["row"][generator.TARGET_COLUMN]),
+            candidate["local_job_repair_buffers"]
         )
-        self.assertEqual(candidate["job_probabilities"], [0.875])
-        self.assertEqual(candidate["min_job_probability"], 0.875)
-        self.assertEqual(candidate["row"]["simulation_replications"], 8)
+        self.assertGreater(candidate["local_job_repair_buffers"][0], 0.0)
+        self.assertEqual(candidate["row"]["simulation_replications"], 0)
+        self.assertLess(max(candidate["local_buffer_numerical_errors"]), 1e-6)
 
     def test_candidate_uses_stored_gurobi_timing(self):
         def variable(value):
@@ -543,7 +543,7 @@ class HybridCandidateSelectionTests(unittest.TestCase):
         )
         self.assertEqual(
             json.loads(candidate["row"]["gnn_node_features"])[0][:2],
-            [0.5, 0.75],
+            [7.5 / 24.0, 0.5 * 24.0 / 10.0],
         )
 
     def test_candidate_uses_direct_u_machine_edges_for_gnn(self):

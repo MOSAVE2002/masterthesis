@@ -29,6 +29,7 @@ class SimulationConfig:
     pilot_replications: int = 256
     label_replications: int = 10_000
     random_seed: int = 42
+    model: str = "preempt_resume"
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ def normalize_simulation_config(config=None, **overrides) -> SimulationConfig:
     if unknown:
         raise ValueError(f"Unknown simulation parameters: {sorted(unknown)}")
     result = SimulationConfig(**values)
+    if result.model != "preempt_resume":
+        raise ValueError("Execution evaluation requires model='preempt_resume'.")
     if int(result.pilot_replications) <= 0:
         raise ValueError("pilot_replications must be positive.")
     if int(result.label_replications) <= 0:

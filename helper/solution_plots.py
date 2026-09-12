@@ -183,7 +183,7 @@ def plot_solution_schedule(variables, instance, filename, title=None):
         color="red",
         fontsize=12,
     )
-    axis.set_xlabel("Zeit")
+    axis.set_xlabel("Zeit [ZE]")
     axis.set_ylabel("Ressourcen")
     axis.set_yticks(machines)
     axis.set_yticklabels([f"Maschine {machine + 1}" for machine in machines])

@@ -1,4 +1,4 @@
-"""Shared economic objective and soft service constraints for all FJSP models."""
+"""Economic cost and unscaled buffered due dates from the thesis formulation."""
 
 from __future__ import annotations
 
@@ -8,78 +8,13 @@ from gurobipy import GRB
 from helper.stochastic_fjsp import ensure_stochastic_parameters
 
 
-def validate_service_level(service_level):
-    """Return an admissible chance-constraint service level."""
-    service_level = float(service_level)
-    if not 0.0 < service_level < 1.0:
-        raise ValueError("service_level must lie strictly between 0 and 1.")
-    return service_level
-
-
-def add_soft_service_level_constraints(
-    model,
-    variables,
-    instance,
-    job_expected_delays=None,
-    *,
-    service_level=0.90,
-):
-    """Add soft Markov service constraints based on expected job delays.
-
-    For nonnegative stochastic completion delay D_j, Markov's inequality gives
-    P(D_j <= s_j) >= 1 - E[D_j] / s_j.  Consequently, zero violation in the
-    constraint below requires the conservative slack E[D_j] / (1 - alpha).
-    """
-    service_level = validate_service_level(service_level)
-    expected_delays = job_expected_delays or {
-        job: 0.0 for job in instance.job_end_operations
-    }
-    scale = 1.0 / (1.0 - service_level)
-    service_buffers = {
-        job: scale * expected_delays[job]
-        for job in instance.job_end_operations
-    }
-    jobs = list(instance.job_end_operations)
-    violation = model.addVars(
-        jobs,
-        lb=0.0,
-        vtype=GRB.CONTINUOUS,
-        name="L_service",
-    )
-    constraints = {}
-    for job, end_operation in instance.job_end_operations.items():
-        constraints[job] = model.addConstr(
-            variables["C"][end_operation] + service_buffers[job]
-            <= float(instance.due_dates[job]) + violation[job],
-            name=f"soft_service_level[{job}]",
-        )
-    variables.update({
-        "service_level_constraints": constraints,
-        "due_date_constraints": constraints,
-        "job_service_level_violation": violation,
-        "job_expected_delays": expected_delays,
-        "job_service_level_buffers": service_buffers,
-        # Compatibility aliases for evaluation code written before the
-        # service-level formulation replaced ordinary tardiness.
-        "job_tardiness": violation,
-        "job_expected_repair_buffers": expected_delays,
-        "service_level": service_level,
-        "service_tail_probability": 1.0 - service_level,
-        "service_buffer_scale": scale,
-        "service_constraint_is_soft": True,
-        "service_constraint_bound": "markov_expected_completion_delay",
-        "due_dates": dict(instance.due_dates),
-    })
-    return constraints
-
-
 def add_due_date_tardiness_constraints(
     model,
     variables,
     instance,
     job_repair_buffers=None,
 ):
-    """Compatibility wrapper for the former unscaled soft due-date model."""
+    """Add C_end + B_job <= due_date + L_job, with no service-level factor."""
     buffers = job_repair_buffers or {
         job: 0.0 for job in instance.job_end_operations
     }
@@ -94,22 +29,26 @@ def add_due_date_tardiness_constraints(
             <= float(instance.due_dates[job]) + tardiness[job],
             name=f"due_date_with_tardiness[{job}]",
         )
+    # Keep legacy dictionary aliases for readers of archived solution formats.
+    # None of these aliases introduces a service grade or scales the buffer.
     variables.update({
         "due_date_constraints": constraints,
         "job_service_level_violation": tardiness,
         "job_expected_delays": buffers,
         "job_service_level_buffers": buffers,
         "job_tardiness": tardiness,
+        "job_due_date_violation": tardiness,
+        "job_repair_buffers": buffers,
         "job_expected_repair_buffers": buffers,
         "service_constraint_is_soft": True,
-        "service_constraint_bound": "nominal_or_unscaled_compatibility",
+        "service_constraint_bound": "unscaled_expected_local_repair_buffer",
         "due_dates": dict(instance.due_dates),
     })
     return constraints
 
 
 def add_nominal_due_date_constraints(model, variables, instance):
-    """Compatibility wrapper for soft nominal due dates."""
+    """Add nominal tardiness constraints (B_job = 0)."""
     constraints = add_due_date_tardiness_constraints(
         model, variables, instance
     )
@@ -123,7 +62,7 @@ def add_robust_due_date_constraints(
     instance,
     job_repair_buffers,
 ):
-    """Compatibility wrapper for the former unscaled repair-buffer model."""
+    """Add the unscaled repair-buffer due-date condition."""
     constraints = add_due_date_tardiness_constraints(
         model,
         variables,
@@ -145,7 +84,7 @@ def add_economic_cost_objective(
     service_violation_cost_per_time=1.0,
     tardiness_cost_per_time=None,
 ):
-    """Minimize processing, operating and soft service-violation costs."""
+    """Minimize processing, operating and buffered due-date violation costs."""
     ensure_stochastic_parameters(instance)
     facility_cost_per_time = float(facility_cost_per_time)
     if facility_cost_per_time < 0.0:
@@ -207,10 +146,10 @@ def add_economic_cost_objective(
         "total_tardiness": total_violation,
         "tardiness_cost": service_violation_cost,
         "total_cost": total_cost,
-        "objective_mode": "minimize_economic_cost_with_soft_service_level",
+        "objective_mode": "minimize_economic_cost_with_buffered_tardiness",
         "objective_definition": (
             "sum_{i,k} c_k*p_ik*Y_ik + c_B*C_max + "
-            "c_SL*sum_j L_service_j"
+            "c_D*sum_j L_j"
         ),
     })
     return total_cost

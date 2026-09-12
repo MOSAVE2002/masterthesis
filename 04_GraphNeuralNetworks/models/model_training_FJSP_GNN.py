@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch_geometric.data import Data
+from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import global_add_pool
 
@@ -32,7 +32,11 @@ from helper.sequence_setup import (
     reliability_node_feature_names,
 )
 from helper.surrogate_constraint import configured_constraint_type, target_column
-from helper.stochastic_fjsp import normalize_machine_profile_config
+from helper.time_units import normalize_time_unit
+from helper.stochastic_fjsp import (
+    normalize_machine_profile_config,
+    normalize_training_parameter_jitter,
+)
 
 
 _instances = importlib.import_module("01_generator.instance_generator")
@@ -40,7 +44,7 @@ _architectures = importlib.import_module(
     "04_GraphNeuralNetworks.models.gnn_architecture"
 )
 _simulation = importlib.import_module("05_Simulation.preempt_resume")
-SIMULATION_LABEL_METHOD = _simulation.EXPECTED_COMPLETION_DELAY_LABEL_METHOD
+from helper.local_buffer import LABEL_METHOD as SIMULATION_LABEL_METHOD, JOB_TARGET, LABEL_SOURCE, normalize_label_config
 
 SPLIT_DIRECTORIES = _instances.SPLIT_DIRECTORIES
 SPLIT_CSV_FILENAMES = _instances.SPLIT_CSV_FILENAMES
@@ -130,6 +134,8 @@ def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
         )
     with summary_path.open(encoding="utf-8") as file:
         summary = json.load(file)
+    if summary.get("status") != "completed":
+        raise ValueError("Dataset generation is incomplete; finish generation before training.")
     label = summary.get("label") or {}
     if label.get("target_column") != target_name:
         raise ValueError(
@@ -139,12 +145,19 @@ def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
     label_method = label.get("label_method")
     if label_method != SIMULATION_LABEL_METHOD:
         raise ValueError(
-            "The active GNN pipeline requires propagated Monte-Carlo "
+            "The active GNN pipeline requires deterministic local buffer "
             f"labels, got {label_method!r}."
         )
+    if label.get("source") != LABEL_SOURCE:
+        raise ValueError("Dataset label source does not match local buffer expectations.")
+    if not label.get("parameters"):
+        raise ValueError("Dataset lacks deterministic label parameters.")
+    normalize_label_config(label["parameters"])
     graph = summary.get("graph") or {}
     expected_graph = {
         "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
+        "service_scope": "job",
+        "feature_names": reliability_node_feature_names(),
         "include_machine_predecessor_edges": True,
         "machine_predecessor_edge_scope": "direct",
         "include_job_precedence_edges": True,
@@ -156,7 +169,7 @@ def _load_label_metadata(csv_path: Path, target_name: str) -> tuple[str, dict]:
         )
     return label_method, {
         "source": label.get("source"),
-        "simulation": label.get("simulation"),
+        "parameters": label.get("parameters"),
     }
 
 
@@ -164,7 +177,8 @@ def _validate_dataset_context(
     csv_path,
     *,
     machine_profile_config,
-    time_unit_minutes,
+    training_parameter_jitter=None,
+    time_unit,
 ):
     summary_path = Path(csv_path).parent.parent / "generation_summary.json"
     with summary_path.open(encoding="utf-8") as file:
@@ -182,11 +196,15 @@ def _validate_dataset_context(
             "Dataset machine profiles differ from the training config. "
             "Regenerate the GNN dataset before training."
         )
-    if not math.isclose(
-        float(summary.get("time_unit_minutes", -1.0)),
-        float(time_unit_minutes),
-        rel_tol=0.0,
-        abs_tol=1e-12,
+    if normalize_training_parameter_jitter(
+        summary.get("training_parameter_jitter")
+    ) != normalize_training_parameter_jitter(training_parameter_jitter):
+        raise ValueError(
+            "Dataset training jitter differs from the training config. "
+            "Regenerate the GNN dataset before training."
+        )
+    if normalize_time_unit(summary, require_metadata=True) != normalize_time_unit(
+        time_unit
     ):
         raise ValueError(
             "Dataset time unit differs from the training config. "
@@ -231,7 +249,11 @@ def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
                 raise ValueError("Reliability parameters differ inside one CSV.")
             names = json.loads(row["gnn_feature_names"])
             if names != reliability_node_feature_names():
-                raise ValueError(f"Unexpected node feature order: {names}")
+                raise ValueError(
+                    f"Unexpected node feature order: {names}. Expected "
+                    f"{reliability_node_feature_names()}. Regenerate the "
+                    "dataset features before training."
+                )
             if feature_names is None:
                 feature_names = names
             elif feature_names != names:
@@ -243,6 +265,8 @@ def load_graphs(csv_path: Path, target_name: str = TARGET_COLUMN):
             x = torch.tensor(
                 json.loads(row["gnn_node_features"]), dtype=torch.float32
             )
+            if x.ndim != 2 or x.shape[1] != len(names):
+                raise ValueError("Node feature values do not match feature metadata.")
             graphs.append(Data(
                 x=x,
                 edge_index=_edge_index(active_edges),
@@ -451,6 +475,7 @@ def _evaluate(
         for batch in loader:
             batch = batch.to(next(model.parameters()).device)
             if zero_edges:
+                batch = batch.clone()
                 batch.edge_index = batch.edge_index.new_empty((2, 0))
                 batch.job_edge_index = batch.job_edge_index.new_empty((2, 0))
             job_prediction, _ = model(batch, return_nodes=True)
@@ -477,6 +502,9 @@ def _evaluate(
         "job_overestimation_max": float(F.relu(job_error).max()),
         "overestimation_rate": float((job_error > 0.0).float().mean()),
         "underestimation_rate": float((job_error < 0.0).float().mean()),
+        "maximum_absolute_error": float(job_error.abs().max()),
+        "absolute_error_p95": float(torch.quantile(job_error.abs(), 0.95)),
+        "job_underestimation_max": float(F.relu(-job_error).max()),
     }
 
 
@@ -487,10 +515,34 @@ def _cpu_state(model):
     }
 
 
+class CachedGraphBatches:
+    """Fixed graph batches, reshuffled by batch each epoch to avoid recollation.
+
+    This is an explicit training option, not identical to reshuffling individual
+    graphs each epoch. Evaluation ablations must clone these reusable batches.
+    """
+
+    def __init__(self, graphs, batch_size, *, shuffle=False, seed=42):
+        self.dataset = graphs
+        indices = list(range(len(graphs)))
+        if shuffle:
+            random.Random(seed).shuffle(indices)
+        self.batches = [Batch.from_data_list([graphs[i] for i in indices[k:k + batch_size]])
+                        for k in range(0, len(indices), batch_size)]
+        self.shuffle, self.seed, self.epoch = shuffle, int(seed), 0
+
+    def __iter__(self):
+        self.epoch += 1
+        order = list(range(len(self.batches)))
+        if self.shuffle:
+            random.Random(self.seed * 100000 + self.epoch).shuffle(order)
+        return (self.batches[i] for i in order)
+
+
 def train_from_file(
     csv_path,
     validation_csv_path,
-    test_csv_path,
+    test_csv_path=None,
     *,
     seed=42,
     epochs=500,
@@ -512,9 +564,12 @@ def train_from_file(
     overestimation_weight=2.0,
     huber_delta=0.05,
     machine_profile_config=None,
-    time_unit_minutes=1.0,
+    training_parameter_jitter=None,
+    time_unit="ZE",
     output_stem=None,
     model_dir=MODEL_DIR,
+    cache_batches=False,
+    device=None,
 ):
     architecture = validate_architecture(
         graph_mode, convolution, aggregation, pooling
@@ -524,18 +579,22 @@ def train_from_file(
     _validate_dataset_context(
         csv_path,
         machine_profile_config=machine_profile_config,
-        time_unit_minutes=time_unit_minutes,
+        training_parameter_jitter=training_parameter_jitter,
+        time_unit=time_unit,
     )
     _validate_dataset_context(
         validation_csv_path,
         machine_profile_config=machine_profile_config,
-        time_unit_minutes=time_unit_minutes,
+        training_parameter_jitter=training_parameter_jitter,
+        time_unit=time_unit,
     )
-    _validate_dataset_context(
-        test_csv_path,
-        machine_profile_config=machine_profile_config,
-        time_unit_minutes=time_unit_minutes,
-    )
+    if test_csv_path is not None:
+        _validate_dataset_context(
+            test_csv_path,
+            machine_profile_config=machine_profile_config,
+            training_parameter_jitter=training_parameter_jitter,
+            time_unit=time_unit,
+        )
     train_graphs, feature_names, graph_config, label_method = load_graphs(
         Path(csv_path)
     )
@@ -549,8 +608,9 @@ def train_from_file(
     valid_graphs, valid_names, valid_config, valid_label_method = load_graphs(
         Path(validation_csv_path)
     )
-    test_graphs, test_names, test_config, test_label_method = load_graphs(
-        Path(test_csv_path)
+    test_graphs, test_names, test_config, test_label_method = (
+        load_graphs(Path(test_csv_path)) if test_csv_path is not None
+        else ([], feature_names, graph_config, label_method)
     )
     if feature_names != valid_names or feature_names != test_names:
         raise ValueError("Feature names differ between data splits.")
@@ -559,16 +619,18 @@ def train_from_file(
     if label_method != valid_label_method or label_method != test_label_method:
         raise ValueError("Repair-buffer label methods differ between splits.")
 
-    device = _device()
-    train_loader = DataLoader(
-        train_graphs, batch_size=min(batch_size, len(train_graphs)), shuffle=True
+    device = _device() if device is None else torch.device(device)
+    loader_class = CachedGraphBatches if cache_batches else DataLoader
+    train_loader = loader_class(
+        train_graphs, batch_size=min(batch_size, len(train_graphs)), shuffle=True,
+        **({"seed": seed} if cache_batches else {}),
     )
-    valid_loader = DataLoader(
+    valid_loader = loader_class(
         valid_graphs, batch_size=min(batch_size, len(valid_graphs))
     )
-    test_loader = DataLoader(
+    test_loader = loader_class(
         test_graphs, batch_size=min(batch_size, len(test_graphs))
-    )
+    ) if test_graphs else None
     initial_repair_buffer = float(torch.cat([
         graph.job_y.view(-1) for graph in train_graphs
     ]).mean())
@@ -590,16 +652,19 @@ def train_from_file(
     }
     best_state, best_loss, best_epoch = _cpu_state(model), math.inf, 0
     started = time.perf_counter()
+    history = []
     for epoch in range(1, int(epochs) + 1):
         training_loss = _train_epoch(
             model, train_loader, optimizer, **loss_parameters
         )
         if epoch == 1 or epoch % int(validation_interval) == 0 or epoch == epochs:
             valid_metrics = _evaluate(model, valid_loader)
+            history.append({"epoch": epoch, "train_loss": training_loss,
+                            "validation_mae": valid_metrics["mae"]})
             selection_loss = valid_metrics["mae"]
             print(
                 f"epoch={epoch:04d} train_loss={training_loss:.6g} "
-                f"valid_mae={valid_metrics['mae']:.6g}",
+                f"valid_mae={valid_metrics['mae']:.6g} ZE",
                 flush=True,
             )
             if selection_loss < best_loss - 1e-10:
@@ -611,24 +676,25 @@ def train_from_file(
                     "EARLY_STOPPING | "
                     f"epoch={epoch} | best_epoch={best_epoch} | "
                     f"patience_epochs={int(early_stopping_patience)} | "
-                    f"best_valid_mae={best_loss:.6g} | "
-                    f"current_valid_mae={selection_loss:.6g}",
+                    f"best_valid_mae={best_loss:.6g} ZE | "
+                    f"current_valid_mae={selection_loss:.6g} ZE",
                     flush=True,
                 )
                 break
     elapsed = time.perf_counter() - started
     model.load_state_dict(best_state)
     valid_metrics = _evaluate(model, valid_loader)
-    test_metrics = _evaluate(model, test_loader)
+    test_metrics = _evaluate(model, test_loader) if test_loader is not None else None
+    ablation_loader = test_loader if test_loader is not None else valid_loader
     zero_edge_metrics = (
-        _evaluate(model, test_loader, zero_edges=True)
+        _evaluate(model, ablation_loader, zero_edges=True)
         if architecture["convolution"] in MESSAGE_PASSING_CONVOLUTIONS
         else None
     )
     if (
         enforce_graph_influence
         and zero_edge_metrics is not None
-        and test_metrics["mae"] >= zero_edge_metrics["mae"]
+        and (test_metrics or valid_metrics)["mae"] >= zero_edge_metrics["mae"]
     ):
         raise RuntimeError(
             f"{architecture['convolution']} did not outperform its "
@@ -659,7 +725,8 @@ def train_from_file(
         "num_graphsage_layers": int(num_graphsage_layers),
         "hidden_channels": int(hidden_channels),
         "output_head": RELIABILITY_GNN_OUTPUT_HEAD,
-        "job_target": "job_expected_completion_delay",
+        "job_target": JOB_TARGET,
+        "label_source": LABEL_SOURCE,
         "job_repair_buffer_label_method": label_method,
         "graph_schema": RELIABILITY_GNN_GRAPH_SCHEMA,
         "message_passing": (
@@ -680,7 +747,10 @@ def train_from_file(
         "machine_profile_config": normalize_machine_profile_config(
             machine_profile_config
         ),
-        "time_unit_minutes": float(time_unit_minutes),
+        "training_parameter_jitter": normalize_training_parameter_jitter(
+            training_parameter_jitter
+        ),
+        "time_unit": normalize_time_unit(time_unit),
         "seed": int(seed),
         "loss": loss_parameters,
         "epochs_completed": int(epoch),
@@ -693,6 +763,12 @@ def train_from_file(
         "validation_metrics": valid_metrics,
         "test_metrics": test_metrics,
         "zero_edge_metrics": zero_edge_metrics,
+        "zero_edge_split": "test" if test_loader is not None else "valid",
+        "train_metrics": _evaluate(model, train_loader),
+        "test_evaluated": test_loader is not None,
+        "optimizer": {"learning_rate": float(learning_rate),
+                      "batch_size": int(batch_size), "cache_batches": bool(cache_batches)},
+        "history": history,
     }
     with metadata_path.open("w", encoding="utf-8") as file:
         json.dump(metadata, file, indent=2)
@@ -700,9 +776,10 @@ def train_from_file(
     return model_path, metadata_path
 
 
-def train_from_config(seed=42, csv_path=None):
-    with CONFIG_PATH.open(encoding="utf-8") as file:
-        config = json.load(file)
+def train_from_config(seed=42, csv_path=None, config=None):
+    if config is None:
+        with CONFIG_PATH.open(encoding="utf-8") as file:
+            config = json.load(file)
     training = config["training"]
     gnn = training["gnn"]
     optimizer = gnn.get("optimizer", {})
@@ -793,13 +870,15 @@ def train_from_config(seed=42, csv_path=None):
                     ),
                     machine_profile_config=config["instances"]["generation"]
                     ["machine_profiles"],
-                    time_unit_minutes=float(
-                        config["instances"]["generation"].get(
-                            "time_unit_minutes", 1.0
-                        )
+                    training_parameter_jitter=config["instances"][
+                        "generation"
+                    ].get("training_parameter_jitter"),
+                    time_unit=normalize_time_unit(
+                        config["instances"]["generation"]
                     ),
                     output_stem=stem,
                     model_dir=output_dir,
+                    cache_batches=bool(optimizer.get("cache_batches", False)),
                 ))
             finally:
                 _release_memory()

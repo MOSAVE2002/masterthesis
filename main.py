@@ -9,8 +9,17 @@ import math
 import random
 from pathlib import Path
 
-from helper.sequence_setup import normalize_reliability_graph_config
-from helper.stochastic_fjsp import normalize_machine_profile_config
+from helper.time_units import normalize_time_unit
+
+from helper.sequence_setup import (
+    normalize_reliability_graph_config, reliability_node_feature_names,
+    RELIABILITY_GNN_GRAPH_SCHEMA,
+)
+from helper.pipeline_solver import run_pipeline_solver
+from helper.stochastic_fjsp import (
+    normalize_machine_profile_config,
+    normalize_training_parameter_jitter,
+)
 from helper.start_solve_ins import solve_instances_with_solver
 from helper.surrogate_constraint import target_column
 
@@ -36,6 +45,8 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Run selected phases of the FJSP pipeline."
     )
+    parser.add_argument('--config', type=Path, default=CONFIG_PATH,
+                        help='Configuration file; relative data paths stay relative to the repository.')
     parser.add_argument(
         "--workflow",
         nargs="+",
@@ -46,9 +57,28 @@ def _parse_args(argv=None):
             f"Available phases: {', '.join(WORKFLOW_PHASES)}, all"
         ),
     )
+    parser.add_argument(
+        "--prepare-solve-instances",
+        action="store_true",
+        help="create the configured generated solve instances without solving",
+    )
+    parser.add_argument(
+        "--solve-plan-index",
+        type=int,
+        help="solve only the zero-based evaluation case at this plan index",
+    )
     args = parser.parse_args(argv)
     if args.workflow and "all" in args.workflow and len(args.workflow) > 1:
         parser.error("'all' cannot be combined with other workflow phases")
+    if args.prepare_solve_instances and args.workflow:
+        parser.error("--prepare-solve-instances cannot be combined with --workflow")
+    if args.prepare_solve_instances and args.solve_plan_index is not None:
+        parser.error(
+            "--prepare-solve-instances cannot be combined with "
+            "--solve-plan-index"
+        )
+    if args.solve_plan_index is not None and args.solve_plan_index < 0:
+        parser.error("--solve-plan-index must be non-negative")
     return args
 
 
@@ -121,7 +151,10 @@ def _configured_instance_splits(config, specs):
             ).get("relative_deviation"),
             machine_parameter_ranges=generation.get("machine_parameters"),
             machine_profile_config=generation.get("machine_profiles"),
-            time_unit_minutes=generation.get("time_unit_minutes", 1.0),
+            training_parameter_jitter=generation.get(
+                "training_parameter_jitter"
+            ),
+            time_unit=normalize_time_unit(generation),
         )
 
     due_date_config = _due_date_generation_config(config)
@@ -194,7 +227,7 @@ def _generate_data(config, splits):
         "output_directory": data["output_directory"],
         "random_seed": int(data.get("random_seed", 42)),
         "samples_per_instance": int(data["samples_per_instance"]),
-        "simulation": data.get("simulation"),
+        "labels": data.get("labels"),
         "instance_failure_handling": data.get(
             "instance_failure_handling"
         ),
@@ -205,9 +238,10 @@ def _generate_data(config, splits):
         "machine_profile_config": config["instances"]["generation"][
             "machine_profiles"
         ],
-        "time_unit_minutes": config["instances"]["generation"].get(
-            "time_unit_minutes", 1.0
+        "training_parameter_jitter": config["instances"]["generation"].get(
+            "training_parameter_jitter"
         ),
+        "time_unit": normalize_time_unit(config["instances"]["generation"]),
         "adaptive_due_dates": data.get("adaptive_due_dates"),
         "reliability_graph": config["constraint"]["weibull"][
             "reliability_graph"
@@ -221,7 +255,7 @@ def _train(config):
     trainer = importlib.import_module(
         "04_GraphNeuralNetworks.models.model_training_FJSP_GNN"
     ).train_from_config
-    return trainer(seed=int(gnn.get("seed", 42)))
+    return trainer(seed=int(gnn.get("seed", 42)), config=config)
 
 
 def _in_distribution_plan(config, splits):
@@ -510,7 +544,8 @@ def _generated_tier_plan(config, tier_name):
                 due_date_config=due_date_config,
                 instance_postprocessor=instance_postprocessor,
                 instance_name_suffix=suffix,
-                time_unit_minutes=generation.get("time_unit_minutes", 1.0),
+                physical_instance_namespace=tier_name,
+                time_unit=normalize_time_unit(generation),
             )
         elif reuse_existing and existing_paths:
             expected_set = {path.resolve() for path in expected_paths}
@@ -668,25 +703,33 @@ def _trained_models(config):
                 )
             with metadata_path.open(encoding="utf-8") as file:
                 metadata = json.load(file)
+            if (metadata.get('input_size') != 4
+                    or metadata.get('feature_names') != reliability_node_feature_names()
+                    or metadata.get('graph_schema') != RELIABILITY_GNN_GRAPH_SCHEMA
+                    or metadata.get('target_column') != target):
+                raise ValueError(f'GNN metadata is incompatible with the four-feature pipeline: {metadata_path}')
             configured_profiles = normalize_machine_profile_config(
                 config["instances"]["generation"]["machine_profiles"]
             )
             metadata_profiles = metadata.get("machine_profile_config")
-            configured_time_unit = float(
+            configured_training_jitter = normalize_training_parameter_jitter(
                 config["instances"]["generation"].get(
-                    "time_unit_minutes", 1.0
+                    "training_parameter_jitter"
                 )
+            )
+            metadata_training_jitter = normalize_training_parameter_jitter(
+                metadata.get("training_parameter_jitter")
+            )
+            configured_time_unit = normalize_time_unit(
+                config["instances"]["generation"]
             )
             if (
                 metadata_profiles is None
                 or normalize_machine_profile_config(metadata_profiles)
                 != configured_profiles
-                or not math.isclose(
-                    float(metadata.get("time_unit_minutes", -1.0)),
-                    configured_time_unit,
-                    rel_tol=0.0,
-                    abs_tol=1e-12,
-                )
+                or metadata_training_jitter != configured_training_jitter
+                or normalize_time_unit(metadata, require_metadata=True)
+                != configured_time_unit
             ):
                 raise ValueError(
                     "Configured machine profiles or time units differ from "
@@ -713,9 +756,57 @@ def _solve_plan(
     models,
     common,
     stochastic,
+    records=None,
+    manifest_path=None,
 ):
+    use_nominal_start = config.get('solve', {}).get('nominal_warm_start', False)
+    if not isinstance(use_nominal_start, bool):
+        raise ValueError('solve.nominal_warm_start must be true or false.')
+    if use_nominal_start and 'gurobi' not in requested:
+        raise ValueError('solve.nominal_warm_start=true requires gurobi in solve.solvers.')
+    solver_order = (sorted(requested, key=lambda name: name != 'gurobi')
+                    if use_nominal_start else requested)
+    records = [] if records is None else records
+    output = _absolute(config['evaluation']['output_directory'])
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = (
+        output / 'solve_manifest.json'
+        if manifest_path is None else Path(manifest_path)
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    def run(**parameters):
+        nonlocal warm_start
+        if use_nominal_start and parameters['solver'] != 'gurobi' and warm_start is not None:
+            parameters['warm_start'] = warm_start
+        model_label = (
+            Path(parameters['model_path']).stem
+            if parameters.get('model_path') else '-'
+        )
+        print(
+            f"[Solve] starting instance={parameters['instance_name']} | "
+            f"solver={parameters['solver']} | model={model_label}",
+            flush=True,
+        )
+        result = run_pipeline_solver(parameters)
+        nominal_start = result.pop('warm_start', None)
+        if use_nominal_start and parameters['solver'] == 'gurobi':
+            warm_start = nominal_start
+        records.append(result)
+        manifest_path.write_text(json.dumps({'runs': records}, indent=2))
+        print(
+            f"[Solve] finished instance={parameters['instance_name']} | "
+            f"solver={parameters['solver']} | model={model_label} | "
+            f"status={result.get('status')} | runtime={result.get('runtime')}",
+            flush=True,
+        )
     solver_config = config["solvers"]["gurobi"]
-    for item in plan:
+    for instance_index, item in enumerate(plan, start=1):
+        warm_start = None
+        print(
+            f"[Solve] benchmark case {instance_index}/{len(plan)} | "
+            f"instance={item['instance_name']}",
+            flush=True,
+        )
         instance_args = {
             "instance_name": item["instance_name"],
             **(
@@ -723,15 +814,15 @@ def _solve_plan(
                 if item.get("instance_directory") else {}
             ),
         }
-        for solver in requested:
+        for solver in solver_order:
             if solver == "gurobi":
-                solve_instances_with_solver(
+                run(
                     solver=solver,
                     **instance_args,
                     **common,
                 )
             elif solver == "gurobi_nonlinear":
-                solve_instances_with_solver(
+                run(
                     solver=solver,
                     **instance_args,
                     **common,
@@ -740,7 +831,7 @@ def _solve_plan(
                 )
             elif solver == "gurobi_gnn":
                 for trained in models:
-                    solve_instances_with_solver(
+                    run(
                         solver=solver,
                         **instance_args,
                         **common,
@@ -750,9 +841,15 @@ def _solve_plan(
                     )
             else:
                 raise ValueError(f"Unknown solver: {solver}")
+        print(
+            f"[Solve] completed benchmark case {instance_index}/{len(plan)} | "
+            f"instance={item['instance_name']}",
+            flush=True,
+        )
+    return records
 
 
-def _solve(config, splits):
+def _solve(config, splits, solve_plan_index=None):
     evaluation = config["solve"].get("evaluation", {})
     enabled = {
         "in_distribution": evaluation.get("in_distribution", {}).get(
@@ -771,11 +868,13 @@ def _solve(config, splits):
 
     solver_config = config["solvers"]["gurobi"]
     common = dict(solver_config.get("common", {}))
+    common['solutions_directory'] = str(_absolute(config['evaluation']['solutions_directory']))
     common["facility_cost_per_time"] = float(
         config["objective"].get("facility_cost_per_time", 1.0)
     )
-    common["service_violation_cost_per_time"] = float(
-        config["objective"].get("service_violation_cost_per_time", 1.0)
+    common["tardiness_cost_per_time"] = float(
+        config["objective"].get("tardiness_cost_per_time",
+            config["objective"].get("service_violation_cost_per_time", 1.0))
     )
     constraint = config["constraint"]
     stochastic = {
@@ -783,9 +882,6 @@ def _solve(config, splits):
         "reliability_graph_config": constraint["weibull"][
             "reliability_graph"
         ],
-        "service_level": float(
-            constraint["weibull"].get("service_level", 0.90)
-        ),
     }
     requested = [name.lower() for name in config["solve"]["solvers"]]
     models = _trained_models(config) if "gurobi_gnn" in requested else []
@@ -799,14 +895,46 @@ def _solve(config, splits):
         ),
         ("stress", lambda: _generated_tier_plan(config, "stress")),
     )
+    planned_tiers = []
     for tier_label, build_plan in tier_plans:
         plan = build_plan()
         if not plan:
             continue
+        planned_tiers.append((tier_label, plan))
+
+    total_cases = sum(len(plan) for _, plan in planned_tiers)
+    if solve_plan_index is not None:
+        if solve_plan_index >= total_cases:
+            raise ValueError(
+                f"solve plan index {solve_plan_index} is outside the "
+                f"configured range 0..{total_cases - 1}."
+            )
+        offset = 0
+        for tier_label, plan in planned_tiers:
+            if solve_plan_index < offset + len(plan):
+                selected = plan[solve_plan_index - offset]
+                planned_tiers = [(tier_label, [selected])]
+                break
+            offset += len(plan)
+        print(
+            f"[Solve] selected array case {solve_plan_index + 1}/"
+            f"{total_cases}: {selected['instance_name']}",
+            flush=True,
+        )
+
+    records = []
+    for tier_label, plan in planned_tiers:
         print(
             f"[Solve] starting tier={tier_label} | instances={len(plan)}",
             flush=True,
         )
+        manifest_path = None
+        if solve_plan_index is not None:
+            output = _absolute(config['evaluation']['output_directory'])
+            manifest_path = (
+                output / 'solve_manifests'
+                / f"solve_manifest_task_{solve_plan_index:03d}.json"
+            )
         _solve_plan(
             config,
             plan,
@@ -814,27 +942,48 @@ def _solve(config, splits):
             models,
             common,
             stochastic,
+            records,
+            manifest_path=manifest_path,
         )
+    return records
 
 
-def _evaluate(config):
+def _prepare_solve_instances(config):
+    if not config["solve"].get("create_instances", False):
+        raise ValueError(
+            "solve.create_instances must be true to prepare solve instances."
+        )
+    total = 0
+    for tier_name in ("benchmark", "extrapolation", "stress"):
+        total += len(_generated_tier_plan(config, tier_name))
+    print(f"[Solve] prepared {total} generated evaluation cases", flush=True)
+    return total
+
+
+def _evaluate(config, solutions=None):
     evaluator = importlib.import_module(
         "06_Evaluation.evaluate_solutions"
     ).evaluate_from_config
-    result = evaluator(config)
+    result = evaluator(config, solutions=solutions)
     return result
 
 
 def main(argv=None):
     args = _parse_args(argv)
-    with CONFIG_PATH.open(encoding="utf-8") as file:
+    with args.config.open(encoding="utf-8") as file:
         config = json.load(file)
     workflow = _resolve_workflow(config["workflow"], args.workflow)
+    config['workflow'] = workflow
     generation = config["instances"]["generation"]
     specs = _instance_specs(generation)
     normalize_reliability_graph_config(
         config["constraint"]["weibull"]["reliability_graph"]
     )
+    if args.prepare_solve_instances:
+        _prepare_solve_instances(config)
+        return
+    if args.solve_plan_index is not None:
+        config["solve"]["create_instances"] = False
     if workflow.get("create_instances", False):
         _instances.generate_instance_specs(
             specs,
@@ -848,10 +997,24 @@ def main(argv=None):
             ).get("relative_deviation", 0.2),
             machine_parameter_ranges=generation.get("machine_parameters"),
             machine_profile_config=generation.get("machine_profiles"),
+            training_parameter_jitter=generation.get(
+                "training_parameter_jitter"
+            ),
             due_date_config=_due_date_generation_config(config),
-            time_unit_minutes=generation.get("time_unit_minutes", 1.0),
+            time_unit=normalize_time_unit(generation),
         )
-    splits = _configured_instance_splits(config, specs)
+    splits = None
+    in_distribution_solve = (
+        workflow.get("solve", False)
+        and config["solve"].get("evaluation", {}).get(
+            "in_distribution", {}
+        ).get("enabled", True)
+    )
+    if (
+        workflow.get("generate_training_data", False)
+        or in_distribution_solve
+    ):
+        splits = _configured_instance_splits(config, specs)
     print(
         "Cost plus expected-repair-buffer pipeline | "
         + " | ".join(f"{key}={bool(value)}" for key, value in workflow.items())
@@ -861,9 +1024,15 @@ def main(argv=None):
     if workflow.get("train_gnn", False):
         _train(config)
     if workflow.get("solve", False):
-        _solve(config, splits)
+        runs = (
+            _solve(config, splits)
+            if args.solve_plan_index is None
+            else _solve(config, splits, args.solve_plan_index)
+        )
     if workflow.get("evaluate", False):
-        _evaluate(config)
+        solutions = ([r['solution_path'] for r in runs if r.get('solution_path')]
+                     if workflow.get('solve', False) else None)
+        _evaluate(config, solutions=solutions)
 
 
 if __name__ == "__main__":

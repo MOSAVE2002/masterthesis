@@ -1,10 +1,14 @@
 import copy
+import importlib
 import pickle
 import tempfile
 import unittest
 from pathlib import Path
 
 import main
+
+
+evaluation = importlib.import_module("06_Evaluation.evaluate_solutions")
 
 
 def _config(instance_directory, *, create_instances):
@@ -93,11 +97,26 @@ class SolveInstanceGenerationTests(unittest.TestCase):
             baseline = instances_by_offset[0.0]
             for offset, candidate in instances_by_offset.items():
                 self.assertEqual(
-                    candidate.processing_times, baseline.processing_times
+                    candidate.physical_instance_id,
+                    baseline.physical_instance_id,
                 )
-                self.assertEqual(
-                    candidate.eligible_machines, baseline.eligible_machines
-                )
+                for attribute in (
+                    "jobs",
+                    "processing_times",
+                    "eligible_machines",
+                    "machine_speed",
+                    "machine_cost",
+                    "machine_profiles",
+                    "weibull_alpha",
+                    "weibull_beta",
+                    "repair_rate",
+                    "repair_duration",
+                ):
+                    if hasattr(baseline, attribute):
+                        self.assertEqual(
+                            getattr(candidate, attribute),
+                            getattr(baseline, attribute),
+                        )
                 self.assertEqual(
                     candidate.nominal_makespan_calibration,
                     baseline.nominal_makespan_calibration,
@@ -106,6 +125,29 @@ class SolveInstanceGenerationTests(unittest.TestCase):
                     candidate.due_date_factor,
                     (1.0 + offset) * baseline.nominal_twk_due_date_factor,
                 )
+            seeds = {
+                evaluation._evaluation_seed(
+                    config["solve"]["evaluation"]["random_seed"],
+                    candidate.physical_instance_id,
+                )
+                for candidate in instances_by_offset.values()
+            }
+            self.assertEqual(len(seeds), 1)
+
+    def test_legacy_due_date_variant_names_share_physical_seed_key(self):
+        first = "i3_k3_o3-5_1_benchmark_twk_d0p00"
+        second = "i3_k3_o3-5_1_benchmark_twk_d0p30"
+        instance = type("LegacyInstance", (), {})()
+
+        first_key = evaluation._physical_instance_id(instance, first)
+        second_key = evaluation._physical_instance_id(instance, second)
+
+        self.assertEqual(first_key, "benchmark/i3_k3_o3-5_1")
+        self.assertEqual(first_key, second_key)
+        self.assertEqual(
+            evaluation._evaluation_seed(2026, first_key),
+            evaluation._evaluation_seed(2026, second_key),
+        )
 
     def test_create_false_reuses_only_complete_matching_set(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

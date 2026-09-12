@@ -15,7 +15,7 @@ echo "Job ran on: $(hostname)"
 echo "Job started at: $(date)"
 
 # queue.sh submits the job from the project directory
-project_path=$BIGWORK/FJSP_Simulation
+project_path=$SLURM_SUBMIT_DIR
 
 # Change to the project directory
 cd "${project_path}"
@@ -41,9 +41,9 @@ echo ""
 echo "Checking whether PyTorch can use the requested GPU..."
 uv run python -c 'import torch; assert torch.cuda.is_available(), "CUDA GPU is not available"; print(torch.cuda.get_device_name(0))'
 echo ""
-echo "Running: uv run main.py"
+echo "Running benchmark case $SLURM_ARRAY_TASK_ID"
 echo ""
-uv run main.py
+uv run main.py --workflow solve --solve-plan-index "$SLURM_ARRAY_TASK_ID"
 
 echo ""
 echo "Job finished at: $(date)"

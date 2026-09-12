@@ -36,6 +36,9 @@ _training = importlib.import_module(
     "04_GraphNeuralNetworks.models.model_training_FJSP_GNN"
 )
 FJSPGraphSAGE = _training.FJSPGraphSAGE
+# Float32 message aggregation accumulates rounding at job level; the study's
+# additional Float64 audit separates it from embedding errors.
+DEFAULT_PARITY_TOLERANCE = 1e-4
 
 
 def _value(item) -> float:
@@ -66,8 +69,6 @@ def _pytorch_graph(variables, instance):
         for job, job_operations in instance.jobs.items()
         for operation in job_operations
     }
-    horizon = max(float(value) for value in instance.due_dates.values())
-
     node_features = []
     for operation in operations:
         machine = _selected_machine(variables, operation)
@@ -76,15 +77,13 @@ def _pytorch_graph(variables, instance):
         alpha = float(variables["weibull_alpha"][machine])
         beta = float(variables["weibull_beta"][machine])
         repair_rate = float(variables["repair_rate"][machine])
-        processing_time = float(
-            instance.processing_times[operation, machine]
-        )
+        # Independently reconstruct the formula-aligned features from the
+        # selected machine, not from the MILP feature expressions.
         node_features.append([
-            start / horizon,
-            completion / horizon,
-            processing_time / alpha,
-            repair_rate * alpha / 30.0,
+            (start + completion) / (2.0 * alpha),
+            repair_rate * alpha / 10.0,
             beta / 5.0,
+            1.0 / (60.0 * repair_rate),
         ])
 
     machine_edges = []
@@ -143,7 +142,7 @@ def _pytorch_prediction(model_path, metadata, graph):
         return network(graph).detach().cpu().tolist()
 
 
-def validate_result(result, *, tolerance=1e-5):
+def validate_result(result, *, tolerance=DEFAULT_PARITY_TOLERANCE):
     """Return detailed parity records or raise on an embedding mismatch."""
     if result["solution_count"] <= 0:
         raise RuntimeError("Gurobi produced no incumbent to validate.")
@@ -218,7 +217,7 @@ def _parse_args():
         choices=("linear", "sage", "job"),
         help="Validate only this configured GNN architecture.",
     )
-    parser.add_argument("--tolerance", type=float, default=1e-5)
+    parser.add_argument("--tolerance", type=float, default=DEFAULT_PARITY_TOLERANCE)
     parser.add_argument("--time-limit", type=float, default=20.0)
     return parser.parse_args()
 

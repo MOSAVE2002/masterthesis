@@ -10,7 +10,7 @@ import gurobipy as gp
 from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
     add_economic_cost_objective,
-    add_soft_service_level_constraints,
+    add_due_date_tardiness_constraints,
 )
 from helper.sequence_setup import (
     normalize_reliability_graph_config,
@@ -141,7 +141,6 @@ def _add_expected_repair_buffers(
     variables,
     instance,
     graph_cfg,
-    service_level,
 ):
     expected_delays = {}
     for job in instance.jobs:
@@ -152,12 +151,11 @@ def _add_expected_repair_buffers(
             for machine in instance.eligible_machines[operation]
         )
         expected_delays[job] = expected_disruption
-    add_soft_service_level_constraints(
+    add_due_date_tardiness_constraints(
         model,
         variables,
         instance,
         expected_delays,
-        service_level=service_level,
     )
     variables.update({
         "service_scope": graph_cfg.service_scope,
@@ -173,7 +171,6 @@ def build_fjsp(
     constraint_type=CONSTRAINT_WEIBULL,
     reliability_graph_config=None,
     service_probability_band=None,
-    service_level=0.90,
     facility_cost_per_time=1.0,
     service_violation_cost_per_time=1.0,
     tardiness_cost_per_time=None,
@@ -181,6 +178,8 @@ def build_fjsp(
     """Build the nonlinear stochastic reference formulation."""
     validate_constraint_type(constraint_type)
     graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
+    if graph_cfg.service_scope != "job":
+        raise ValueError("The thesis formulation sums repair buffers per job.")
     if service_probability_band is not None:
         raise ValueError(
             "service_probability_band was removed; alpha is evaluated only "
@@ -234,7 +233,6 @@ def build_fjsp(
         variables,
         instance,
         graph_cfg,
-        service_level,
     )
     add_economic_cost_objective(
         model,
@@ -246,7 +244,7 @@ def build_fjsp(
     )
     variables.update({
         "constraint_type": constraint_type,
-        "formulation": "nonlinear_markov_soft_service_level_v11",
+        "formulation": "nonlinear_unscaled_local_repair_buffer_v12",
     })
     model.update()
     return model, variables

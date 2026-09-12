@@ -147,8 +147,8 @@ def _write_calibration_plot(pdf_path, png_path, calibration_rows):
             linewidth=1.5,
             label=model,
         )
-    axis.set_xlabel("Mittlerer GNN-Reparaturpuffer")
-    axis.set_ylabel("Mittlerer nichtlinearer Referenzpuffer")
+    axis.set_xlabel("Mittlerer GNN-Reparaturpuffer [ZE]")
+    axis.set_ylabel("Mittlerer nichtlinearer Referenzpuffer [ZE]")
     axis.set_title("GNN-Ersatz des nichtlinearen Reparaturpuffers")
     axis.grid(alpha=0.25)
     axis.legend(loc="best", fontsize=8)
@@ -192,6 +192,7 @@ def run_prediction_evaluation(
         _write_csv(metric_path, [], metric_fields)
         _write_csv(calibration_path, [], calibration_fields)
         metadata = {
+            "time_unit": "ZE",
             "status": "skipped_no_gnn_predictions",
             "input_path": str(input_path) if input_path else None,
             "outputs": {
@@ -229,6 +230,7 @@ def run_prediction_evaluation(
         calibration_pdf, calibration_png, all_calibration
     )
     metadata = {
+        "time_unit": "ZE",
         "status": "evaluated",
         "input_path": str(input_path) if input_path else "in_memory_job_rows",
         "models": sorted(by_model),

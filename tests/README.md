@@ -16,5 +16,22 @@ Validate only one architecture or use another generated instance:
 python3 tests/validate_gnn_embedding.py \
   --convolution sage \
   --instance i3_k3_o3-5_15 \
-  --tolerance 1e-5
+  --tolerance 1e-4
 ```
+
+The four-feature migration and embedding regression tests run with:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+The standalone validator uses a PyTorch/MILP tolerance of 1e-4 ZE for
+accumulated Float32 roundoff.
+# Abgleich mit der unskalierten Thesis-Formulierung
+
+`test_formulation_alignment.py` prüft `C_end + B <= d + L` gegen die
+deterministische Pufferformel und die vollständige Kostenzielfunktion. Weitere
+Tests prüfen die Weitergabe und das Abfangen von Verzögerungen in bestehenden
+Zeitlücken, das Fehlen des Servicegrads in beiden Modell-APIs, unveränderte
+Referenzkosten bei geänderter Bewertungsschwelle und die Weitergabe einer
+separaten Config an das Training.

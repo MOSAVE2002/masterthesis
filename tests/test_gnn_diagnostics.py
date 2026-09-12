@@ -16,7 +16,7 @@ dataset_evaluation = importlib.import_module(
 prediction_evaluation = importlib.import_module(
     "06_Evaluation.evaluate_gnn_predictions"
 )
-TARGET_COLUMN = "simulated_expected_completion_delay"
+from helper.local_buffer import TARGET_COLUMN
 
 
 def _write_dataset(path, rows):
@@ -44,6 +44,15 @@ def _write_dataset(path, rows):
 
 
 class GNNDiagnosticsTests(unittest.TestCase):
+    def test_many_calibrated_due_factors_have_bounded_plot_size(self):
+        rows = [{"due_date_factor": 1.0 + i/1000, "probabilities": [float(i), float(i)+.5]}
+                for i in range(2126)]
+        groups = dataset_evaluation._due_factor_plot_groups(rows)
+        self.assertLessEqual(len(groups), 12)
+        self.assertEqual(sum(len(values) for _, _, values in groups), 4252)
+        self.assertEqual([v for _, _, values in groups for v in values],
+                         [v for row in rows for v in row['probabilities']])
+
     def test_dataset_distribution_baseline_and_histogram(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

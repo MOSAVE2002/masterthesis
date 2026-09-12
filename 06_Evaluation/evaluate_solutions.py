@@ -1,7 +1,7 @@
 """Independently simulate and compare schedules from solution text files.
 
-The evaluator is intentionally not imported or called by ``main.py``. It
-parses already written nonlinear/GNN solutions, reconstructs their fixed
+The evaluator is used by the evaluation phase of ``main.py`` and can also
+run independently. It parses nominal, nonlinear and GNN solutions, reconstructs their fixed
 schedules, performs fresh Monte-Carlo replications, and writes CSV, LaTeX and
 PDF result tables plus one detailed CSV table per job.
 """
@@ -30,6 +30,7 @@ if str(ROOT_DIR) not in sys.path:
 
 _instances = importlib.import_module("01_generator.instance_generator")
 _simulation = importlib.import_module("05_Simulation.preempt_resume")
+from helper.local_buffer import expected_job_buffers, InvalidScheduleError
 from helper.stochastic_fjsp import (
     stochastic_parameters,
     weibull_down_probability,
@@ -60,11 +61,11 @@ _SERVICE_JOB_PATTERN = re.compile(
     r"^job (?P<job>-?\d+): "
     r"completion=(?P<completion>[^,]+), "
     r"due_date=(?P<due_date>[^,]+), "
-    r"expected_completion_delay=(?P<delay>[^,]+), "
-    r"service_buffer=(?P<buffer>[^,]+), "
-    r"service_protected_completion=(?P<protected>[^,]+), "
-    r"service_slack=(?P<slack>[^,]+), "
-    r"service_violation=(?P<violation>[^,]+)$"
+    r"(?:expected_completion_delay|expected_local_repair_buffer)=(?P<delay>[^,]+), "
+    r"(?:service_buffer|repair_buffer)=(?P<buffer>[^,]+), "
+    r"(?:service_protected_completion|buffered_completion)=(?P<protected>[^,]+), "
+    r"(?:service_slack|buffered_slack)=(?P<slack>[^,]+), "
+    r"(?:service_violation|due_date_violation)=(?P<violation>[^,]+)$"
 )
 _OPERATION_PATTERN = re.compile(
     r"^op (?P<operation>-?\d+): "
@@ -123,6 +124,56 @@ def _optional_float(value):
     return None if value == "" else float(value)
 
 
+def _optional_int(value):
+    parsed = _optional_float(value)
+    return None if parsed is None else int(parsed)
+
+
+def _solver_behavior_fields(parsed):
+    """Operational solver outcomes used by the chapter-7 comparison."""
+    has_incumbent = parsed["solution_count"] > 0
+    gap_at_most_one_percent = (
+        parsed["mip_gap"] is not None and parsed["mip_gap"] <= 0.01 + 1e-12
+    )
+    return {
+        "has_incumbent": has_incumbent,
+        "optimal_or_gap_at_most_one_percent": (
+            parsed["status"] == "OPTIMAL" or gap_at_most_one_percent
+        ),
+        "time_limit_with_incumbent": (
+            parsed["status"] == "TIME_LIMIT" and has_incumbent
+        ),
+        "no_feasible_solution_found": not has_incumbent,
+        "proven_infeasible": parsed["status"] == "INFEASIBLE",
+    }
+
+
+_SOLVER_TELEMETRY_FIELDS = (
+    "branch_and_bound_nodes",
+    "root_node_bound",
+    "time_to_first_incumbent_seconds",
+    "first_incumbent_objective",
+    "time_to_best_incumbent_seconds",
+    "best_incumbent_objective",
+    "number_of_variables",
+    "number_of_continuous_variables",
+    "number_of_binary_variables",
+    "number_of_integer_variables",
+    "number_of_linear_matrix_nonzeros",
+    "number_of_linear_constraints",
+    "number_of_quadratic_constraints",
+    "number_of_general_constraints",
+    "number_of_nonlinear_constraints",
+)
+
+
+def _solver_measurement_fields(parsed):
+    return {
+        **_solver_behavior_fields(parsed),
+        **{key: parsed.get(key) for key in _SOLVER_TELEMETRY_FIELDS},
+    }
+
+
 def _instance_name(solution_path, formulation):
     stem = solution_path.stem
     prefix = "solution_"
@@ -134,6 +185,8 @@ def _instance_name(solution_path, formulation):
         if formulation.startswith("nonlinear_")
         else "_gurobi_gnn"
     )
+    if formulation.startswith('nominal_'):
+        marker = '_gurobi'
     if marker not in remainder:
         raise ValueError(
             f"Cannot identify the instance in {solution_path.name}."
@@ -146,7 +199,10 @@ def parse_solution(solution_path):
     solution_path = Path(solution_path)
     lines = solution_path.read_text(encoding="utf-8").splitlines()
     formulation = _field(lines, "Formulation")
-    if formulation.startswith("nonlinear_"):
+    if formulation.startswith('nominal_'):
+        solver = 'gurobi'
+        model_name = 'nominal'
+    elif formulation.startswith("nonlinear_"):
         solver = "gurobi_nonlinear"
         model_name = "nonlinear_midpoint"
     elif formulation.startswith("gnn_"):
@@ -159,6 +215,13 @@ def parse_solution(solution_path):
         raise ValueError(
             f"Unsupported or missing formulation in {solution_path}."
         )
+    progress_file = _field(lines, "Solver progress file")
+    progress_path = None
+    if progress_file:
+        progress_path = Path(progress_file)
+        if not progress_path.is_absolute():
+            progress_path = solution_path.parent / progress_path
+        progress_path = progress_path.resolve()
 
     jobs = {}
     operations = {}
@@ -235,9 +298,58 @@ def parse_solution(solution_path):
             )
         ),
         "total_cost": _optional_float(_field(lines, "Total cost")),
+        "service_level": _optional_float(_field(lines, 'Service level alpha')),
+        "service_violation_cost_per_time": _optional_float(_field(lines, 'Tardiness cost per time', _field(lines, 'Service violation cost per time'))),
         "best_bound": _optional_float(_field(lines, "Best bound")),
         "mip_gap": _optional_float(_field(lines, "MIP gap")),
         "runtime_seconds": _optional_float(_field(lines, "Runtime [s]")),
+        "branch_and_bound_nodes": _optional_float(
+            _field(lines, "Branch-and-bound nodes")
+        ),
+        "root_node_bound": _optional_float(
+            _field(lines, "Root-node bound")
+        ),
+        "time_to_first_incumbent_seconds": _optional_float(
+            _field(lines, "Time to first incumbent [s]")
+        ),
+        "first_incumbent_objective": _optional_float(
+            _field(lines, "First incumbent objective")
+        ),
+        "time_to_best_incumbent_seconds": _optional_float(
+            _field(lines, "Time to best incumbent [s]")
+        ),
+        "best_incumbent_objective": _optional_float(
+            _field(lines, "Best incumbent objective")
+        ),
+        "solver_progress_path": progress_path,
+        "solver_progress_points": _optional_int(
+            _field(lines, "Solver progress points")
+        ),
+        "number_of_variables": _optional_int(_field(lines, "variables")),
+        "number_of_continuous_variables": _optional_int(
+            _field(lines, "continuous")
+        ),
+        "number_of_binary_variables": _optional_int(
+            _field(lines, "binary")
+        ),
+        "number_of_integer_variables": _optional_int(
+            _field(lines, "integer")
+        ),
+        "number_of_linear_matrix_nonzeros": _optional_int(
+            _field(lines, "linear_matrix_nonzeros")
+        ),
+        "number_of_linear_constraints": _optional_int(
+            _field(lines, "linear_constraints")
+        ),
+        "number_of_quadratic_constraints": _optional_int(
+            _field(lines, "quadratic_constraints")
+        ),
+        "number_of_general_constraints": _optional_int(
+            _field(lines, "general_constraints")
+        ),
+        "number_of_nonlinear_constraints": _optional_int(
+            _field(lines, "nonlinear_constraints")
+        ),
         "model_build_seconds": _optional_float(
             _field(lines, "Model build runtime [s]")
         ),
@@ -374,35 +486,33 @@ def _evaluation_seed(base_seed, instance_name):
     return int.from_bytes(digest[:4], byteorder="big", signed=False)
 
 
+_DUE_DATE_VARIANT_SUFFIX = re.compile(
+    r"_(?P<tier>benchmark|extrapolation|stress)_"
+    r"(?:twk_d(?:m?\d+p\d+)|df(?:m?\d+p\d+)|configured)$"
+)
+
+
+def _physical_instance_id(instance, instance_name):
+    """Return the stable comparison key shared by due-date variants."""
+    stored = getattr(instance, "physical_instance_id", None)
+    if stored is not None and str(stored).strip():
+        return str(stored).strip()
+
+    # Backward compatibility for already generated evaluation pickles. New
+    # instances persist this key explicitly and do not depend on file naming.
+    match = _DUE_DATE_VARIANT_SUFFIX.search(str(instance_name))
+    if match is not None:
+        base_name = str(instance_name)[:match.start()]
+        return f"{match.group('tier')}/{base_name}"
+    return str(instance_name)
+
+
 def _reference_expected_repair_buffers(schedule, service_scope="job"):
-    """Recompute the nonlinear buffer for a fixed optimized schedule."""
-    operation_buffers = {}
-    for operation in schedule.operations:
-        machine = schedule.selected_machines[operation]
-        midpoint = (
-            float(schedule.planned_starts[operation])
-            + 0.5 * float(schedule.processing_times[operation])
-        )
-        probability = weibull_down_probability(
-            midpoint,
-            schedule.weibull_scale[machine],
-            schedule.weibull_shape[machine],
-            schedule.repair_rate[machine],
-            order=64,
-        )
-        operation_buffers[operation] = (
-            probability / float(schedule.repair_rate[machine])
-        )
-    return {
-        job: sum(
-            operation_buffers[operation]
-            for operation in (
-                schedule.jobs[job]
-                if service_scope == "job" else schedule.operations
-            )
-        )
-        for job in schedule.jobs
-    }
+    """Use the same checked local expectation as training-data generation."""
+    buffers, _errors = expected_job_buffers(schedule)
+    if service_scope != "job":
+        raise ValueError("Local buffer evaluation requires service_scope='job'.")
+    return buffers
 
 
 def evaluate_solution(
@@ -413,25 +523,56 @@ def evaluate_solution(
     base_seed,
     confidence,
     simulation_config,
+    service_level_threshold=0.90,
 ):
     parsed = parse_solution(solution_path)
     instance, instance_path = _load_instance(
         instances_root, parsed["instance_name"]
     )
     tier = _evaluation_tier(instance_path, Path(instances_root))
+    physical_instance_id = _physical_instance_id(
+        instance, parsed["instance_name"]
+    )
+    relative_due_date_offset = getattr(
+        instance, "due_date_relative_makespan_offset", None
+    )
     relative_solution_path = _portable_path(parsed["solution_path"])
+    relative_progress_path = (
+        _portable_path(parsed.get("solver_progress_path"))
+        if parsed.get("solver_progress_path") is not None else None
+    )
     joint_confidence = bonferroni_confidence(
         confidence, len(instance.jobs)
     )
+    unavailable_status = None
+    evaluation_error = None
     if parsed["solution_count"] <= 0 or not parsed["operations"]:
+        unavailable_status = "not_evaluated_no_incumbent"
+    else:
+        if not parsed["jobs"]:
+            raise ValueError(f"Incumbent has no per-job values in {parsed['solution_path']}.")
+        try:
+            schedule = _fixed_schedule(parsed, instance)
+        except ValueError as error:
+            unavailable_status = "not_evaluated_invalid_schedule"
+            evaluation_error = str(error)
+        if unavailable_status is None:
+            try:
+                reference_buffers = _reference_expected_repair_buffers(schedule)
+            except InvalidScheduleError as error:
+                unavailable_status = "not_evaluated_invalid_schedule"
+                evaluation_error = str(error)
+    if unavailable_status is not None:
         return {
             "instance_name": parsed["instance_name"],
+            "physical_instance_id": physical_instance_id,
             "evaluation_tier": tier,
             "solver": parsed["solver"],
             "model": parsed["model_name"],
             "formulation": parsed["formulation"],
             "status": parsed["status"],
-            "postsolve_evaluation_status": "not_evaluated_no_incumbent",
+            "postsolve_evaluation_status": unavailable_status,
+            "evaluation_error": evaluation_error,
             "objective": parsed["objective"],
             "processing_cost": parsed["processing_cost"],
             "operating_cost": parsed["operating_cost"],
@@ -443,29 +584,37 @@ def evaluate_solution(
             "runtime_seconds": parsed["runtime_seconds"],
             "model_build_seconds": parsed["model_build_seconds"],
             "optimizer_wall_seconds": parsed["optimizer_wall_seconds"],
+            **_solver_measurement_fields(parsed),
             "number_of_jobs": len(instance.jobs),
             "due_date_factor": getattr(instance, "due_date_factor", None),
+            "due_date_relative_makespan_offset": relative_due_date_offset,
             "nominal_makespan": parsed["makespan"],
             "maximum_internal_repair_buffer": None,
             "repair_buffer_mae": None,
             "repair_buffer_rmse": None,
             "repair_buffer_mean_error": None,
+            'maximum_repair_buffer_underestimation': None,
+            'jobs_underestimated_by_more_than_one': None,
+            'reference_due_date_violation': None,
+            'reference_total_cost': None,
             "minimum_mc_ontime_probability": None,
             "minimum_wilson_lower_bound": None,
             "minimum_bonferroni_wilson_lower_bound": None,
             "simulation_replications": 0,
+            "simulation_model": "preempt_resume",
             "simulation_seed": None,
             "simulation_mean_failures": None,
             "simulation_mean_total_repair_delay": None,
             "solution_file": relative_solution_path,
+            "solver_progress_file": relative_progress_path,
+            "solver_progress_points": parsed.get("solver_progress_points"),
         }, []
-    if not parsed["jobs"]:
-        raise ValueError(
-            f"Incumbent has no per-job values in {parsed['solution_path']}."
-        )
-    schedule = _fixed_schedule(parsed, instance)
-    reference_buffers = _reference_expected_repair_buffers(schedule)
-    seed = _evaluation_seed(base_seed, parsed["instance_name"])
+    # Alpha is an assessment threshold only, never a buffer multiplier.
+    threshold = float(service_level_threshold)
+    if not 0. < threshold < 1.:
+        raise ValueError('service_level_threshold must lie strictly between 0 and 1.')
+    penalty = parsed['service_violation_cost_per_time']
+    seed = _evaluation_seed(base_seed, physical_instance_id)
     result = simulate_fixed_schedule(
         schedule,
         replications=replications,
@@ -490,6 +639,7 @@ def evaluate_solution(
         internal = parsed["jobs"][job]
         job_rows.append({
             "instance_name": parsed["instance_name"],
+            "physical_instance_id": physical_instance_id,
             "evaluation_tier": _evaluation_tier(
                 instance_path, Path(instances_root)
             ),
@@ -500,6 +650,7 @@ def evaluate_solution(
             "postsolve_evaluation_status": "evaluated",
             "job_id": job,
             "due_date_factor": getattr(instance, "due_date_factor", None),
+            "due_date_relative_makespan_offset": relative_due_date_offset,
             "nominal_completion": internal["nominal_completion"],
             "due_date": float(instance.due_dates[job]),
             "internal_expected_repair_buffer": internal[
@@ -509,6 +660,11 @@ def evaluate_solution(
             "repair_buffer_error": (
                 internal["internal_repair_buffer"] - reference_buffers[job]
             ),
+            'repair_buffer_underestimation': max(0., reference_buffers[job] - internal['internal_repair_buffer']),
+            'reference_due_date_violation': (
+                max(0., internal['nominal_completion'] + reference_buffers[job]
+                    - schedule.due_dates[job])
+            ),
             "protected_completion": internal["protected_completion"],
             "robust_slack": internal["robust_slack"],
             "optimization_tardiness": internal[
@@ -516,6 +672,13 @@ def evaluate_solution(
             ],
             "repair_buffer_method": parsed["repair_buffer_label_method"],
             "mc_ontime_probability": probability,
+            "mc_mean_completion_time": float(result.job_mean_completion_times[index]),
+            "mc_mean_completion_delay": float(result.job_mean_completion_delays[index]),
+            "mc_completion_delay_standard_error": float(result.job_completion_delay_standard_errors[index]),
+            "service_level_threshold": threshold,
+            "mc_meets_service_threshold": probability >= threshold,
+            "wilson_meets_service_threshold": lower_bound >= threshold,
+            "bonferroni_meets_service_threshold": bonferroni_lower_bound >= threshold,
             "mc_standard_error": float(
                 result.job_probability_standard_errors[index]
             ),
@@ -527,6 +690,7 @@ def evaluate_solution(
                 result.job_mean_completion_times[index]
             ),
             "simulation_replications": int(result.replications),
+            "simulation_model": "preempt_resume",
             "simulation_seed": seed,
             "objective": parsed["objective"],
             "processing_cost": parsed["processing_cost"],
@@ -550,6 +714,7 @@ def evaluate_solution(
     )
     schedule_row = {
         "instance_name": parsed["instance_name"],
+        "physical_instance_id": physical_instance_id,
         "evaluation_tier": job_rows[0]["evaluation_tier"],
         "solver": parsed["solver"],
         "model": parsed["model_name"],
@@ -567,8 +732,10 @@ def evaluate_solution(
         "runtime_seconds": parsed["runtime_seconds"],
         "model_build_seconds": parsed["model_build_seconds"],
         "optimizer_wall_seconds": parsed["optimizer_wall_seconds"],
+        **_solver_measurement_fields(parsed),
         "number_of_jobs": len(job_rows),
         "due_date_factor": getattr(instance, "due_date_factor", None),
+        "due_date_relative_makespan_offset": relative_due_date_offset,
         "nominal_makespan": parsed["makespan"],
         "maximum_internal_repair_buffer": maximum_internal_buffer,
         "repair_buffer_mae": sum(
@@ -581,18 +748,33 @@ def evaluate_solution(
         "repair_buffer_mean_error": sum(
             row["repair_buffer_error"] for row in job_rows
         ) / len(job_rows),
+        'maximum_repair_buffer_underestimation': max(row['repair_buffer_underestimation'] for row in job_rows),
+        'jobs_underestimated_by_more_than_one': sum(row['repair_buffer_underestimation'] > 1. for row in job_rows),
+        'reference_due_date_violation': sum(row['reference_due_date_violation'] for row in job_rows),
+        'reference_total_cost': (
+            parsed['processing_cost'] + parsed['operating_cost']
+            + penalty * sum(row['reference_due_date_violation'] for row in job_rows)
+            if penalty is not None
+            and parsed['processing_cost'] is not None and parsed['operating_cost'] is not None else None
+        ),
         "minimum_mc_ontime_probability": minimum_mc,
+        "service_level_threshold": threshold,
+        "jobs_meeting_service_threshold": sum(r["mc_meets_service_threshold"] for r in job_rows),
+        "all_jobs_meet_service_threshold": minimum_mc >= threshold,
         "minimum_wilson_lower_bound": minimum_wilson,
         "minimum_bonferroni_wilson_lower_bound": (
             minimum_bonferroni_wilson
         ),
         "simulation_replications": int(result.replications),
+        "simulation_model": "preempt_resume",
         "simulation_seed": seed,
         "simulation_mean_failures": float(result.mean_failures),
         "simulation_mean_total_repair_delay": float(
             result.mean_total_repair_delay
         ),
         "solution_file": relative_solution_path,
+        "solver_progress_file": relative_progress_path,
+        "solver_progress_points": parsed.get("solver_progress_points"),
     }
     return schedule_row, job_rows
 
@@ -615,15 +797,17 @@ _PRESENTATION_COLUMNS = (
     ("status", "Status"),
     ("due_date_factor", "Due-Date-Faktor"),
     ("total_cost", "Gesamtkosten"),
+    ('reference_total_cost', 'Nachgerechnete Gesamtkosten'),
+    ('maximum_repair_buffer_underestimation', 'Max. Pufferunterschätzung [ZE]'),
     ("processing_cost", "Bearbeitungskosten"),
     ("operating_cost", "Betriebskosten"),
     ("tardiness_cost", "Verspätungskosten"),
-    ("total_tardiness", "Gesamtverspätung"),
-    ("nominal_makespan", "Makespan"),
+    ("total_tardiness", "Gesamtverspätung [ZE]"),
+    ("nominal_makespan", "Makespan [ZE]"),
     ("runtime_seconds", "Laufzeit [s]"),
     ("mip_gap", "MIP-Gap"),
-    ("maximum_internal_repair_buffer", "max. Reparaturpuffer"),
-    ("repair_buffer_mae", "Puffer-MAE"),
+    ("maximum_internal_repair_buffer", "max. Reparaturpuffer [ZE]"),
+    ("repair_buffer_mae", "Puffer-MAE [ZE]"),
     ("minimum_mc_ontime_probability", "min. MC"),
     ("minimum_wilson_lower_bound", "Wilson-LB"),
     (
@@ -662,6 +846,8 @@ def _presentation_value(key, value):
         "objective",
         "due_date_factor",
         "total_cost",
+        'reference_total_cost',
+        'maximum_repair_buffer_underestimation',
         "processing_cost",
         "operating_cost",
         "tardiness_cost",
@@ -803,10 +989,10 @@ def _solution_paths(arguments, solutions_root):
         if not path.exists():
             raise FileNotFoundError(path)
         text = path.read_text(encoding="utf-8")
-        if "Formulation: nonlinear_" in text or "Formulation: gnn_" in text:
+        if any(f'Formulation: {prefix}_' in text for prefix in ('nominal', 'nonlinear', 'gnn')):
             supported.append(path)
     if not supported:
-        raise ValueError("No supported nonlinear/GNN solution files found.")
+        raise ValueError("No supported nominal/nonlinear/GNN solution files found.")
     return supported
 
 
@@ -858,6 +1044,7 @@ def run_evaluation(
     confidence=0.95,
     dataset_diagnostics=None,
     prediction_diagnostics=None,
+    numerical_analysis=None,
 ):
     """Run post-solve evaluation and return the generated table paths."""
     replications = int(replications)
@@ -880,9 +1067,15 @@ def run_evaluation(
         evaluation_config.get("prediction_diagnostics", {})
         if prediction_diagnostics is None else prediction_diagnostics
     )
+    numerical_analysis = dict(
+        evaluation_config.get("numerical_analysis", {})
+        if numerical_analysis is None else numerical_analysis
+    )
     solutions_root = _project_path(solutions_root).resolve()
     instances_root = _project_path(instances_root).resolve()
     output_directory = _project_path(output_directory).resolve()
+    if solutions is not None and not solutions:
+        raise ValueError('The current solve run produced no solution files to evaluate.')
     paths = _solution_paths(solutions or [], solutions_root)
     schedule_rows = []
     job_rows = []
@@ -894,6 +1087,7 @@ def run_evaluation(
             base_seed=random_seed,
             confidence=confidence,
             simulation_config=simulation_config,
+            service_level_threshold=evaluation_config.get('service_level_threshold', 0.90),
         )
         schedule_rows.append(schedule_row)
         job_rows.extend(rows)
@@ -915,7 +1109,7 @@ def run_evaluation(
                 f"SKIPPED {position}/{len(paths)} | "
                 f"instance={schedule_row['instance_name']} | "
                 f"model={schedule_row['model']} | "
-                f"status={schedule_row['status']} | reason=no_incumbent",
+                f"status={schedule_row['status']} | reason={schedule_row['postsolve_evaluation_status']}",
                 flush=True,
             )
 
@@ -988,6 +1182,8 @@ def run_evaluation(
         }
     metadata_path = output_directory / "evaluation_metadata.json"
     metadata_path.write_text(json.dumps({
+        "time_unit": "ZE",
+        "runtime_unit": "s",
         "solution_count": len(schedule_rows),
         "evaluated_schedule_count": sum(
             row["postsolve_evaluation_status"] == "evaluated"
@@ -998,14 +1194,24 @@ def run_evaluation(
             == "not_evaluated_no_incumbent"
             for row in schedule_rows
         ),
+        "invalid_schedule_count": sum(
+            row["postsolve_evaluation_status"] == "not_evaluated_invalid_schedule"
+            for row in schedule_rows
+        ),
         "job_row_count": len(job_rows),
         "replications": replications,
         "random_seed": random_seed,
-        "seed_scope": "same seed for every solver schedule of one instance",
+        "seed_scope": (
+            "same seed for every solver schedule and due-date variant of "
+            "one physical instance"
+        ),
         "wilson_confidence": confidence,
         "wilson_interval": "one_sided_lower",
         "bonferroni_scope": "all jobs within one schedule",
         "simulation_parameters": simulation_config_dict(simulation_config),
+        "completion_semantics": "Preempt-resume execution with fixed assignments and sequences; delays propagate over job and machine predecessors.",
+        "repair_buffer_semantics": "Unscaled deterministic sum of local midpoint residual-repair expectations; distinct from execution delay.",
+        "service_level_threshold": evaluation_config.get("service_level_threshold", 0.90),
         "result_table_csv": str(result_path),
         "result_table_latex": str(latex_path),
         "result_table_pdf": str(pdf_path),
@@ -1017,7 +1223,7 @@ def run_evaluation(
     print(f"WROTE {pdf_path}")
     print(f"WROTE {job_path}")
     print(f"WROTE {metadata_path}")
-    return {
+    result = {
         "result_table_csv": result_path,
         "result_table_latex": latex_path,
         "result_table_pdf": pdf_path,
@@ -1027,9 +1233,46 @@ def run_evaluation(
         "job_rows": job_rows,
         "gnn_diagnostics": diagnostic_paths,
     }
+    if bool(numerical_analysis.get("enabled", False)):
+        allowed_analysis_settings = {
+            "enabled", "strict", "output_directory", "manifest",
+        }
+        unknown_analysis_settings = (
+            set(numerical_analysis) - allowed_analysis_settings
+        )
+        if unknown_analysis_settings:
+            raise ValueError(
+                "Unknown numerical-analysis settings: "
+                f"{sorted(unknown_analysis_settings)}"
+            )
+        analysis_module = importlib.import_module(
+            "06_Evaluation.summarize_numerical_analysis"
+        )
+        analysis_output = _project_path(
+            numerical_analysis.get(
+                "output_directory", output_directory / "numerical_analysis"
+            )
+        ).resolve()
+        analysis_manifest = _project_path(
+            numerical_analysis.get(
+                "manifest", output_directory / "solve_manifest.json"
+            )
+        ).resolve()
+        print("[Evaluate] creating numerical-analysis summaries", flush=True)
+        analysis_result = analysis_module.run_analysis(
+            config=config,
+            result_table=result_path,
+            job_table=job_path,
+            manifest=analysis_manifest,
+            instances_root=instances_root,
+            output_directory=analysis_output,
+            strict=bool(numerical_analysis.get("strict", False)),
+        )
+        result["numerical_analysis"] = analysis_result
+    return result
 
 
-def evaluate_from_config(config=None):
+def evaluate_from_config(config=None, *, solutions=None):
     """Run the optional workflow phase using top-level evaluation settings."""
     if config is None:
         with CONFIG_PATH.open(encoding="utf-8") as file:
@@ -1045,9 +1288,11 @@ def evaluate_from_config(config=None):
         "replications",
         "random_seed",
         "wilson_confidence",
+        "service_level_threshold",
         "simulation",
         "dataset_diagnostics",
         "prediction_diagnostics",
+        "numerical_analysis",
     }
     unknown = set(settings) - allowed
     if unknown:
@@ -1056,6 +1301,7 @@ def evaluate_from_config(config=None):
         )
     return run_evaluation(
         config=config,
+        solutions=solutions,
         solutions_root=settings.get(
             "solutions_directory", DEFAULT_SOLUTIONS_ROOT
         ),
@@ -1070,6 +1316,7 @@ def evaluate_from_config(config=None):
         confidence=settings.get("wilson_confidence", 0.95),
         dataset_diagnostics=settings.get("dataset_diagnostics"),
         prediction_diagnostics=settings.get("prediction_diagnostics"),
+        numerical_analysis=settings.get("numerical_analysis"),
     )
 
 

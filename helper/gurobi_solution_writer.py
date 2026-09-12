@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from collections import Counter
 from pathlib import Path
 
@@ -18,6 +19,39 @@ STATUS_NAMES = {
     GRB.INTERRUPTED: "INTERRUPTED",
     GRB.SUBOPTIMAL: "SUBOPTIMAL",
 }
+
+SOLVER_PROGRESS_FIELDS = (
+    "runtime_seconds",
+    "incumbent_objective",
+    "best_bound",
+    "relative_gap",
+    "node_count",
+    "solution_count",
+    "event",
+    "objective_sense",
+)
+
+
+def solver_progress_path(solution_path):
+    """Return the CSV sidecar used for one solution's solver trajectory."""
+    solution_path = Path(solution_path)
+    return solution_path.with_name(
+        f"{solution_path.stem}_solver_progress.csv"
+    )
+
+
+def _write_solver_progress(solution_path, trace):
+    """Persist callback-observed primal/dual progress next to the solution."""
+    trace = list(trace or [])
+    if not trace:
+        return None
+    path = solver_progress_path(solution_path)
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=SOLVER_PROGRESS_FIELDS)
+        writer.writeheader()
+        writer.writerows({key: row.get(key) for key in SOLVER_PROGRESS_FIELDS}
+                         for row in trace)
+    return path
 
 
 def _value(item):
@@ -109,6 +143,9 @@ def _model_structure(model):
         "continuous": variable_types[GRB.CONTINUOUS],
         "binary": variable_types[GRB.BINARY],
         "integer": variable_types[GRB.INTEGER],
+        "linear_matrix_nonzeros": int(
+            _model_attribute(model, "NumNZs") or 0
+        ),
         "linear_constraints": len(model.getConstrs()),
         "quadratic_constraints": len(model.getQConstrs()),
         "general_constraints": len(model.getGenConstrs()),
@@ -122,15 +159,20 @@ def write_comparable_solution(
     filename="solution.txt",
     instance=None,
 ):
-    """Write the active model, service, Pd, Y and U values."""
+    """Write costs, unscaled buffers, Pd, Y and U values."""
     path = Path(filename)
     path.parent.mkdir(parents=True, exist_ok=True)
     has_solution = model.SolCount > 0
     metadata = variables.get("gnn_metadata") or {}
     structure = _model_structure(model)
+    telemetry = variables.get("solver_telemetry", {})
+    progress_path = _write_solver_progress(
+        path, telemetry.get("progress_trace")
+    )
 
     with path.open("w", encoding="utf-8") as file:
         file.write("Solution summary:\n")
+        file.write("Model time unit: ZE (times and buffers); rates: 1/ZE; cost rates: GE/ZE\n")
         file.write(f"Formulation: {variables.get('formulation', '')}\n")
         file.write(f"Status: {STATUS_NAMES.get(model.Status, model.Status)}\n")
         file.write(
@@ -142,11 +184,11 @@ def write_comparable_solution(
         file.write(f"Processing cost: {_number(variables.get('processing_cost'))}\n")
         file.write(f"Operating cost: {_number(variables.get('operating_cost'))}\n")
         file.write(
-            "Service violation cost: "
+            "Tardiness cost: "
             f"{_number(variables.get('service_violation_cost'))}\n"
         )
         file.write(
-            "Total service-level violation: "
+            "Total tardiness: "
             f"{_number(variables.get('total_service_level_violation'))}\n"
         )
         file.write(f"Total cost: {_number(variables.get('total_cost'))}\n")
@@ -155,7 +197,7 @@ def write_comparable_solution(
             f"{_number(variables.get('facility_cost_per_time'))}\n"
         )
         file.write(
-            "Service violation cost per time: "
+            "Tardiness cost per time: "
             f"{_number(variables.get('service_violation_cost_per_time'))}\n"
         )
         file.write(f"Objective mode: {variables.get('objective_mode', '')}\n")
@@ -166,6 +208,42 @@ def write_comparable_solution(
             f"MIP gap: {_number(_model_attribute(model, 'MIPGap'))}\n"
         )
         file.write(f"Runtime [s]: {_number(model.Runtime)}\n")
+        file.write(
+            "Branch-and-bound nodes: "
+            f"{_number(telemetry.get('branch_and_bound_nodes'))}\n"
+        )
+        file.write(
+            "Root-node bound: "
+            f"{_number(telemetry.get('root_node_bound'))}\n"
+        )
+        file.write(
+            "Time to first incumbent [s]: "
+            f"{_number(telemetry.get('time_to_first_incumbent_seconds'))}\n"
+        )
+        file.write(
+            "First incumbent objective: "
+            f"{_number(telemetry.get('first_incumbent_objective'))}\n"
+        )
+        file.write(
+            "Time to best incumbent [s]: "
+            f"{_number(telemetry.get('time_to_best_incumbent_seconds'))}\n"
+        )
+        file.write(
+            "Best incumbent objective: "
+            f"{_number(telemetry.get('best_incumbent_objective'))}\n"
+        )
+        file.write(
+            "Solver progress file: "
+            f"{progress_path.name if progress_path is not None else ''}\n"
+        )
+        file.write(
+            "Solver progress points: "
+            f"{len(telemetry.get('progress_trace') or [])}\n"
+        )
+        file.write(
+            "Solver progress sampling interval [s]: "
+            f"{_number(telemetry.get('progress_sample_interval_seconds'))}\n"
+        )
         timing = variables.get("timing", {})
         file.write(
             "Model build runtime [s]: "
@@ -186,15 +264,6 @@ def write_comparable_solution(
         file.write("\nStochastic formulation:\n")
         file.write(f"Constraint type: {variables.get('constraint_type', '')}\n")
         file.write(f"Service scope: {variables.get('service_scope', '')}\n")
-        file.write(f"Service level alpha: {_number(variables.get('service_level'))}\n")
-        file.write(
-            "Service buffer scale: "
-            f"{_number(variables.get('service_buffer_scale'))}\n"
-        )
-        file.write(
-            "Service constraint soft: "
-            f"{variables.get('service_constraint_is_soft', '')}\n"
-        )
         file.write(f"Due dates: {variables.get('due_dates', {})}\n")
         file.write(f"GNN convolution: {metadata.get('convolution', '')}\n")
         file.write(f"GNN layers: {metadata.get('num_graphsage_layers', '')}\n")
@@ -203,22 +272,22 @@ def write_comparable_solution(
         if not has_solution:
             return path
 
-        file.write("\nExpected completion-delay summary:\n")
+        file.write("\nExpected local repair-buffer summary:\n")
         delays = variables.get("job_expected_delays", {})
         delay_values = {
             job: _value(delays[job]) for job in sorted(delays)
         }
         if delay_values:
             file.write(
-                "Maximum expected job completion delay: "
+                "Maximum expected local job repair buffer: "
                 f"{max(delay_values.values()):.6f}\n"
             )
         file.write(
-            "Completion delay label method: "
+            "Repair buffer label method: "
             f"{variables.get('job_repair_buffer_label_method', '')}\n"
         )
 
-        file.write("\nPer-job soft service levels:\n")
+        file.write("\nPer-job buffered due dates:\n")
         service_buffers = variables.get("job_service_level_buffers", delays)
         for job in sorted(delays):
             completion = variables["C"][instance.job_end_operations[job]]
@@ -231,13 +300,13 @@ def write_comparable_solution(
             file.write(
                 f"job {job}: completion={_number(completion)}, "
                 f"due_date={due_date:.6f}, "
-                f"expected_completion_delay={delay:.6f}, "
-                f"service_buffer={service_buffer:.6f}, "
-                "service_protected_completion="
+                f"expected_local_repair_buffer={delay:.6f}, "
+                f"repair_buffer={service_buffer:.6f}, "
+                "buffered_completion="
                 f"{_value(completion) + service_buffer:.6f}, "
-                "service_slack="
+                "buffered_slack="
                 f"{due_date - _value(completion) - service_buffer:.6f}, "
-                f"service_violation={_number(violation)}\n"
+                f"due_date_violation={_number(violation)}\n"
             )
 
         file.write("\nOperation values:\n")

@@ -3,25 +3,38 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 
 import gurobipy as gp
 from gurobipy import GRB
 
 
-RELIABILITY_GRAPH_SCHEMA = "job_expected_completion_delay_v6"
+RELIABILITY_GRAPH_SCHEMA = "job_local_midpoint_buffer_v7"
 RELIABILITY_GNN_GRAPH_SCHEMA = (
-    "direct_machine_and_job_predecessor_node_messages_v9"
+    "direct_machine_and_job_predecessor_physical_features_v10"
 )
 RELIABILITY_GNN_OUTPUT_HEAD = (
-    "per_job_expected_completion_delay_relu_v5"
+    "per_job_local_midpoint_buffer_relu_v6"
 )
 RELIABILITY_NODE_FEATURE_NAMES = [
-    "nominal_start_over_horizon",
-    "nominal_completion_over_horizon",
-    "processing_time_over_weibull_alpha",
-    "repair_rate_times_weibull_alpha_over_30",
+    "nominal_midpoint_over_weibull_alpha",
+    "repair_rate_times_weibull_alpha_over_10",
     "weibull_beta_over_5",
+    "mean_repair_duration_over_60ze",
 ]
+
+
+def local_buffer_node_features(midpoint, alpha, beta, repair_rate):
+    """Four formula-aligned inputs; times remain in ZE, rates in 1/ZE.
+
+    No realized failures or labels are inputs. The constant 60 is a fixed
+    reference duration in ZE, independent of due dates and instance size.
+    """
+    t, a, b, rate = map(float, (midpoint, alpha, beta, repair_rate))
+    if (not all(map(math.isfinite, (t, a, b, rate)))
+            or t < 0 or a <= 0 or b <= 1 or rate <= 0):
+        raise ValueError("Require finite t>=0, alpha>0, beta>1, repair_rate>0.")
+    return [t / a, rate * a / 10.0, b / 5.0, 1.0 / (60.0 * rate)]
 
 
 @dataclass(frozen=True)

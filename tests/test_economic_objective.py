@@ -32,7 +32,7 @@ def _instance(due_date=20.0):
 
 
 class EconomicObjectiveTests(unittest.TestCase):
-    def test_expected_delay_is_scaled_for_soft_service_level(self):
+    def test_repair_buffer_enters_due_date_without_scaling(self):
         model = gp.Model()
         model.Params.OutputFlag = 0
         completion = model.addVar(lb=9.0, ub=9.0, name="completion")
@@ -43,12 +43,11 @@ class EconomicObjectiveTests(unittest.TestCase):
             due_dates={1: 10.0},
         )
         variables = {"C": {1: completion}}
-        economic.add_soft_service_level_constraints(
+        economic.add_due_date_tardiness_constraints(
             model,
             variables,
             instance,
             {1: raw_buffer},
-            service_level=0.90,
         )
         model.setObjective(
             variables["job_service_level_violation"][1],
@@ -58,15 +57,15 @@ class EconomicObjectiveTests(unittest.TestCase):
         self.assertEqual(model.Status, gp.GRB.OPTIMAL)
         self.assertAlmostEqual(completion.X, 9.0)
         self.assertAlmostEqual(
-            variables["job_service_level_violation"][1].X, 19.0
+            variables["job_service_level_violation"][1].X, 1.0
         )
         self.assertAlmostEqual(
             variables["job_expected_repair_buffers"][1].X, 2.0
         )
         self.assertAlmostEqual(
-            variables["job_service_level_buffers"][1].getValue(), 20.0
+            variables["job_service_level_buffers"][1].X, 2.0
         )
-        self.assertAlmostEqual(variables["service_buffer_scale"], 10.0)
+        self.assertNotIn("service_level", variables)
         model.dispose()
 
     def test_processing_operating_and_tardiness_cost(self):
@@ -112,8 +111,8 @@ class EconomicObjectiveTests(unittest.TestCase):
                 Path(directory) / "base.txt",
             )
             content = path.read_text(encoding="utf-8")
-        self.assertIn("Service violation cost:", content)
-        self.assertIn("service_violation=", content)
+        self.assertIn("Tardiness cost:", content)
+        self.assertIn("due_date_violation=", content)
         self.assertIn("op 1: machine=", content)
         self.assertIn("S=", content)
         model.dispose()

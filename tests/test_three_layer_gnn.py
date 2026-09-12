@@ -97,7 +97,7 @@ class ThreeLayerGNNTests(unittest.TestCase):
         empty = torch.empty((2, 0), dtype=torch.long)
         fixed = torch.tensor([[0], [1]], dtype=torch.long)
         self.assertEqual(prediction(empty), 0.0)
-        self.assertEqual(prediction(fixed), 5.0)
+        self.assertEqual(prediction(fixed), float(input_size))
 
 
 if __name__ == "__main__":

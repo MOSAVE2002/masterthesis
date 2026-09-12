@@ -12,11 +12,13 @@ from typing import Mapping
 
 import numpy as np
 
+from helper.time_units import normalize_time_unit
+
 
 INDEPENDENT_GENERATION_MODEL = "independent_machine_parameters_v1"
 PROFILE_GENERATION_MODEL = "old_new_machine_profiles_v2"
 DEFAULT_INDEPENDENT_MACHINE_PARAMETER_RANGES = {
-    "hourly_cost": (1.0, 2.25),
+    "cost_rate": (1.0, 2.25),
     "weibull_alpha": (24.0, 42.0),
     "weibull_beta": (1.6, 3.0),
     "repair_rate": (0.3, 0.7),
@@ -49,6 +51,69 @@ DEFAULT_MACHINE_PROFILE_CONFIG = {
     "all_profiles_probability": 0.0,
     "additional_same_profile_machine_probability": 0.25,
 }
+
+DEFAULT_TRAINING_PARAMETER_JITTER = {
+    "enabled": False,
+    "fraction_per_size": 0.0,
+    "random_seed": 42,
+    "parameter_jitter": {
+        "cost_rate": 0.0,
+        "speed": 0.0,
+        "weibull_alpha": 0.0,
+        "repair_rate": 0.0,
+    },
+}
+
+
+def normalize_training_parameter_jitter(config=None):
+    """Validate the train-only mixture of fixed and jittered instances."""
+    raw = dict(config or {})
+    unknown = set(raw) - set(DEFAULT_TRAINING_PARAMETER_JITTER)
+    if unknown:
+        raise ValueError(
+            "Unknown training parameter-jitter settings: "
+            f"{sorted(unknown)}"
+        )
+
+    result = dict(DEFAULT_TRAINING_PARAMETER_JITTER)
+    result.update(raw)
+    result["enabled"] = bool(result["enabled"])
+    result["fraction_per_size"] = float(result["fraction_per_size"])
+    if not 0.0 <= result["fraction_per_size"] <= 1.0:
+        raise ValueError(
+            "training_parameter_jitter.fraction_per_size must lie in [0, 1]."
+        )
+    result["random_seed"] = int(result["random_seed"])
+
+    jitter_fields = {"cost_rate", "speed", "weibull_alpha", "repair_rate"}
+    raw_jitter = dict(DEFAULT_TRAINING_PARAMETER_JITTER["parameter_jitter"])
+    raw_jitter.update(dict(result["parameter_jitter"] or {}))
+    jitter = {key: float(value) for key, value in raw_jitter.items()}
+    if set(jitter) != jitter_fields or any(
+        not 0.0 <= value < 1.0 for value in jitter.values()
+    ):
+        raise ValueError(
+            "Invalid training_parameter_jitter.parameter_jitter configuration."
+        )
+    result["parameter_jitter"] = jitter
+
+    if result["enabled"]:
+        if result["fraction_per_size"] <= 0.0:
+            raise ValueError(
+                "Enabled training parameter jitter requires a positive "
+                "fraction_per_size."
+            )
+        if not any(jitter.values()):
+            raise ValueError(
+                "Enabled training parameter jitter requires at least one "
+                "positive jitter width."
+            )
+    return result
+
+
+def weibull_mean_lifetime(alpha, beta):
+    """Mean time to failure in ZE for Weibull(scale=alpha, shape=beta)."""
+    return float(alpha) * math.gamma(1.0 + 1.0 / float(beta))
 
 
 def normalize_machine_profile_config(config=None):
@@ -178,7 +243,13 @@ def _ensure_profile_parameters(instance):
 def normalize_independent_machine_parameter_ranges(config=None):
     """Validate independent per-machine parameter ranges."""
     values = dict(DEFAULT_INDEPENDENT_MACHINE_PARAMETER_RANGES)
-    values.update(dict(config or {}))
+    raw = dict(config or {})
+    if "hourly_cost" in raw:  # Legacy name; numerical values were per ZE.
+        legacy_cost = raw.pop("hourly_cost")
+        if "cost_rate" in raw and tuple(raw["cost_rate"]) != tuple(legacy_cost):
+            raise ValueError("Conflicting machine cost-rate ranges.")
+        raw["cost_rate"] = legacy_cost
+    values.update(raw)
     unknown = set(values) - set(DEFAULT_INDEPENDENT_MACHINE_PARAMETER_RANGES)
     if unknown:
         raise ValueError(
@@ -203,7 +274,7 @@ def normalize_independent_machine_parameter_ranges(config=None):
         raise ValueError("Weibull beta values must exceed one.")
     if result["repair_rate"][0] <= 0.0:
         raise ValueError("Repair rates must be positive.")
-    if result["hourly_cost"][0] < 0.0:
+    if result["cost_rate"][0] < 0.0:
         raise ValueError("Machine costs must be nonnegative.")
     return result
 
@@ -323,10 +394,16 @@ def ensure_stochastic_parameters(instance, *, rebuild_modernity=False):
     The modernity-based transformation is retained only for upgrading legacy
     pickles created by the previous generator.
     """
+    instance.time_unit = normalize_time_unit(instance)
+    # Drop the obsolete physical-unit annotation when upgrading old pickles.
+    vars(instance).pop("time_unit_minutes", None)
     if (
         getattr(instance, "instance_generation_model", None)
         == INDEPENDENT_GENERATION_MODEL
     ):
+        instance.machine_parameter_ranges = normalize_independent_machine_parameter_ranges(
+            getattr(instance, "machine_parameter_ranges", None)
+        )
         return _ensure_independent_parameters(instance)
     if (
         getattr(instance, "instance_generation_model", None)

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from helper.local_buffer import TARGET_COLUMN as LOCAL_BUFFER_TARGET
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT_DIR / "config.json"
@@ -15,7 +17,7 @@ CONSTRAINT_WEIBULL = "weibull"
 VALID_CONSTRAINT_TYPES = {CONSTRAINT_WEIBULL}
 
 TARGET_COLUMNS = {
-    CONSTRAINT_WEIBULL: "simulated_expected_completion_delay",
+    CONSTRAINT_WEIBULL: LOCAL_BUFFER_TARGET,
 }
 
 

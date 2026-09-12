@@ -4,7 +4,10 @@ import os
 import sys
 import types
 import math
+import copy
 from pathlib import Path
+
+from helper.time_units import normalize_time_unit
 
 
 _legacy_package = sys.modules.get("generator")
@@ -57,7 +60,7 @@ class FJSPData:
                 for machine in range(self.num_machines)
             }
 
-        self.machine_cost = sampled("hourly_cost")
+        self.machine_cost = sampled("cost_rate")
         self.weibull_alpha = sampled("weibull_alpha")
         self.weibull_beta = sampled("weibull_beta")
         self.repair_rate = sampled("repair_rate")
@@ -297,7 +300,7 @@ class FJSPData:
         machine_parameter_ranges=None,
         machine_profile_config=None,
         due_date_config=None,
-        time_unit_minutes=1.0,
+        time_unit="ZE",
         random_source=None):
 
         """
@@ -319,9 +322,7 @@ class FJSPData:
         # instance parameters
         self.num_jobs = num_jobs
         self.num_machines = num_machines
-        self.time_unit_minutes = float(time_unit_minutes)
-        if self.time_unit_minutes <= 0.0:
-            raise ValueError("time_unit_minutes must be positive.")
+        self.time_unit = normalize_time_unit(time_unit)
 
         # Operations per job parameters
         self.ope_per_job_min = operations_per_job_min
@@ -472,7 +473,7 @@ def generate_instances(
     machine_parameter_ranges=None,
     machine_profile_config=None,
     due_date_config=None,
-    time_unit_minutes=1.0,
+    time_unit="ZE",
 ):
     """
     Generate multiple instances 
@@ -498,7 +499,7 @@ def generate_instances(
             machine_parameter_ranges=machine_parameter_ranges,
             machine_profile_config=machine_profile_config,
             due_date_config=due_date_config,
-            time_unit_minutes=time_unit_minutes,
+            time_unit=time_unit,
             random_source=generation_rng,
         )
         for instance_nb in range(1, nb_instances + 1)
@@ -520,39 +521,98 @@ def generate_instance_specs(
     processing_time_deviation=0.2,
     machine_parameter_ranges=None,
     machine_profile_config=None,
+    training_parameter_jitter=None,
     due_date_config=None,
-    time_unit_minutes=1.0,
+    time_unit="ZE",
 ):
-    """Generate configured sizes and split every size independently."""
+    """Generate configured sizes and split every size independently.
+
+    A configured training jitter is assigned to an exact, reproducible share
+    of each size's training instances. Validation and test instances retain
+    the unjittered machine profiles.
+    """
+    from helper.stochastic_fjsp import (
+        normalize_machine_profile_config,
+        normalize_training_parameter_jitter,
+    )
+
+    jitter_config = normalize_training_parameter_jitter(
+        training_parameter_jitter
+    )
+    base_profile_config = (
+        normalize_machine_profile_config(machine_profile_config)
+        if machine_profile_config is not None else None
+    )
+    if jitter_config["enabled"] and base_profile_config is None:
+        raise ValueError(
+            "training_parameter_jitter requires machine_profiles."
+        )
+    if jitter_config["enabled"] and any(
+        base_profile_config["parameter_jitter"].values()
+    ):
+        raise ValueError(
+            "Train-only jitter requires zero baseline parameter_jitter values."
+        )
+    jittered_profile_config = copy.deepcopy(base_profile_config)
+    if jittered_profile_config is not None and jitter_config["enabled"]:
+        jittered_profile_config["parameter_jitter"] = dict(
+            jitter_config["parameter_jitter"]
+        )
+
     split_instances = {split_name: [] for split_name in SPLIT_NAMES}
     generation_rng = random.Random(int(random_seed))
     for spec_index, spec in enumerate(specs):
-        size_instances = [
-            FJSPData(
+        operation_min = min(spec["operations_per_job"])
+        operation_max = max(spec["operations_per_job"])
+        instance_names = [
+            f"i{int(spec['num_jobs'])}_k{int(spec['num_machines'])}_"
+            f"o{operation_min}-{operation_max}_{instance_nb}"
+            for instance_nb in range(1, int(spec["count"]) + 1)
+        ]
+        size_split_names = split_items(
+            instance_names,
+            split_ratios=split_ratios,
+            random_seed=int(random_seed) + spec_index,
+        )
+        jitter_count = (
+            round(
+                len(size_split_names["train"])
+                * jitter_config["fraction_per_size"]
+            )
+            if jitter_config["enabled"] else 0
+        )
+        jittered_names = set(random.Random(
+            jitter_config["random_seed"] + spec_index
+        ).sample(size_split_names["train"], jitter_count))
+
+        size_instances = {}
+        for instance_nb, instance_name in enumerate(instance_names, start=1):
+            use_jitter = instance_name in jittered_names
+            instance = FJSPData(
                 nb_instance=instance_nb,
                 num_jobs=spec["num_jobs"],
                 num_machines=spec["num_machines"],
-                operations_per_job_min=min(spec["operations_per_job"]),
-                operations_per_job_max=max(spec["operations_per_job"]),
+                operations_per_job_min=operation_min,
+                operations_per_job_max=operation_max,
                 num_operations=None,
                 flag_save_file=False,
                 processing_time_range=processing_time_range,
                 processing_time_deviation=processing_time_deviation,
                 machine_parameter_ranges=machine_parameter_ranges,
-                machine_profile_config=machine_profile_config,
+                machine_profile_config=(
+                    jittered_profile_config
+                    if use_jitter else base_profile_config
+                ),
                 due_date_config=due_date_config,
-                time_unit_minutes=time_unit_minutes,
+                time_unit=time_unit,
                 random_source=generation_rng,
             )
-            for instance_nb in range(1, spec["count"] + 1)
-        ]
-        size_split = split_items(
-            size_instances,
-            split_ratios=split_ratios,
-            random_seed=int(random_seed) + spec_index,
-        )
+            instance.training_parameter_jitter_applied = use_jitter
+            size_instances[instance_name] = instance
         for split_name in SPLIT_NAMES:
-            split_instances[split_name].extend(size_split[split_name])
+            split_instances[split_name].extend(
+                size_instances[name] for name in size_split_names[split_name]
+            )
     return save_pre_split_instances(
         split_instances,
         output_directory=output_directory,
@@ -570,7 +630,8 @@ def generate_evaluation_instance_specs(
     due_date_config=None,
     instance_postprocessor=None,
     instance_name_suffix=None,
-    time_unit_minutes=1.0,
+    physical_instance_namespace=None,
+    time_unit="ZE",
 ):
     """Generate a flat holdout set without train/valid/test subdirectories."""
     output_directory = Path(output_directory or INSTANCE_DIRECTORY)
@@ -591,10 +652,23 @@ def generate_evaluation_instance_specs(
                 machine_parameter_ranges=machine_parameter_ranges,
                 machine_profile_config=machine_profile_config,
                 due_date_config=due_date_config,
-                time_unit_minutes=time_unit_minutes,
+                time_unit=time_unit,
                 random_source=generation_rng,
             )
             for instance_number in range(1, spec["count"] + 1)
+        )
+
+    namespace = (
+        None
+        if physical_instance_namespace is None
+        else str(physical_instance_namespace).strip().strip("/")
+    )
+    if physical_instance_namespace is not None and not namespace:
+        raise ValueError("physical_instance_namespace must not be blank.")
+    for instance in instances:
+        base_name = instance.instance_name
+        instance.physical_instance_id = (
+            f"{namespace}/{base_name}" if namespace else base_name
         )
 
     names = [instance.instance_name for instance in instances]
@@ -822,7 +896,8 @@ def configured_instance_names_by_split(
     processing_time_deviation=None,
     machine_parameter_ranges=None,
     machine_profile_config=None,
-    time_unit_minutes=None,
+    training_parameter_jitter=None,
+    time_unit=None,
 ):
     """Select and validate exactly the instances requested by the config."""
     from helper.stochastic_fjsp import (
@@ -830,6 +905,7 @@ def configured_instance_names_by_split(
         PROFILE_GENERATION_MODEL,
         normalize_independent_machine_parameter_ranges,
         normalize_machine_profile_config,
+        normalize_training_parameter_jitter,
     )
 
     expected_machine_ranges = (
@@ -842,6 +918,24 @@ def configured_instance_names_by_split(
         normalize_machine_profile_config(machine_profile_config)
         if machine_profile_config is not None else None
     )
+    jitter_config = normalize_training_parameter_jitter(
+        training_parameter_jitter
+    )
+    if jitter_config["enabled"] and expected_profile_config is None:
+        raise ValueError(
+            "training_parameter_jitter requires machine_profiles."
+        )
+    if jitter_config["enabled"] and any(
+        expected_profile_config["parameter_jitter"].values()
+    ):
+        raise ValueError(
+            "Train-only jitter requires zero baseline parameter_jitter values."
+        )
+    jittered_profile_config = copy.deepcopy(expected_profile_config)
+    if jittered_profile_config is not None and jitter_config["enabled"]:
+        jittered_profile_config["parameter_jitter"] = dict(
+            jitter_config["parameter_jitter"]
+        )
 
     specs = list(specs)
     if not specs:
@@ -849,6 +943,7 @@ def configured_instance_names_by_split(
 
     instance_splits = {split_name: [] for split_name in SPLIT_NAMES}
     expected_specs = {}
+    jittered_instance_names = set()
     for spec_index, spec in enumerate(specs):
         num_jobs = int(spec["num_jobs"])
         num_machines = int(spec["num_machines"])
@@ -878,6 +973,14 @@ def configured_instance_names_by_split(
             split_ratios=split_ratios,
             random_seed=int(random_seed) + spec_index,
         )
+        if jitter_config["enabled"]:
+            jitter_count = round(
+                len(size_split["train"])
+                * jitter_config["fraction_per_size"]
+            )
+            jittered_instance_names.update(random.Random(
+                jitter_config["random_seed"] + spec_index
+            ).sample(size_split["train"], jitter_count))
         for split_name in SPLIT_NAMES:
             instance_splits[split_name].extend(size_split[split_name])
 
@@ -898,13 +1001,8 @@ def configured_instance_names_by_split(
             instance_directory=instance_directory,
         )
         if (
-            time_unit_minutes is not None
-            and not math.isclose(
-                float(getattr(instance, "time_unit_minutes", 1.0)),
-                float(time_unit_minutes),
-                rel_tol=0.0,
-                abs_tol=1e-12,
-            )
+            time_unit is not None
+            and normalize_time_unit(instance) != normalize_time_unit(time_unit)
         ):
             raise ValueError(
                 f"Gespeicherte Instanz {instance_name} verwendet eine andere "
@@ -921,10 +1019,15 @@ def configured_instance_names_by_split(
                 "falsche Generatormodell. Setze "
                 "workflow.create_instances einmal auf true."
             )
+        expected_instance_profile_config = (
+            jittered_profile_config
+            if instance_name in jittered_instance_names
+            else expected_profile_config
+        )
         if (
-            expected_profile_config is not None
+            expected_instance_profile_config is not None
             and getattr(instance, "machine_profile_config", None)
-            != expected_profile_config
+            != expected_instance_profile_config
         ):
             raise ValueError(
                 f"Gespeicherte Instanz {instance_name} verwendet andere "
