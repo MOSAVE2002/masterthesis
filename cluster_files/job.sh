@@ -8,8 +8,7 @@ set -e
 # =============================================================================
 # This script is executed on each compute node. It:
 # 1. Sets up the environment (modules, working directory)
-# 2. Checks that the requested GPU is available
-# 3. Runs the FJSP pipeline through main.py
+# 2. Runs the FJSP pipeline through main.py
 # =============================================================================
 
 # Show which computer the job ran on (useful for debugging)
@@ -39,9 +38,6 @@ export GRB_LICENSE_FILE=/sw/apps/software/arch/Compiler/GCCcore/14.3.0/Gurobi/13
 # =============================================================================
 # main.py reads the workflow settings from config.json.
 # =============================================================================
-echo ""
-echo "Checking whether PyTorch can use the requested GPU..."
-uv run python -c 'import torch; assert torch.cuda.is_available(), "CUDA GPU is not available"; print(torch.cuda.get_device_name(0))'
 echo ""
 first_case=$((SLURM_ARRAY_TASK_ID * 3))
 last_case=$((first_case + 2))

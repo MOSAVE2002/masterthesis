@@ -24,7 +24,7 @@ set -e
 # Default values (can be overridden via environment variables)
 export walltime=48:00:00   # maximum time for three benchmark cases
 export memory=16G          # memory per job
-export partition=gpu       # cluster partition
+export partition=mpp.share # cluster partition
 export job_array=0-39%8    # 40 jobs with 3 cases each, at most 8 at the same time
 
 # Get the directory of this script (use SLURM_SUBMIT_DIR when running in SLURM)
@@ -56,7 +56,6 @@ sbatch --export=ALL \
        --mem="$memory" \
        --cpus-per-task=4 \
        --partition="$partition" \
-       --gres=gpu:1 \
        --mail-user=moritz.sarstedt@stud.uni-hannover.de \
        --mail-type=BEGIN,END,FAIL \
        --output="$PROJECT_PATH/logs/out/fjsp_%A_%a.out" \
