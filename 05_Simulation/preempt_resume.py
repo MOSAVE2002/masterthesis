@@ -10,6 +10,7 @@ during processing.  Delays propagate over fixed job and machine arcs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Hashable, Mapping
 
 import numpy as np
@@ -56,10 +57,36 @@ class SimulationResult:
     job_probability_standard_errors: tuple[float, ...]
     job_mean_completion_times: tuple[float, ...]
     job_mean_completion_delays: tuple[float, ...]
+    job_completion_delay_p90: tuple[float, ...]
+    job_completion_delay_p95: tuple[float, ...]
+    job_mean_tardiness: tuple[float, ...]
+    job_tardiness_p90: tuple[float, ...]
+    job_tardiness_p95: tuple[float, ...]
     job_completion_delay_standard_errors: tuple[float, ...]
     operation_failure_probabilities: tuple[float, ...]
     operation_mean_repair_delays: tuple[float, ...]
     operation_mean_repair_durations: tuple[float, ...]
+    operation_mean_start_times: tuple[float, ...]
+    operation_mean_start_shifts: tuple[float, ...]
+    operation_start_shift_p90: tuple[float, ...]
+    operation_start_shift_p95: tuple[float, ...]
+    operation_start_shift_probabilities: tuple[float, ...]
+    operation_maximum_start_shifts: tuple[float, ...]
+    all_jobs_ontime_probability: float
+    all_jobs_ontime_standard_error: float
+    mean_simulated_makespan: float
+    simulated_makespan_p90: float
+    simulated_makespan_p95: float
+    replication_makespans: tuple[float, ...]
+    mean_makespan_increase: float
+    mean_total_tardiness: float
+    total_tardiness_p90: float
+    total_tardiness_p95: float
+    replication_total_tardiness: tuple[float, ...]
+    mean_operation_start_shift: float
+    operation_start_shift_p90_overall: float
+    operation_start_shift_p95_overall: float
+    maximum_mean_operation_start_shift: float
     mean_total_repair_delay: float
     mean_total_repair_duration: float
     mean_failures: float
@@ -228,6 +255,12 @@ def simulate_fixed_schedule(
     ontime = np.zeros(len(job_ids), dtype=np.int64)
     completion_sum = np.zeros(len(job_ids), dtype=float)
     completion_square_sum = np.zeros(len(job_ids), dtype=float)
+    job_completion_samples = np.empty(
+        (replications, len(job_ids)), dtype=float
+    )
+    operation_start_shift_samples = np.empty(
+        (replications, len(operations)), dtype=float
+    )
     operation_failure_runs = np.zeros(len(operations), dtype=np.int64)
     operation_failure_counts = np.zeros(len(operations), dtype=np.int64)
     operation_repair_delay = np.zeros(len(operations), dtype=float)
@@ -263,6 +296,9 @@ def simulate_fixed_schedule(
                 if predecessors[operation]
                 else float(schedule.planned_starts[operation])
             )
+            operation_start_shift_samples[replication_index, index] = max(
+                0.0, start - float(schedule.planned_starts[operation])
+            )
             failure_time, repair_duration = downtime[machine]
             operation_completion, repair_delay = _preempt_resume_completion(
                 start,
@@ -290,6 +326,7 @@ def simulate_fixed_schedule(
             index = job_index[job]
             completion_sum[index] += value
             completion_square_sum[index] += value * value
+            job_completion_samples[replication_index, index] = value
             ontime[index] += int(
                 value <= float(schedule.due_dates[job]) + 1e-12
             )
@@ -318,6 +355,31 @@ def simulate_fixed_schedule(
         + float(schedule.processing_times[schedule.job_end_operations[job]])
         for job in job_ids
     ])
+    completion_delay_samples = np.maximum(
+        0.0, job_completion_samples - nominal_completions[None, :]
+    )
+    due_dates = np.asarray([
+        float(schedule.due_dates[job]) for job in job_ids
+    ])
+    all_jobs_ontime = np.all(
+        job_completion_samples <= due_dates[None, :] + 1e-12, axis=1
+    )
+    all_jobs_ontime_probability = float(np.mean(all_jobs_ontime))
+    all_jobs_ontime_standard_error = math.sqrt(
+        all_jobs_ontime_probability
+        * (1.0 - all_jobs_ontime_probability)
+        / replications
+    )
+    simulated_makespans = np.max(job_completion_samples, axis=1)
+    nominal_makespan = float(np.max(nominal_completions))
+    total_tardiness = np.maximum(
+        0.0, job_completion_samples - due_dates[None, :]
+    ).sum(axis=1)
+    job_tardiness = np.maximum(
+        0.0, job_completion_samples - due_dates[None, :]
+    )
+    mean_operation_start_shifts = operation_start_shift_samples.mean(axis=0)
+    flat_start_shifts = operation_start_shift_samples.reshape(-1)
     return SimulationResult(
         replications=replications,
         job_ids=job_ids,
@@ -329,6 +391,23 @@ def simulate_fixed_schedule(
         job_mean_completion_delays=tuple(
             float(value)
             for value in np.maximum(0.0, mean_completions - nominal_completions)
+        ),
+        job_completion_delay_p90=tuple(
+            float(value)
+            for value in np.quantile(completion_delay_samples, 0.90, axis=0)
+        ),
+        job_completion_delay_p95=tuple(
+            float(value)
+            for value in np.quantile(completion_delay_samples, 0.95, axis=0)
+        ),
+        job_mean_tardiness=tuple(
+            float(value) for value in np.mean(job_tardiness, axis=0)
+        ),
+        job_tardiness_p90=tuple(
+            float(value) for value in np.quantile(job_tardiness, 0.90, axis=0)
+        ),
+        job_tardiness_p95=tuple(
+            float(value) for value in np.quantile(job_tardiness, 0.95, axis=0)
         ),
         job_completion_delay_standard_errors=tuple(
             float(value) for value in completion_standard_errors
@@ -342,6 +421,55 @@ def simulate_fixed_schedule(
         operation_mean_repair_durations=tuple(
             float(total / count)
             for total, count in zip(operation_repair_sum, failure_counts_safe)
+        ),
+        operation_mean_start_times=tuple(
+            float(schedule.planned_starts[operation] + mean_operation_start_shifts[index])
+            for index, operation in enumerate(operations)
+        ),
+        operation_mean_start_shifts=tuple(
+            float(value) for value in mean_operation_start_shifts
+        ),
+        operation_start_shift_p90=tuple(
+            float(value)
+            for value in np.quantile(operation_start_shift_samples, 0.90, axis=0)
+        ),
+        operation_start_shift_p95=tuple(
+            float(value)
+            for value in np.quantile(operation_start_shift_samples, 0.95, axis=0)
+        ),
+        operation_start_shift_probabilities=tuple(
+            float(value)
+            for value in np.mean(operation_start_shift_samples > 1e-12, axis=0)
+        ),
+        operation_maximum_start_shifts=tuple(
+            float(value) for value in np.max(operation_start_shift_samples, axis=0)
+        ),
+        all_jobs_ontime_probability=all_jobs_ontime_probability,
+        all_jobs_ontime_standard_error=all_jobs_ontime_standard_error,
+        mean_simulated_makespan=float(np.mean(simulated_makespans)),
+        simulated_makespan_p90=float(np.quantile(simulated_makespans, 0.90)),
+        simulated_makespan_p95=float(np.quantile(simulated_makespans, 0.95)),
+        replication_makespans=tuple(
+            float(value) for value in simulated_makespans
+        ),
+        mean_makespan_increase=float(
+            np.mean(np.maximum(0.0, simulated_makespans - nominal_makespan))
+        ),
+        mean_total_tardiness=float(np.mean(total_tardiness)),
+        total_tardiness_p90=float(np.quantile(total_tardiness, 0.90)),
+        total_tardiness_p95=float(np.quantile(total_tardiness, 0.95)),
+        replication_total_tardiness=tuple(
+            float(value) for value in total_tardiness
+        ),
+        mean_operation_start_shift=float(np.mean(flat_start_shifts)),
+        operation_start_shift_p90_overall=float(
+            np.quantile(flat_start_shifts, 0.90)
+        ),
+        operation_start_shift_p95_overall=float(
+            np.quantile(flat_start_shifts, 0.95)
+        ),
+        maximum_mean_operation_start_shift=float(
+            np.max(mean_operation_start_shifts)
         ),
         mean_total_repair_delay=float(total_repair_delay / replications),
         mean_total_repair_duration=float(

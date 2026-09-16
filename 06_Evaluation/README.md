@@ -90,6 +90,19 @@ The default outputs are:
 - `06_Evaluation/results/result_table.tex`
 - `06_Evaluation/results/result_table.pdf`
 - `06_Evaluation/results/job_comparison.csv`
+- `06_Evaluation/results/operation_comparison.csv`
+
+`result_table.csv` enthält zusätzlich den simulierten Makespan, dessen Anstieg
+gegenüber dem Plan, simulierte Gesamtverspätung und Gesamtkosten, gemeinsame
+Termintreue aller Jobs sowie aggregierte Right-Shift-Kennzahlen. Quantile werden
+innerhalb jeder Monte-Carlo-Auswertung berechnet. `job_comparison.csv` ergänzt
+jobbezogene Verzögerungs- und Verspätungsquantile; `operation_comparison.csv`
+enthält die Startverschiebungen jeder einzelnen Operation.
+Die simulierten Gesamtkosten werden für jede Wiederholung als konstante
+Bearbeitungskosten plus Betriebskostensatz mal simuliertem Makespan plus
+Verspätungskostensatz mal simulierter Gesamtverspätung neu berechnet. Dadurch
+bleiben Abhängigkeiten zwischen Makespan und Verspätung auch in den
+Kostenquantilen erhalten.
 
 ## GNN data and calibration diagnostics
 

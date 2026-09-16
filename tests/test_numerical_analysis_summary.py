@@ -103,6 +103,36 @@ def test_due_date_effects_are_paired_by_physical_instance_and_model():
     assert result[0]["reference_total_cost_change_mean"] == pytest.approx(-20.0)
 
 
+def test_expected_keys_support_explicit_size_pairs_without_cartesian_product():
+    config = {
+        "instances": {"generation": {"operations_per_job": [3, 5]}},
+        "solve": {
+            "solvers": ["gurobi"],
+            "evaluation": {
+                "benchmark": {"enabled": False},
+                "extrapolation": {
+                    "enabled": True,
+                    "size_pairs": [[7, 5], [5, 7], [7, 7]],
+                    "instances_per_size": 1,
+                    "due_dates": {"relative_makespan_offsets": [0.0]},
+                },
+                "stress": {"enabled": False},
+            },
+        },
+    }
+
+    keys = analysis._expected_keys(config)
+
+    assert len(keys) == 3
+    assert {
+        physical for physical, _condition, _model in keys
+    } == {
+        "extrapolation/i7_k5_o3-5_1",
+        "extrapolation/i5_k7_o3-5_1",
+        "extrapolation/i7_k7_o3-5_1",
+    }
+
+
 def test_complete_analysis_run_writes_checked_tables_and_plots(tmp_path):
     solution_a = tmp_path / "solution_nominal.txt"
     solution_b = tmp_path / "solution_gnn.txt"

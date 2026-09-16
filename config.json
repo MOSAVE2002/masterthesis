@@ -1,5 +1,5 @@
 {
-  "schema_version": 47,
+  "schema_version": 48,
   "workflow": {
     "create_instances": false,
     "generate_training_data": false,
@@ -98,7 +98,7 @@
         "instances_per_size": 5
       },
       "benchmark": {
-        "enabled": true,
+        "enabled": false,
         "reuse_existing_instances": true,
         "num_jobs": [3,5],
         "num_machines": [3,5],
@@ -118,47 +118,34 @@
         }
       },
       "extrapolation": {
-        "enabled": false,
+        "enabled": true,
         "reuse_existing_instances": true,
-        "num_jobs": [
-          7
+        "size_pairs": [
+          [6, 5],
+          [8, 5],
+          [5, 8],
+          [8, 8],
+          [10, 10]
         ],
-        "num_machines": [
-          4
-        ],
-        "instances_per_size": 1,
+        "instances_per_size": 5,
         "due_dates": {
           "method": "calibrated_total_work_content",
           "machine_aggregation": "mean",
           "relative_makespan_offsets": [
-            0.0,
-            0.15,
-            0.3
+            0.15
           ],
           "time_limit_seconds": 10,
           "mip_gap": 0.01,
           "output_flag": 0,
           "seed": 42
         }
-      },
-      "stress": {
-        "enabled": false,
-        "reuse_existing_instances": true,
-        "num_jobs": [
-          10
-        ],
-        "num_machines": [
-          5
-        ],
-        "instances_per_size": 1,
-        "due_date_factor": 1.6
       }
     }
   },
   "evaluation": {
-    "solutions_directory": "02_data/fjsp_solutions",
+    "solutions_directory": "02_data/fjsp_solutions/extrapolation_extension",
     "instances_directory": "02_data/fjsp_instances",
-    "output_directory": "06_Evaluation/results",
+    "output_directory": "06_Evaluation/results/extrapolation_extension",
     "replications": 1000,
     "random_seed": 900042,
     "wilson_confidence": 0.95,
@@ -178,7 +165,7 @@
     "numerical_analysis": {
       "enabled": true,
       "strict": true,
-      "output_directory": "06_Evaluation/results/numerical_analysis"
+      "output_directory": "06_Evaluation/results/extrapolation_extension/numerical_analysis"
     },
     "service_level_threshold": 0.9
   },
@@ -311,19 +298,19 @@
         {
           "variant": "linear_baseline",
           "convolution": "linear",
-          "layers": [1,2],
+          "layers": [1],
           "hidden_channels": [4,8]
         },
         {
           "variant": "fixed_job_graphsage",
           "convolution": "job",
-          "layers": [1,2],
+          "layers": [1],
           "hidden_channels": [4,8]
         },
         {
           "variant": "decision_dependent_direct_machine_job_graphsage",
           "convolution": "sage",
-          "layers": [1,2],
+          "layers": [1],
           "hidden_channels": [ 4,8]
         }
       ],

@@ -52,6 +52,27 @@ def _config(instance_directory, *, create_instances):
 
 
 class SolveInstanceGenerationTests(unittest.TestCase):
+    def test_explicit_size_pairs_do_not_create_cartesian_product(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = _config(temporary_directory, create_instances=True)
+            tier = config["solve"]["evaluation"]["benchmark"]
+            tier.pop("num_jobs")
+            tier.pop("num_machines")
+            tier["size_pairs"] = [[2, 3], [3, 2], [3, 3]]
+            tier["due_dates"]["relative_makespan_offsets"] = [0.0]
+
+            plan = main._generated_tier_plan(config, "benchmark")
+
+            self.assertEqual(len(plan), 3)
+            self.assertEqual(
+                {
+                    (item["instance_name"].split("_")[0:2][0],
+                     item["instance_name"].split("_")[0:2][1])
+                    for item in plan
+                },
+                {("i2", "k3"), ("i3", "k2"), ("i3", "k3")},
+            )
+
     def test_create_true_generates_exact_selected_benchmark_set(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             config = _config(temporary_directory, create_instances=True)

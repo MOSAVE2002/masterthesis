@@ -118,22 +118,24 @@ class ServiceLevelConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(benchmark_due_dates["time_limit_seconds"], 10)
         self.assertTrue(config["solve"]["create_instances"])
+        solve_evaluation = config["solve"]["evaluation"]
+        self.assertNotIn("stress", solve_evaluation)
+        extrapolation = solve_evaluation["extrapolation"]
         self.assertEqual(
-            config["solve"]["evaluation"]["stress"]["due_date_factor"],
-            1.60,
+            extrapolation["size_pairs"],
+            [[6, 5], [8, 5], [5, 8], [8, 8], [10, 10]],
         )
-        extrapolation_due_dates = config["solve"]["evaluation"][
-            "extrapolation"
-        ]["due_dates"]
+        self.assertEqual(extrapolation["instances_per_size"], 5)
+        extrapolation_due_dates = extrapolation["due_dates"]
         self.assertEqual(
             extrapolation_due_dates["method"],
             "calibrated_total_work_content",
         )
         self.assertEqual(
             extrapolation_due_dates["relative_makespan_offsets"],
-            [0.00, 0.15, 0.30],
+            [0.15],
         )
-        for tier in ("benchmark", "extrapolation", "stress"):
+        for tier in ("benchmark", "extrapolation"):
             self.assertTrue(
                 config["solve"]["evaluation"][tier][
                     "reuse_existing_instances"

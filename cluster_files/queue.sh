@@ -16,16 +16,16 @@ set -e
 # =============================================================================
 # QUEUE SCRIPT - Submits multiple jobs to the SLURM scheduler
 # =============================================================================
-# This script prepares the benchmark instances and submits one job per case.
+# This script prepares the extrapolation instances and submits one job per case.
 # Modify the parameters below to adjust resource allocation for your jobs.
 # Navigate into the project directory and run this script via sbatch queue.sh
 # =============================================================================
 
 # Default values (can be overridden via environment variables)
-export walltime=48:00:00   # maximum time for three benchmark cases
+export walltime=12:00:00   # maximum time for one extrapolation case
 export memory=16G          # memory per job
 export partition=mpp.share # cluster partition
-export job_array=0-39%8    # 40 jobs with 3 cases each, at most 8 at the same time
+export job_array=0-24%8    # 25 jobs with 1 case each, at most 8 at the same time
 
 # Get the directory of this script (use SLURM_SUBMIT_DIR when running in SLURM)
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}/cluster_files"
@@ -44,13 +44,13 @@ export GRB_LICENSE_FILE=/sw/apps/software/arch/Compiler/GCCcore/14.3.0/Gurobi/13
 
 mkdir -p "$PROJECT_PATH/logs/Gurobi" "$PROJECT_PATH/logs/out" "$PROJECT_PATH/logs/error"
 
-echo "Preparing the benchmark instances..."
+echo "Preparing the extrapolation instances..."
 uv run main.py --prepare-solve-instances
 
-echo "Submitting the FJSP benchmark jobs..."
+echo "Submitting the FJSP extrapolation jobs..."
 
 sbatch --export=ALL \
-       --job-name="fjsp_benchmark" \
+       --job-name="fjsp_extrapolation" \
        --array="$job_array" \
        --time="$walltime" \
        --mem="$memory" \

@@ -79,16 +79,74 @@ def simulate_fixed_schedule(schedule, *, replications, seed, config=None):
     probability = np.mean(completion[:, None] + buffers <= np.array([schedule.due_dates[j] for j in jobs])[:, None], axis=1)
     se = np.std(buffers, axis=1, ddof=1) / np.sqrt(n) if n > 1 else np.zeros(len(jobs))
     means = buffers.mean(axis=1)
+    completion_samples = (completion[:, None] + buffers).T
+    due_dates = np.array([schedule.due_dates[j] for j in jobs])
+    completion_delays = completion_samples - completion[None, :]
+    all_jobs_ontime = np.all(completion_samples <= due_dates[None, :], axis=1)
+    joint_probability = float(np.mean(all_jobs_ontime))
+    makespans = np.max(completion_samples, axis=1)
+    nominal_makespan = float(np.max(completion))
+    total_tardiness = np.maximum(
+        0.0, completion_samples - due_dates[None, :]
+    ).sum(axis=1)
+    job_tardiness = np.maximum(
+        0.0, completion_samples - due_dates[None, :]
+    )
+    zero_operation_values = tuple(0.0 for _ in schedule.operations)
     return SimulationResult(
         replications=n, job_ids=jobs,
         job_ontime_probabilities=tuple(probability),
         job_probability_standard_errors=tuple(np.sqrt(probability * (1 - probability) / n)),
         job_mean_completion_times=tuple(completion + means),
         job_mean_completion_delays=tuple(means),
+        job_completion_delay_p90=tuple(
+            float(value) for value in np.quantile(completion_delays, .90, axis=0)
+        ),
+        job_completion_delay_p95=tuple(
+            float(value) for value in np.quantile(completion_delays, .95, axis=0)
+        ),
+        job_mean_tardiness=tuple(
+            float(value) for value in np.mean(job_tardiness, axis=0)
+        ),
+        job_tardiness_p90=tuple(
+            float(value) for value in np.quantile(job_tardiness, .90, axis=0)
+        ),
+        job_tardiness_p95=tuple(
+            float(value) for value in np.quantile(job_tardiness, .95, axis=0)
+        ),
         job_completion_delay_standard_errors=tuple(se),
         operation_failure_probabilities=tuple(probabilities),
         operation_mean_repair_delays=tuple(float(residuals[o].mean()) for o in schedule.operations),
         operation_mean_repair_durations=tuple(durations),
+        operation_mean_start_times=tuple(
+            float(schedule.planned_starts[o]) for o in schedule.operations
+        ),
+        operation_mean_start_shifts=zero_operation_values,
+        operation_start_shift_p90=zero_operation_values,
+        operation_start_shift_p95=zero_operation_values,
+        operation_start_shift_probabilities=zero_operation_values,
+        operation_maximum_start_shifts=zero_operation_values,
+        all_jobs_ontime_probability=joint_probability,
+        all_jobs_ontime_standard_error=float(
+            np.sqrt(joint_probability * (1. - joint_probability) / n)
+        ),
+        mean_simulated_makespan=float(np.mean(makespans)),
+        simulated_makespan_p90=float(np.quantile(makespans, .90)),
+        simulated_makespan_p95=float(np.quantile(makespans, .95)),
+        replication_makespans=tuple(float(value) for value in makespans),
+        mean_makespan_increase=float(
+            np.mean(np.maximum(0., makespans - nominal_makespan))
+        ),
+        mean_total_tardiness=float(np.mean(total_tardiness)),
+        total_tardiness_p90=float(np.quantile(total_tardiness, .90)),
+        total_tardiness_p95=float(np.quantile(total_tardiness, .95)),
+        replication_total_tardiness=tuple(
+            float(value) for value in total_tardiness
+        ),
+        mean_operation_start_shift=0.0,
+        operation_start_shift_p90_overall=0.0,
+        operation_start_shift_p95_overall=0.0,
+        maximum_mean_operation_start_shift=0.0,
         mean_total_repair_delay=float(means.sum()),
         mean_total_repair_duration=float(repair_duration.mean()),
         mean_failures=float(failures.mean()), label_method=LABEL_METHOD,

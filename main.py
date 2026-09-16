@@ -338,6 +338,38 @@ def _generated_tier_plan(config, tier_name):
     tier = evaluation.get(tier_name, {})
     if not tier.get("enabled", False):
         return []
+    raw_size_pairs = tier.get("size_pairs")
+    if raw_size_pairs is None:
+        size_pairs = [
+            (jobs, machines)
+            for jobs in tier["num_jobs"]
+            for machines in tier["num_machines"]
+        ]
+    else:
+        if not isinstance(raw_size_pairs, (list, tuple)) or not raw_size_pairs:
+            raise ValueError(f"{tier_name}.size_pairs must be a non-empty list.")
+        size_pairs = []
+        for raw_pair in raw_size_pairs:
+            if not isinstance(raw_pair, (list, tuple)) or len(raw_pair) != 2:
+                raise ValueError(
+                    f"{tier_name}.size_pairs entries must be [jobs, machines]."
+                )
+            jobs, machines = raw_pair
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                for value in (jobs, machines)
+            ):
+                raise ValueError(
+                    f"{tier_name}.size_pairs entries must contain positive integers."
+                )
+            pair = (jobs, machines)
+            if pair in size_pairs:
+                raise ValueError(
+                    f"{tier_name}.size_pairs must not contain duplicates."
+                )
+            size_pairs.append(pair)
     specs = [
         {
             "num_jobs": int(jobs),
@@ -350,8 +382,7 @@ def _generated_tier_plan(config, tier_name):
             ),
             "count": int(tier["instances_per_size"]),
         }
-        for jobs in tier["num_jobs"]
-        for machines in tier["num_machines"]
+        for jobs, machines in size_pairs
     ]
     calibrated_config = tier.get("due_dates")
     if calibrated_config is not None:

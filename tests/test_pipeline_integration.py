@@ -1,4 +1,5 @@
 import importlib
+import csv
 import json
 from pathlib import Path
 import os
@@ -63,7 +64,6 @@ def test_benchmark_only_solve_does_not_require_instance_pickles(
     tiers['in_distribution']['enabled'] = False
     tiers['benchmark']['enabled'] = True
     tiers['extrapolation']['enabled'] = False
-    tiers['stress']['enabled'] = False
     config_path = tmp_path / 'config.json'
     config_path.write_text(json.dumps(config))
     monkeypatch.setattr(
@@ -136,7 +136,8 @@ def test_reference_cost_is_unscaled_and_threshold_only_affects_assessment(tmp_pa
     parsed.update(instance_name='example', solution_path=tmp_path/'solution.txt',
         solver=solver, model_name='gnn', formulation='gnn_local', status='OPTIMAL',
         solution_count=1, operations={0: {}, 1: {}}, processing_cost=10., operating_cost=20.,
-        service_level=.8, service_violation_cost_per_time=3., repair_buffer_label_method='local',
+        facility_cost_per_time=2., service_level=.8,
+        service_violation_cost_per_time=3., repair_buffer_label_method='local',
         jobs={0: {'nominal_completion': 28., 'internal_repair_buffer': 2.,
                   'protected_completion': 38., 'robust_slack': 2., 'optimization_tardiness': 0.}})
     if solver == 'gurobi':
@@ -153,6 +154,30 @@ def test_reference_cost_is_unscaled_and_threshold_only_affects_assessment(tmp_pa
     assert summary['reference_total_cost'] == pytest.approx(39.)
     assert summary['maximum_repair_buffer_underestimation'] == 13.
     assert jobs[0]['reference_due_date_violation'] == pytest.approx(3.)
+
+    detailed, detailed_jobs, operations = evaluation.evaluate_solution(
+        tmp_path / 'solution.txt', instances_root=tmp_path,
+        replications=100, base_seed=42, confidence=.95,
+        simulation_config=None, service_level_threshold=.8,
+        return_operation_rows=True,
+    )
+    assert detailed_jobs == jobs
+    nominal_makespan = max(
+        fixed.planned_starts[operation] + fixed.processing_times[operation]
+        for operation in fixed.operations
+    )
+    assert detailed['mean_simulated_makespan'] >= nominal_makespan
+    assert detailed['mean_simulated_total_cost'] == pytest.approx(
+        10. + 2. * detailed['mean_simulated_makespan']
+        + 3. * detailed['mean_simulated_total_tardiness']
+    )
+    assert 0. <= detailed['joint_all_jobs_ontime_probability'] <= 1.
+    assert detailed['mean_simulated_total_tardiness'] >= 0.
+    assert len(operations) == len(fixed.operations)
+    assert {
+        'planned_start', 'mc_mean_start', 'mc_mean_start_shift',
+        'mc_start_shift_p95', 'mc_probability_start_shifted',
+    } <= set(operations[0])
 
 
 def test_nominal_solution_is_included_in_comparison(tmp_path):
@@ -213,6 +238,79 @@ def test_invalid_incumbent_is_reported_without_invented_reference_costs(tmp_path
     assert row['repair_buffer_mae'] is None
     assert row['simulation_replications'] == 0
     assert jobs == []
+
+
+def test_fixed_schedule_clamps_only_numerically_negative_solver_starts():
+    instance = SimpleNamespace(
+        num_machines=1,
+        real_operations=(1,),
+        eligible_machines={1: (0,)},
+        processing_times={(1, 0): 10.0},
+        predecessors={1: ()},
+        jobs={1: (1,)},
+        job_end_operations={1: 1},
+        due_dates={1: 20.0},
+        machine_speed={0: 1.0},
+        machine_cost={0: 1.0},
+        weibull_alpha={0: 30.0},
+        weibull_beta={0: 2.0},
+        repair_rate={0: 0.5},
+        repair_duration={0: 2.0},
+        instance_generation_model="independent_machine_parameters_v1",
+    )
+    parsed = {
+        "solution_path": Path("solution.txt"),
+        "operations": {
+            1: {"machine": 0, "start": -1e-6, "completion": 9.999999}
+        },
+        "jobs": {1: {"due_date_from_solution": 20.0}},
+        "machine_edges": [],
+    }
+
+    fixed = evaluation._fixed_schedule(parsed, instance)
+
+    assert fixed.planned_starts[1] == 0.0
+    parsed["operations"][1]["start"] = -1e-4
+    parsed["operations"][1]["completion"] = 9.9999
+    with pytest.raises(ValueError, match="materially negative"):
+        evaluation._fixed_schedule(parsed, instance)
+
+
+def test_solver_export_rounding_is_right_shifted_but_real_overlap_is_rejected():
+    operations = (1, 2)
+    starts = {1: 0.0, 2: 9.9997}
+    durations = {1: 10.0, 2: 5.0}
+    predecessors = {1: (), 2: ()}
+    edges = [(1, 2, 0)]
+
+    repaired = evaluation._repair_export_rounding(
+        operations, starts, durations, predecessors, edges
+    )
+
+    assert repaired == {1: 0.0, 2: 10.0}
+    starts[2] = 9.99
+    with pytest.raises(ValueError, match="material precedence or machine overlap"):
+        evaluation._repair_export_rounding(
+            operations, starts, durations, predecessors, edges
+        )
+
+
+def test_csv_writer_includes_diagnostic_fields_from_later_rows(tmp_path):
+    path = tmp_path / "comparison.csv"
+
+    evaluation._write_csv(path, [
+        {"model": "valid", "status": "evaluated"},
+        {
+            "model": "invalid",
+            "status": "not_evaluated_invalid_schedule",
+            "evaluation_error": "overlap",
+        },
+    ])
+
+    with path.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["evaluation_error"] == ""
+    assert rows[1]["evaluation_error"] == "overlap"
 
 
 @pytest.mark.parametrize('enabled', [True, False, None])

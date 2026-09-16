@@ -294,16 +294,22 @@ def _expected_keys(config):
         if not tier.get("enabled", False):
             continue
         tier_operations = tier.get("operations_per_job", operations)
-        for jobs in tier["num_jobs"]:
-            for machines in tier["num_machines"]:
-                for index in range(1, int(tier["instances_per_size"]) + 1):
-                    physical = (
-                        f"{tier_name}/i{int(jobs)}_k{int(machines)}_"
-                        f"o{min(tier_operations)}-{max(tier_operations)}_{index}"
-                    )
-                    for condition in _tier_conditions(tier):
-                        for model in models:
-                            expected.add((physical, condition, model))
+        size_pairs = tier.get("size_pairs")
+        if size_pairs is None:
+            size_pairs = [
+                (jobs, machines)
+                for jobs in tier["num_jobs"]
+                for machines in tier["num_machines"]
+            ]
+        for jobs, machines in size_pairs:
+            for index in range(1, int(tier["instances_per_size"]) + 1):
+                physical = (
+                    f"{tier_name}/i{int(jobs)}_k{int(machines)}_"
+                    f"o{min(tier_operations)}-{max(tier_operations)}_{index}"
+                )
+                for condition in _tier_conditions(tier):
+                    for model in models:
+                        expected.add((physical, condition, model))
     return expected
 
 
@@ -584,6 +590,12 @@ def paired_model_comparisons(rows):
                 for metric in (
                     "reference_total_cost", "reference_cost_gap_percent",
                     "runtime_seconds", "minimum_mc_ontime_probability",
+                    "joint_all_jobs_ontime_probability",
+                    "mean_simulated_total_tardiness",
+                    "simulated_total_tardiness_p95",
+                    "mean_makespan_increase",
+                    "mean_simulated_total_cost",
+                    "mean_operation_start_shift",
                     "maximum_repair_buffer_underestimation",
                 ):
                     candidate_value = _float(candidate.get(metric))
@@ -603,6 +615,12 @@ def paired_model_comparisons(rows):
         "reference_total_cost_difference",
         "reference_cost_gap_percent_difference", "runtime_seconds_difference",
         "minimum_mc_ontime_probability_difference",
+        "joint_all_jobs_ontime_probability_difference",
+        "mean_simulated_total_tardiness_difference",
+        "simulated_total_tardiness_p95_difference",
+        "mean_makespan_increase_difference",
+        "mean_simulated_total_cost_difference",
+        "mean_operation_start_shift_difference",
         "maximum_repair_buffer_underestimation_difference",
     )
     output = []
@@ -656,6 +674,9 @@ def due_date_effects(rows):
             for metric in (
                 "reference_total_cost", "runtime_seconds",
                 "minimum_mc_ontime_probability",
+                "joint_all_jobs_ontime_probability",
+                "mean_simulated_total_tardiness",
+                "mean_makespan_increase",
                 "reference_due_date_violation", "total_tardiness",
             ):
                 candidate_value = _float(candidate.get(metric))
@@ -674,6 +695,9 @@ def due_date_effects(rows):
     metrics = (
         "reference_total_cost_change", "runtime_seconds_change",
         "minimum_mc_ontime_probability_change",
+        "joint_all_jobs_ontime_probability_change",
+        "mean_simulated_total_tardiness_change",
+        "mean_makespan_increase_change",
         "reference_due_date_violation_change", "total_tardiness_change",
     )
     output = []
@@ -761,6 +785,13 @@ def robustness_summary(rows, job_rows):
         "minimum_wilson_lower_bound",
         "minimum_bonferroni_wilson_lower_bound",
         "mean_mc_completion_delay", "jobs_meeting_service_threshold_rate",
+        "joint_all_jobs_ontime_probability",
+        "joint_all_jobs_ontime_wilson_lower_bound",
+        "mean_simulated_makespan", "simulated_makespan_p95",
+        "mean_makespan_increase", "mean_simulated_total_tardiness",
+        "simulated_total_tardiness_p95", "mean_simulated_total_cost",
+        "simulated_total_cost_p95", "mean_operation_start_shift",
+        "operation_start_shift_p95", "maximum_mean_operation_start_shift",
         "simulation_mean_failures", "simulation_mean_total_repair_delay",
     )
     output = []

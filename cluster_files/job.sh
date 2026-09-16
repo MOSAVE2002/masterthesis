@@ -39,11 +39,11 @@ export GRB_LICENSE_FILE=/sw/apps/software/arch/Compiler/GCCcore/14.3.0/Gurobi/13
 # main.py reads the workflow settings from config.json.
 # =============================================================================
 echo ""
-first_case=$((SLURM_ARRAY_TASK_ID * 3))
-last_case=$((first_case + 2))
+first_case=$SLURM_ARRAY_TASK_ID
+last_case=$first_case
 
 for solve_plan_index in $(seq "$first_case" "$last_case"); do
-    echo "Running benchmark case $solve_plan_index"
+    echo "Running extrapolation case $solve_plan_index"
     echo ""
     uv run main.py --workflow solve --solve-plan-index "$solve_plan_index"
 done

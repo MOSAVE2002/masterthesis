@@ -3,7 +3,7 @@
 The evaluator is used by the evaluation phase of ``main.py`` and can also
 run independently. It parses nominal, nonlinear and GNN solutions, reconstructs their fixed
 schedules, performs fresh Monte-Carlo replications, and writes CSV, LaTeX and
-PDF result tables plus one detailed CSV table per job.
+PDF result tables plus detailed CSV tables per job and operation.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 from statistics import NormalDist
+
+import numpy as np
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -283,6 +285,9 @@ def parse_solution(solution_path):
         "makespan": _optional_float(_field(lines, "Makespan")),
         "processing_cost": _optional_float(_field(lines, "Processing cost")),
         "operating_cost": _optional_float(_field(lines, "Operating cost")),
+        "facility_cost_per_time": _optional_float(
+            _field(lines, "Facility cost per time")
+        ),
         "tardiness_cost": _optional_float(
             _field(
                 lines,
@@ -395,7 +400,67 @@ def _load_instance(instances_root, instance_name):
     return instance, path
 
 
+def _repair_export_rounding(
+    operations,
+    planned_starts,
+    processing_times,
+    job_predecessors,
+    machine_edges,
+    tolerance=1e-3,
+):
+    """Right-shift only sub-tolerance violations from rounded solver text."""
+    order = {operation: index for index, operation in enumerate(operations)}
+    predecessors = {
+        operation: set(job_predecessors.get(operation, ()))
+        for operation in operations
+    }
+    for source, target, _machine in machine_edges:
+        predecessors[target].add(source)
+    successors = {operation: [] for operation in operations}
+    indegree = {}
+    for operation, required in predecessors.items():
+        indegree[operation] = len(required)
+        for source in required:
+            successors[source].append(operation)
+    available = sorted(
+        (operation for operation in operations if indegree[operation] == 0),
+        key=order.__getitem__,
+    )
+    topology = []
+    while available:
+        operation = available.pop(0)
+        topology.append(operation)
+        for target in sorted(successors[operation], key=order.__getitem__):
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                available.append(target)
+                available.sort(key=order.__getitem__)
+    if len(topology) != len(operations):
+        raise ValueError("Combined job/machine predecessor graph contains a cycle.")
+
+    repaired = {}
+    for operation in topology:
+        required_start = max(
+            (
+                repaired[predecessor] + processing_times[predecessor]
+                for predecessor in predecessors[operation]
+            ),
+            default=0.0,
+        )
+        shift = required_start - planned_starts[operation]
+        if shift > tolerance:
+            raise ValueError(
+                "Solution contains a material precedence or machine overlap "
+                f"before operation {operation}: required right shift={shift}."
+            )
+        repaired[operation] = max(planned_starts[operation], required_start)
+    return repaired
+
+
 def _fixed_schedule(parsed, instance):
+    numerical_tolerance = 1e-5
+    duration_tolerance = 1e-4
+    export_rounding_tolerance = 1e-3
     operations = tuple(instance.real_operations)
     missing = set(operations) - set(parsed["operations"])
     extra = set(parsed["operations"]) - set(operations)
@@ -423,7 +488,10 @@ def _fixed_schedule(parsed, instance):
             instance.processing_times[operation, machine]
         )
         if not math.isclose(
-            stored_duration, expected_duration, rel_tol=0.0, abs_tol=1e-5
+            stored_duration,
+            expected_duration,
+            rel_tol=0.0,
+            abs_tol=duration_tolerance,
         ):
             raise ValueError(
                 f"Solution/instance duration mismatch for operation "
@@ -446,25 +514,50 @@ def _fixed_schedule(parsed, instance):
             raise ValueError(
                 f"Solution/instance due-date mismatch for job {job}."
             )
+    planned_starts = {
+        operation: float(parsed["operations"][operation]["start"])
+        for operation in operations
+    }
+    materially_negative = {
+        operation: start
+        for operation, start in planned_starts.items()
+        if start < -numerical_tolerance
+    }
+    if materially_negative:
+        raise ValueError(
+            "Solution contains materially negative planned starts: "
+            f"{materially_negative}."
+        )
+    planned_starts = {
+        operation: max(0.0, start)
+        for operation, start in planned_starts.items()
+    }
+    processing_times = {
+        operation: float(instance.processing_times[operation, machine])
+        for operation, machine in selected.items()
+    }
+    job_predecessors = {
+        operation: tuple(
+            predecessor
+            for predecessor in instance.predecessors.get(operation, [])
+            if predecessor in operations
+        )
+        for operation in operations
+    }
+    planned_starts = _repair_export_rounding(
+        operations,
+        planned_starts,
+        processing_times,
+        job_predecessors,
+        parsed["machine_edges"],
+        tolerance=export_rounding_tolerance,
+    )
     return FixedSchedule(
         operations=operations,
         selected_machines=selected,
-        processing_times={
-            operation: float(instance.processing_times[operation, machine])
-            for operation, machine in selected.items()
-        },
-        planned_starts={
-            operation: parsed["operations"][operation]["start"]
-            for operation in operations
-        },
-        job_predecessors={
-            operation: tuple(
-                predecessor
-                for predecessor in instance.predecessors.get(operation, [])
-                if predecessor in operations
-            )
-            for operation in operations
-        },
+        processing_times=processing_times,
+        planned_starts=planned_starts,
+        job_predecessors=job_predecessors,
         machine_edges=parsed["machine_edges"],
         jobs={
             job: tuple(instance.jobs[job]) for job in sorted(instance.jobs)
@@ -524,6 +617,7 @@ def evaluate_solution(
     confidence,
     simulation_config,
     service_level_threshold=0.90,
+    return_operation_rows=False,
 ):
     parsed = parse_solution(solution_path)
     instance, instance_path = _load_instance(
@@ -563,7 +657,7 @@ def evaluate_solution(
                 unavailable_status = "not_evaluated_invalid_schedule"
                 evaluation_error = str(error)
     if unavailable_status is not None:
-        return {
+        unavailable_row = {
             "instance_name": parsed["instance_name"],
             "physical_instance_id": physical_instance_id,
             "evaluation_tier": tier,
@@ -576,6 +670,7 @@ def evaluate_solution(
             "objective": parsed["objective"],
             "processing_cost": parsed["processing_cost"],
             "operating_cost": parsed["operating_cost"],
+            "facility_cost_per_time": parsed.get("facility_cost_per_time"),
             "tardiness_cost": parsed["tardiness_cost"],
             "total_tardiness": parsed["total_tardiness"],
             "total_cost": parsed["total_cost"],
@@ -600,6 +695,24 @@ def evaluate_solution(
             "minimum_mc_ontime_probability": None,
             "minimum_wilson_lower_bound": None,
             "minimum_bonferroni_wilson_lower_bound": None,
+            "joint_all_jobs_ontime_probability": None,
+            "joint_all_jobs_ontime_standard_error": None,
+            "joint_all_jobs_ontime_wilson_lower_bound": None,
+            "joint_all_jobs_meets_service_threshold": None,
+            "mean_simulated_makespan": None,
+            "simulated_makespan_p90": None,
+            "simulated_makespan_p95": None,
+            "mean_makespan_increase": None,
+            "mean_simulated_total_tardiness": None,
+            "simulated_total_tardiness_p90": None,
+            "simulated_total_tardiness_p95": None,
+            "mean_simulated_total_cost": None,
+            "simulated_total_cost_p90": None,
+            "simulated_total_cost_p95": None,
+            "mean_operation_start_shift": None,
+            "operation_start_shift_p90": None,
+            "operation_start_shift_p95": None,
+            "maximum_mean_operation_start_shift": None,
             "simulation_replications": 0,
             "simulation_model": "preempt_resume",
             "simulation_seed": None,
@@ -608,12 +721,23 @@ def evaluate_solution(
             "solution_file": relative_solution_path,
             "solver_progress_file": relative_progress_path,
             "solver_progress_points": parsed.get("solver_progress_points"),
-        }, []
+        }
+        if return_operation_rows:
+            return unavailable_row, [], []
+        return unavailable_row, []
     # Alpha is an assessment threshold only, never a buffer multiplier.
     threshold = float(service_level_threshold)
     if not 0. < threshold < 1.:
         raise ValueError('service_level_threshold must lie strictly between 0 and 1.')
     penalty = parsed['service_violation_cost_per_time']
+    facility_cost_rate = parsed.get("facility_cost_per_time")
+    if (
+        facility_cost_rate is None
+        and parsed["operating_cost"] is not None
+        and parsed["makespan"] is not None
+        and parsed["makespan"] > 0.0
+    ):
+        facility_cost_rate = parsed["operating_cost"] / parsed["makespan"]
     seed = _evaluation_seed(base_seed, physical_instance_id)
     result = simulate_fixed_schedule(
         schedule,
@@ -621,6 +745,27 @@ def evaluate_solution(
         seed=seed,
         config=simulation_config,
     )
+    joint_successes = int(round(
+        result.all_jobs_ontime_probability * result.replications
+    ))
+    joint_wilson_lower_bound = wilson_lower_bound(
+        joint_successes, result.replications, confidence
+    )
+    simulated_total_costs = None
+    if (
+        parsed["processing_cost"] is not None
+        and facility_cost_rate is not None
+        and penalty is not None
+    ):
+        simulated_total_costs = np.asarray([
+            parsed["processing_cost"]
+            + facility_cost_rate * makespan
+            + penalty * tardiness
+            for makespan, tardiness in zip(
+                result.replication_makespans,
+                result.replication_total_tardiness,
+            )
+        ])
 
     job_rows = []
     for index, job in enumerate(result.job_ids):
@@ -674,6 +819,15 @@ def evaluate_solution(
             "mc_ontime_probability": probability,
             "mc_mean_completion_time": float(result.job_mean_completion_times[index]),
             "mc_mean_completion_delay": float(result.job_mean_completion_delays[index]),
+            "mc_completion_delay_p90": float(
+                result.job_completion_delay_p90[index]
+            ),
+            "mc_completion_delay_p95": float(
+                result.job_completion_delay_p95[index]
+            ),
+            "mc_mean_tardiness": float(result.job_mean_tardiness[index]),
+            "mc_tardiness_p90": float(result.job_tardiness_p90[index]),
+            "mc_tardiness_p95": float(result.job_tardiness_p95[index]),
             "mc_completion_delay_standard_error": float(result.job_completion_delay_standard_errors[index]),
             "service_level_threshold": threshold,
             "mc_meets_service_threshold": probability >= threshold,
@@ -724,6 +878,7 @@ def evaluate_solution(
         "objective": parsed["objective"],
         "processing_cost": parsed["processing_cost"],
         "operating_cost": parsed["operating_cost"],
+        "facility_cost_per_time": facility_cost_rate,
         "tardiness_cost": parsed["tardiness_cost"],
         "total_tardiness": parsed["total_tardiness"],
         "total_cost": parsed["total_cost"],
@@ -765,6 +920,47 @@ def evaluate_solution(
         "minimum_bonferroni_wilson_lower_bound": (
             minimum_bonferroni_wilson
         ),
+        "joint_all_jobs_ontime_probability": float(
+            result.all_jobs_ontime_probability
+        ),
+        "joint_all_jobs_ontime_standard_error": float(
+            result.all_jobs_ontime_standard_error
+        ),
+        "joint_all_jobs_ontime_wilson_lower_bound": joint_wilson_lower_bound,
+        "joint_all_jobs_meets_service_threshold": (
+            result.all_jobs_ontime_probability >= threshold
+        ),
+        "mean_simulated_makespan": float(result.mean_simulated_makespan),
+        "simulated_makespan_p90": float(result.simulated_makespan_p90),
+        "simulated_makespan_p95": float(result.simulated_makespan_p95),
+        "mean_makespan_increase": float(result.mean_makespan_increase),
+        "mean_simulated_total_tardiness": float(result.mean_total_tardiness),
+        "simulated_total_tardiness_p90": float(result.total_tardiness_p90),
+        "simulated_total_tardiness_p95": float(result.total_tardiness_p95),
+        "mean_simulated_total_cost": (
+            float(np.mean(simulated_total_costs))
+            if simulated_total_costs is not None else None
+        ),
+        "simulated_total_cost_p90": (
+            float(np.quantile(simulated_total_costs, 0.90))
+            if simulated_total_costs is not None else None
+        ),
+        "simulated_total_cost_p95": (
+            float(np.quantile(simulated_total_costs, 0.95))
+            if simulated_total_costs is not None else None
+        ),
+        "mean_operation_start_shift": float(
+            result.mean_operation_start_shift
+        ),
+        "operation_start_shift_p90": float(
+            result.operation_start_shift_p90_overall
+        ),
+        "operation_start_shift_p95": float(
+            result.operation_start_shift_p95_overall
+        ),
+        "maximum_mean_operation_start_shift": float(
+            result.maximum_mean_operation_start_shift
+        ),
         "simulation_replications": int(result.replications),
         "simulation_model": "preempt_resume",
         "simulation_seed": seed,
@@ -776,6 +972,61 @@ def evaluate_solution(
         "solver_progress_file": relative_progress_path,
         "solver_progress_points": parsed.get("solver_progress_points"),
     }
+    operation_to_job = {
+        operation: job
+        for job, operations in schedule.jobs.items()
+        for operation in operations
+    }
+    operation_rows = []
+    for index, operation in enumerate(schedule.operations):
+        planned_start = float(schedule.planned_starts[operation])
+        processing_time = float(schedule.processing_times[operation])
+        operation_rows.append({
+            "instance_name": parsed["instance_name"],
+            "physical_instance_id": physical_instance_id,
+            "evaluation_tier": job_rows[0]["evaluation_tier"],
+            "solver": parsed["solver"],
+            "model": parsed["model_name"],
+            "formulation": parsed["formulation"],
+            "status": parsed["status"],
+            "postsolve_evaluation_status": "evaluated",
+            "operation_id": operation,
+            "job_id": operation_to_job[operation],
+            "machine_id": schedule.selected_machines[operation],
+            "planned_start": planned_start,
+            "planned_completion": planned_start + processing_time,
+            "processing_time": processing_time,
+            "mc_mean_start": float(result.operation_mean_start_times[index]),
+            "mc_mean_start_shift": float(
+                result.operation_mean_start_shifts[index]
+            ),
+            "mc_start_shift_p90": float(
+                result.operation_start_shift_p90[index]
+            ),
+            "mc_start_shift_p95": float(
+                result.operation_start_shift_p95[index]
+            ),
+            "mc_maximum_start_shift": float(
+                result.operation_maximum_start_shifts[index]
+            ),
+            "mc_probability_start_shifted": float(
+                result.operation_start_shift_probabilities[index]
+            ),
+            "mc_failure_probability": float(
+                result.operation_failure_probabilities[index]
+            ),
+            "mc_mean_direct_repair_delay": float(
+                result.operation_mean_repair_delays[index]
+            ),
+            "mc_mean_repair_duration_when_affected": float(
+                result.operation_mean_repair_durations[index]
+            ),
+            "simulation_replications": int(result.replications),
+            "simulation_seed": seed,
+            "solution_file": relative_solution_path,
+        })
+    if return_operation_rows:
+        return schedule_row, job_rows, operation_rows
     return schedule_row, job_rows
 
 
@@ -784,8 +1035,11 @@ def _write_csv(path, rows):
         raise ValueError(f"Cannot write an empty comparison table: {path}")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(dict.fromkeys(
+        key for row in rows for key in row
+    ))
     with path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -809,6 +1063,11 @@ _PRESENTATION_COLUMNS = (
     ("maximum_internal_repair_buffer", "max. Reparaturpuffer [ZE]"),
     ("repair_buffer_mae", "Puffer-MAE [ZE]"),
     ("minimum_mc_ontime_probability", "min. MC"),
+    ("joint_all_jobs_ontime_probability", "alle Jobs pünktlich"),
+    ("mean_makespan_increase", "mittl. Makespan-Anstieg [ZE]"),
+    ("mean_simulated_total_tardiness", "mittl. simulierte Verspätung [ZE]"),
+    ("simulated_total_tardiness_p95", "P95 simulierte Verspätung [ZE]"),
+    ("mean_operation_start_shift", "mittl. Startverschiebung [ZE]"),
     ("minimum_wilson_lower_bound", "Wilson-LB"),
     (
         "minimum_bonferroni_wilson_lower_bound",
@@ -856,6 +1115,11 @@ def _presentation_value(key, value):
         "maximum_internal_repair_buffer",
         "repair_buffer_mae",
         "minimum_mc_ontime_probability",
+        "joint_all_jobs_ontime_probability",
+        "mean_makespan_increase",
+        "mean_simulated_total_tardiness",
+        "simulated_total_tardiness_p95",
+        "mean_operation_start_shift",
         "minimum_wilson_lower_bound",
         "minimum_bonferroni_wilson_lower_bound",
     }:
@@ -1079,8 +1343,9 @@ def run_evaluation(
     paths = _solution_paths(solutions or [], solutions_root)
     schedule_rows = []
     job_rows = []
+    operation_rows = []
     for position, path in enumerate(paths, start=1):
-        schedule_row, rows = evaluate_solution(
+        evaluated = evaluate_solution(
             path,
             instances_root=instances_root,
             replications=replications,
@@ -1088,9 +1353,18 @@ def run_evaluation(
             confidence=confidence,
             simulation_config=simulation_config,
             service_level_threshold=evaluation_config.get('service_level_threshold', 0.90),
+            return_operation_rows=True,
         )
+        if len(evaluated) == 3:
+            schedule_row, rows, operations = evaluated
+        else:
+            # Compatibility with custom evaluators written against the older
+            # two-table interface.
+            schedule_row, rows = evaluated
+            operations = []
         schedule_rows.append(schedule_row)
         job_rows.extend(rows)
+        operation_rows.extend(operations)
         if schedule_row["postsolve_evaluation_status"] == "evaluated":
             print(
                 f"EVALUATED {position}/{len(paths)} | "
@@ -1120,12 +1394,19 @@ def run_evaluation(
         row["evaluation_tier"], row["instance_name"], row["model"],
         int(row["job_id"]),
     ))
+    operation_rows.sort(key=lambda row: (
+        row["evaluation_tier"], row["instance_name"], row["model"],
+        int(row["operation_id"]),
+    ))
     result_path = output_directory / "result_table.csv"
     latex_path = output_directory / "result_table.tex"
     pdf_path = output_directory / "result_table.pdf"
     job_path = output_directory / "job_comparison.csv"
+    operation_path = output_directory / "operation_comparison.csv"
     _write_csv(result_path, schedule_rows)
     _write_csv(job_path, job_rows)
+    if operation_rows:
+        _write_csv(operation_path, operation_rows)
     _write_latex_table(latex_path, schedule_rows, confidence)
     _write_pdf_table(pdf_path, schedule_rows, confidence)
     diagnostic_paths = {}
@@ -1199,6 +1480,7 @@ def run_evaluation(
             for row in schedule_rows
         ),
         "job_row_count": len(job_rows),
+        "operation_row_count": len(operation_rows),
         "replications": replications,
         "random_seed": random_seed,
         "seed_scope": (
@@ -1210,27 +1492,46 @@ def run_evaluation(
         "bonferroni_scope": "all jobs within one schedule",
         "simulation_parameters": simulation_config_dict(simulation_config),
         "completion_semantics": "Preempt-resume execution with fixed assignments and sequences; delays propagate over job and machine predecessors.",
+        "right_shift_metrics": (
+            "Start shifts are measured relative to planned operation starts; "
+            "makespan, tardiness and joint on-time metrics are calculated "
+            "within each Monte-Carlo replication before aggregation."
+        ),
+        "simulated_cost_semantics": (
+            "processing_cost + facility_cost_per_time * simulated_makespan "
+            "+ tardiness_cost_per_time * simulated_total_tardiness; "
+            "calculated separately within every replication"
+        ),
         "repair_buffer_semantics": "Unscaled deterministic sum of local midpoint residual-repair expectations; distinct from execution delay.",
         "service_level_threshold": evaluation_config.get("service_level_threshold", 0.90),
         "result_table_csv": str(result_path),
         "result_table_latex": str(latex_path),
         "result_table_pdf": str(pdf_path),
         "job_comparison": str(job_path),
+        "operation_comparison": (
+            str(operation_path) if operation_rows else None
+        ),
         "gnn_diagnostics": diagnostic_paths,
     }, indent=2), encoding="utf-8")
     print(f"WROTE {result_path}")
     print(f"WROTE {latex_path}")
     print(f"WROTE {pdf_path}")
     print(f"WROTE {job_path}")
+    if operation_rows:
+        print(f"WROTE {operation_path}")
     print(f"WROTE {metadata_path}")
     result = {
         "result_table_csv": result_path,
         "result_table_latex": latex_path,
         "result_table_pdf": pdf_path,
         "job_comparison": job_path,
+        "operation_comparison": (
+            operation_path if operation_rows else None
+        ),
         "metadata": metadata_path,
         "schedule_rows": schedule_rows,
         "job_rows": job_rows,
+        "operation_rows": operation_rows,
         "gnn_diagnostics": diagnostic_paths,
     }
     if bool(numerical_analysis.get("enabled", False)):
