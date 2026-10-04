@@ -14,18 +14,17 @@
 set -e
 
 # =============================================================================
-# QUEUE SCRIPT - Submits multiple jobs to the SLURM scheduler
+# QUEUE SCRIPT - Submits the complete solve run to the SLURM scheduler
 # =============================================================================
-# This script prepares the extrapolation instances and submits one job per case.
+# This script prepares the environment and submits one complete solve job.
 # Modify the parameters below to adjust resource allocation for your jobs.
 # Navigate into the project directory and run this script via sbatch queue.sh
 # =============================================================================
 
 # Default values (can be overridden via environment variables)
-export walltime=12:00:00   # maximum time for one extrapolation case
+export walltime=12:00:00   # maximum time for the complete solve run
 export memory=16G          # memory per job
 export partition=mpp.share # cluster partition
-export job_array=0-24%8    # 25 jobs with 1 case each, at most 8 at the same time
 
 # Get the directory of this script (use SLURM_SUBMIT_DIR when running in SLURM)
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}/cluster_files"
@@ -39,27 +38,20 @@ module load uv/0.9.22        # Python package manager for virtual environments
 
 uv sync
 
-# Use the cluster license while preparing the calibrated due dates
-export GRB_LICENSE_FILE=/sw/apps/software/arch/Compiler/GCCcore/14.3.0/Gurobi/13.0.3/gurobi.lic
-
 mkdir -p "$PROJECT_PATH/logs/Gurobi" "$PROJECT_PATH/logs/out" "$PROJECT_PATH/logs/error"
 
-echo "Preparing the extrapolation instances..."
-uv run main.py --prepare-solve-instances
-
-echo "Submitting the FJSP extrapolation jobs..."
+echo "Submitting the complete FJSP solve job..."
 
 sbatch --export=ALL \
        --job-name="fjsp_extrapolation" \
-       --array="$job_array" \
        --time="$walltime" \
        --mem="$memory" \
        --cpus-per-task=4 \
        --partition="$partition" \
        --mail-user=moritz.sarstedt@stud.uni-hannover.de \
        --mail-type=BEGIN,END,FAIL \
-       --output="$PROJECT_PATH/logs/out/fjsp_%A_%a.out" \
-       --error="$PROJECT_PATH/logs/error/fjsp_%A_%a.err" \
+       --output="$PROJECT_PATH/logs/out/fjsp_%j.out" \
+       --error="$PROJECT_PATH/logs/error/fjsp_%j.err" \
        "$SCRIPT_DIR/job.sh"
 
 echo "Job submitted."

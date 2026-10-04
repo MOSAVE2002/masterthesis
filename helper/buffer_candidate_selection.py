@@ -1,9 +1,19 @@
-"""Input-aware deduplication and cost/buffer/structure coverage selection."""
+"""Select diverse graph samples from a fix-and-optimize candidate pool.
+
+Candidates are deduplicated by the actual GNN input and then selected to cover
+economic cost, repair-buffer distributions and scheduling structures. The
+procedure is deterministic for an ordered candidate pool.
+"""
 import json
 import numpy as np
 
 
 def input_signature(candidate):
+    """Build a hashable signature of all values visible to the GNN.
+
+    Node features are rounded to seven decimal places to suppress insignificant
+    serialization noise; job memberships and directed edges remain exact.
+    """
     row = candidate['row']
     return (tuple(tuple(round(float(v), 7) for v in x) for x in json.loads(row['gnn_node_features'])),
             tuple(json.loads(row['operation_job_indices'])),
@@ -11,6 +21,11 @@ def input_signature(candidate):
 
 
 def unique_input_candidates(candidates):
+    """Keep the first candidate for every distinct GNN input signature.
+
+    Returns:
+        Input-order-preserving list without duplicate model inputs.
+    """
     result, seen = [], set()
     for candidate in candidates:
         key = input_signature(candidate)
@@ -21,7 +36,14 @@ def unique_input_candidates(candidates):
 
 
 def select_buffer_candidates(candidates, count):
-    """mix462 at count=12: four cost/buffer quadrants, six buffer, two structure."""
+    """Select candidates covering cost, buffer and graph-structure variation.
+
+    The selection first covers high/low cost-buffer quadrants, then balances
+    per-job buffer quantile bins and finally maximizes assignment/edge novelty.
+
+    Returns:
+        Selected candidate dictionaries with their assigned coverage category.
+    """
     pool = unique_input_candidates(candidates)
     count = int(count)
     if count <= 0 or len(pool) < count:
@@ -43,8 +65,16 @@ def select_buffer_candidates(candidates, count):
     z = (y - y.min(axis=0)) / np.maximum(np.ptp(y, axis=0), 1e-8)
     chosen, roles = [], {}
     def add(i, role):
+        """Record a pool index once together with its selection rationale.
+
+        The recorded role is later written beside the selected candidate.
+        """
         chosen.append(int(i)); roles[int(i)] = role
     def novelty(i):
+        """Measure a candidate's distance from its nearest selected structure.
+
+        An empty selection has zero novelty because no comparison exists yet.
+        """
         return float(distances[i, chosen].min()) if chosen else 0.
     cz = (cost - cost.min()) / max(float(np.ptp(cost)), 1e-8)
     bz = (mean - mean.min()) / max(float(np.ptp(mean)), 1e-8)

@@ -1,11 +1,14 @@
-"""Economic cost and unscaled buffered due dates from the thesis formulation."""
+"""Add the shared economic objective and soft due dates to FJSP models.
 
-from __future__ import annotations
+Nominal, nonlinear and GNN formulations use these helpers so processing,
+facility and tardiness costs remain directly comparable. Optional expected
+repair buffers shift job completion requirements without hard infeasibility.
+"""
 
 import gurobipy as gp
 from gurobipy import GRB
 
-from helper.stochastic_fjsp import ensure_stochastic_parameters
+from helper.stochastic_fjsp import ensure_profile_parameters
 
 
 def add_due_date_tardiness_constraints(
@@ -14,10 +17,36 @@ def add_due_date_tardiness_constraints(
     instance,
     job_repair_buffers=None,
 ):
-    """Add C_end + B_job <= due_date + L_job, with no service-level factor."""
-    buffers = job_repair_buffers or {
-        job: 0.0 for job in instance.job_end_operations
-    }
+    """Add soft due-date constraints and one tardiness variable per job.
+
+    For every job, the constraint compares the completion time of its final
+    operation plus an optional expected repair buffer with the configured due
+    date. The nonnegative variable ``L_job`` absorbs any violation, so the due
+    date remains feasible but its violation can be penalized in the objective.
+    If no repair buffers are supplied, every buffer is set to zero.
+
+    Parameters
+    ----------
+    model : gurobipy.Model
+        Gurobi model to which the variables and constraints are added.
+    variables : dict
+        Shared model data containing the operation-completion variables under
+        ``"C"``. The new constraints, tardiness variables and buffers are
+        added to this dictionary.
+    instance : FJSPData
+        Problem instance containing job-end operations and due dates.
+    job_repair_buffers : dict, optional
+        Mapping from job identifiers to constant or Gurobi expressions for
+        expected repair delays. The default is zero for every job.
+
+    Returns
+    -------
+    dict
+        Mapping from each job to its generated due-date constraint.
+    """
+    buffers = job_repair_buffers or dict.fromkeys(
+        instance.job_end_operations, 0.0
+    )
     jobs = list(instance.job_end_operations)
     tardiness = model.addVars(
         jobs, lb=0.0, vtype=GRB.CONTINUOUS, name="L"
@@ -29,26 +58,36 @@ def add_due_date_tardiness_constraints(
             <= float(instance.due_dates[job]) + tardiness[job],
             name=f"due_date_with_tardiness[{job}]",
         )
-    # Keep legacy dictionary aliases for readers of archived solution formats.
-    # None of these aliases introduces a service grade or scales the buffer.
     variables.update({
         "due_date_constraints": constraints,
-        "job_service_level_violation": tardiness,
-        "job_expected_delays": buffers,
-        "job_service_level_buffers": buffers,
         "job_tardiness": tardiness,
-        "job_due_date_violation": tardiness,
         "job_repair_buffers": buffers,
-        "job_expected_repair_buffers": buffers,
-        "service_constraint_is_soft": True,
-        "service_constraint_bound": "unscaled_expected_local_repair_buffer",
         "due_dates": dict(instance.due_dates),
     })
     return constraints
 
 
 def add_nominal_due_date_constraints(model, variables, instance):
-    """Add nominal tardiness constraints (B_job = 0)."""
+    """Add soft due-date constraints without repair buffers.
+
+    This is the nominal special case of
+    :func:`add_due_date_tardiness_constraints`, in which every job-specific
+    repair buffer is zero.
+
+    Parameters
+    ----------
+    model : gurobipy.Model
+        Gurobi model to which the constraints are added.
+    variables : dict
+        Shared model data containing the completion-time variables.
+    instance : FJSPData
+        Problem instance containing job-end operations and due dates.
+
+    Returns
+    -------
+    dict
+        Mapping from each job to its generated nominal due-date constraint.
+    """
     constraints = add_due_date_tardiness_constraints(
         model, variables, instance
     )
@@ -56,23 +95,30 @@ def add_nominal_due_date_constraints(model, variables, instance):
     return constraints
 
 
-def add_robust_due_date_constraints(
-    model,
-    variables,
-    instance,
-    job_repair_buffers,
-):
-    """Add the unscaled repair-buffer due-date condition."""
-    constraints = add_due_date_tardiness_constraints(
-        model,
-        variables,
-        instance,
-        job_repair_buffers,
+def add_makespan(model, variables, instance):
+    """Create and link the maximum job-completion variable.
+
+    Args:
+        model: Gurobi model receiving the makespan constraints.
+        variables: Shared dictionary containing completion times and horizon.
+        instance: FJSP instance defining every job's final operation.
+
+    Returns:
+        The created continuous makespan variable, also stored as ``C_max``.
+    """
+    makespan = model.addVar(
+        lb=0.0,
+        ub=float(variables["H"]),
+        vtype=GRB.CONTINUOUS,
+        name="C_max",
     )
-    variables.update({
-        "robust_due_date_constraints": constraints,
-    })
-    return constraints
+    for job, end_operation in instance.job_end_operations.items():
+        model.addConstr(
+            makespan >= variables["C"][end_operation],
+            name=f"makespan[{job}]",
+        )
+    variables["C_max"] = makespan
+    return makespan
 
 
 def add_economic_cost_objective(
@@ -81,23 +127,48 @@ def add_economic_cost_objective(
     instance,
     *,
     facility_cost_per_time=1.0,
-    service_violation_cost_per_time=1.0,
-    tardiness_cost_per_time=None,
+    tardiness_cost_per_time=1.0,
 ):
-    """Minimize processing, operating and buffered due-date violation costs."""
-    ensure_stochastic_parameters(instance)
+    """Set the economic objective for the nominal or buffered FJSP model.
+
+    The objective minimizes the sum of assignment-dependent machine
+    processing costs, facility operating costs over the makespan and tardiness
+    penalties. An existing makespan variable is reused; otherwise, the
+    function creates one and links it to every job's final operation. Due-date
+    constraints must already have created the job-tardiness variables.
+
+    Parameters
+    ----------
+    model : gurobipy.Model
+        Gurobi model whose minimization objective is set.
+    variables : dict
+        Shared model data containing machine assignments, processing times,
+        the time horizon and job-tardiness variables. The objective components
+        are added to this dictionary for reporting.
+    instance : FJSPData
+        Problem instance providing machine costs and job-end operations.
+    facility_cost_per_time : float, optional
+        Nonnegative cost incurred per unit of makespan.
+    tardiness_cost_per_time : float, optional
+        Nonnegative penalty incurred per unit of total job tardiness.
+
+    Returns
+    -------
+    gurobipy.LinExpr
+        Linear expression representing total economic cost.
+
+    Raises
+    ------
+    ValueError
+        If a facility, tardiness or machine-processing cost is negative.
+    """
+    ensure_profile_parameters(instance)
     facility_cost_per_time = float(facility_cost_per_time)
     if facility_cost_per_time < 0.0:
         raise ValueError("facility_cost_per_time must be nonnegative.")
-    if tardiness_cost_per_time is not None:
-        service_violation_cost_per_time = tardiness_cost_per_time
-    service_violation_cost_per_time = float(
-        service_violation_cost_per_time
-    )
-    if service_violation_cost_per_time < 0.0:
-        raise ValueError(
-            "service_violation_cost_per_time must be nonnegative."
-        )
+    tardiness_cost_per_time = float(tardiness_cost_per_time)
+    if tardiness_cost_per_time < 0.0:
+        raise ValueError("tardiness_cost_per_time must be nonnegative.")
     machine_cost = {
         machine: float(instance.machine_cost[machine])
         for machine in variables["machines"]
@@ -107,18 +178,7 @@ def add_economic_cost_objective(
 
     makespan = variables.get("C_max")
     if makespan is None:
-        makespan = model.addVar(
-            lb=0.0,
-            ub=float(variables["H"]),
-            vtype=GRB.CONTINUOUS,
-            name="C_max",
-        )
-        for job, end_operation in instance.job_end_operations.items():
-            model.addConstr(
-                makespan >= variables["C"][end_operation],
-                name=f"economic_makespan[{job}]",
-            )
-        variables["C_max"] = makespan
+        makespan = add_makespan(model, variables, instance)
 
     processing_cost = gp.quicksum(
         machine_cost[machine]
@@ -127,24 +187,18 @@ def add_economic_cost_objective(
         for operation, machine in variables["Y_index"]
     )
     operating_cost = facility_cost_per_time * makespan
-    job_violation = variables.get("job_service_level_violation", {})
-    total_violation = gp.quicksum(job_violation.values())
-    service_violation_cost = (
-        service_violation_cost_per_time * total_violation
-    )
-    total_cost = processing_cost + operating_cost + service_violation_cost
+    total_tardiness = gp.quicksum(variables["job_tardiness"].values())
+    tardiness_cost = tardiness_cost_per_time * total_tardiness
+    total_cost = processing_cost + operating_cost + tardiness_cost
     model.setObjective(total_cost, GRB.MINIMIZE)
     variables.update({
         "machine_cost": machine_cost,
         "facility_cost_per_time": facility_cost_per_time,
-        "service_violation_cost_per_time": service_violation_cost_per_time,
-        "tardiness_cost_per_time": service_violation_cost_per_time,
+        "tardiness_cost_per_time": tardiness_cost_per_time,
         "processing_cost": processing_cost,
         "operating_cost": operating_cost,
-        "total_service_level_violation": total_violation,
-        "service_violation_cost": service_violation_cost,
-        "total_tardiness": total_violation,
-        "tardiness_cost": service_violation_cost,
+        "total_tardiness": total_tardiness,
+        "tardiness_cost": tardiness_cost,
         "total_cost": total_cost,
         "objective_mode": "minimize_economic_cost_with_buffered_tardiness",
         "objective_definition": (

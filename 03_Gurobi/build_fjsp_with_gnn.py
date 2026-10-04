@@ -1,15 +1,22 @@
+"""Embed a trained repair-buffer GNN exactly into the FJSP MILP.
+
+The module loads a trained PyTorch state dictionary and reconstructs its
+forward pass with Gurobi variables and constraints. It creates the operation
+features from scheduling decisions, propagates valid interval bounds, models
+ReLU activations exactly and aggregates operation embeddings into one
+nonnegative expected repair buffer per job. These buffers extend the shared
+FJSP formulation through soft due dates and the common economic objective.
+"""
+
 import importlib
 import json
 import math
-import sys
 from pathlib import Path
 
-from helper.time_units import normalize_time_unit
-from helper.local_buffer import JOB_TARGET, LABEL_METHOD
+from helper.local_buffer import JOB_TARGET, LABEL_METHOD, TARGET_COLUMN
 
 import gurobipy as gp
 from gurobipy import GRB
-from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
     add_economic_cost_objective,
     add_due_date_tardiness_constraints,
@@ -17,47 +24,42 @@ from helper.economic_objective import (
 import torch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+base_fjsp = importlib.import_module("03_Gurobi.build_fjsp")
 
-_base_fjsp = importlib.import_module("03_Gurobi.build_fjsp")
-STATUS_NAMES = _base_fjsp.STATUS_NAMES
-build_base_fjsp = _base_fjsp.build_fjsp  
-
-from helper.surrogate_constraint import (
-    CONSTRAINT_WEIBULL,
-    target_column,
-    validate_constraint_type,
-)
 from helper.sequence_setup import (
     RELIABILITY_GNN_GRAPH_SCHEMA,
     RELIABILITY_GNN_OUTPUT_HEAD,
+    RELIABILITY_SERVICE_SCOPE,
     add_reliability_graph_variables,
-    normalize_reliability_graph_config,
     reliability_graph_config_dict,
     reliability_node_feature_names,
 )
 from helper.stochastic_fjsp import (
-    ensure_stochastic_parameters,
     normalize_machine_profile_config,
     stochastic_parameters,
 )
-_gnn_architecture = importlib.import_module(
+gnn_architecture = importlib.import_module(
     "04_GraphNeuralNetworks.models.gnn_architecture"
 )
-CONV_LINEAR = _gnn_architecture.CONV_LINEAR
-CONV_SAGE = _gnn_architecture.CONV_SAGE
-CONV_JOB = _gnn_architecture.CONV_JOB
-POOL_ADD = _gnn_architecture.POOL_ADD
-VALID_LAYER_COUNTS = _gnn_architecture.VALID_LAYER_COUNTS
-validate_architecture = _gnn_architecture.validate_architecture
-
-GRAPH_MODE_FIXED_CANDIDATE = "fixed_candidate"
-EXPECTED_OUTPUT_HEAD = RELIABILITY_GNN_OUTPUT_HEAD
-EXPECTED_GRAPH_SCHEMA = RELIABILITY_GNN_GRAPH_SCHEMA
+CONV_LINEAR = gnn_architecture.CONV_LINEAR
+CONV_SAGE = gnn_architecture.CONV_SAGE
+CONV_JOB = gnn_architecture.CONV_JOB
+VALID_LAYER_COUNTS = gnn_architecture.VALID_LAYER_COUNTS
+validate_architecture = gnn_architecture.validate_architecture
 
 
-def _resolve_path(path_value):
+def resolve_path(path_value):
+    """Resolve a required artifact path relative to the project root.
+
+    Args:
+        path_value: Absolute path or project-relative path to a model artifact.
+
+    Returns:
+        A :class:`pathlib.Path` that is absolute or anchored at ``ROOT_DIR``.
+
+    Raises:
+        ValueError: If no path value was supplied.
+    """
     if path_value in (None, ""):
         raise ValueError("Both model_path and metadata_path are required.")
     path = Path(path_value)
@@ -66,148 +68,198 @@ def _resolve_path(path_value):
     return path
 
 
-def _load_metadata(metadata_path):
-    # load data from trained model
+def load_metadata(metadata_path, instance):
+    """Load and validate the metadata required for an exact GNN embedding.
+
+    The checks ensure that architecture, output definition, graph schema,
+    feature order, message-passing edges and machine profiles agree with the
+    active solver implementation and the instance being optimized. A model is
+    rejected before construction if any training assumption is incompatible.
+
+    Args:
+        metadata_path: JSON file stored next to the trained model weights.
+        instance: FJSP instance whose machine profiles must match the training
+            configuration recorded in the metadata.
+
+    Returns:
+        A pair containing the complete metadata dictionary and the normalized
+        architecture dictionary.
+
+    Raises:
+        FileNotFoundError: If the metadata file does not exist.
+        ValueError: If the saved model is incompatible with the active graph,
+            features, labels, architecture or machine profiles.
+    """
     if not metadata_path.exists():
         raise FileNotFoundError(f"GNN metadata file not found: {metadata_path}")
 
     with metadata_path.open(encoding="utf-8") as file:
         metadata = json.load(file)
 
-    graph_mode = metadata.get("graph_mode", GRAPH_MODE_FIXED_CANDIDATE)
-    if graph_mode != GRAPH_MODE_FIXED_CANDIDATE:
+    architecture = validate_architecture(metadata["convolution"])
+    if any(
+        metadata[key] != value
+        for key, value in architecture.items()
+    ):
         raise ValueError(
-            "The embedded Gurobi GNN solver currently supports only "
-            "graph_mode='fixed_candidate'. Please retrain/use a fixed-candidate "
-            "GNN model for direct MILP embedding."
+            "GNN metadata contains an incompatible graph architecture."
         )
-
-    architecture = validate_architecture(
-        GRAPH_MODE_FIXED_CANDIDATE,
-        metadata.get("convolution", CONV_SAGE),
-        metadata.get("aggregation", "sum"),
-        metadata.get("pooling", "global_add"),
-    )
     convolution = architecture["convolution"]
-    if metadata.get("output_head") != EXPECTED_OUTPUT_HEAD:
+    if metadata["output_head"] != RELIABILITY_GNN_OUTPUT_HEAD:
         raise ValueError(
             "The embedded repair-buffer GNN requires output_head="
-            f"{EXPECTED_OUTPUT_HEAD!r}."
+            f"{RELIABILITY_GNN_OUTPUT_HEAD!r}."
         )
-    if metadata.get("target_column") != target_column(CONSTRAINT_WEIBULL):
+    if metadata["target_column"] != TARGET_COLUMN:
         raise ValueError(
             "The embedded GNN requires local midpoint repair buffers."
         )
-    if metadata.get("job_target") != JOB_TARGET:
+    if metadata["job_target"] != JOB_TARGET:
         raise ValueError(
             "The embedded GNN requires one local repair buffer per job."
         )
-    if metadata.get("job_repair_buffer_label_method") != LABEL_METHOD:
-        raise ValueError("Old or unknown GNN labels; regenerate local labels and retrain.")
+    if metadata["job_repair_buffer_label_method"] != LABEL_METHOD:
+        raise ValueError(
+            "Unknown GNN labels; regenerate local labels and retrain."
+        )
     if (
         convolution in {CONV_SAGE, CONV_JOB}
-        and not metadata.get("include_job_precedence_edges", False)
+        and not metadata["include_job_precedence_edges"]
     ):
         raise ValueError("The job-buffer GNN requires fixed job edges.")
     if (
         convolution == CONV_SAGE
-        and not metadata.get("include_machine_predecessor_edges", False)
+        and not metadata["include_machine_predecessor_edges"]
     ):
         raise ValueError("The active GNN pipeline requires machine edges.")
     if (
         convolution != CONV_SAGE
-        and metadata.get("include_machine_predecessor_edges", False)
+        and metadata["include_machine_predecessor_edges"]
     ):
         raise ValueError(
             f"{convolution} metadata must not enable machine messages."
         )
     expected_machine_scope = "direct" if convolution == CONV_SAGE else "none"
-    if metadata.get("machine_predecessor_edge_scope") != expected_machine_scope:
+    if metadata["machine_predecessor_edge_scope"] != expected_machine_scope:
         raise ValueError(
             f"The embedded {convolution} model requires "
             "machine_predecessor_edge_scope="
             f"{expected_machine_scope!r}."
         )
-    if metadata.get("graph_schema") != EXPECTED_GRAPH_SCHEMA:
+    if metadata["graph_schema"] != RELIABILITY_GNN_GRAPH_SCHEMA:
         raise ValueError(
             "The embedded GNN requires graph_schema="
-            f"{EXPECTED_GRAPH_SCHEMA!r}."
+            f"{RELIABILITY_GNN_GRAPH_SCHEMA!r}."
         )
     expected_message_passing = (
         "none" if convolution == CONV_LINEAR else "source_node_states_only"
     )
-    if metadata.get("message_passing") != expected_message_passing:
+    if metadata["message_passing"] != expected_message_passing:
         raise ValueError(
             f"The embedded {convolution} model requires message_passing="
             f"{expected_message_passing!r}."
         )
+    expected_features = reliability_node_feature_names()
+    if metadata["feature_names"] != expected_features:
+        raise ValueError(
+            "GNN feature order does not match the embedded FJSP features: "
+            f"expected {expected_features}, got {metadata['feature_names']}."
+        )
+    if int(metadata["input_size"]) != len(expected_features):
+        raise ValueError(
+            f"GNN input_size={metadata['input_size']} does not match "
+            f"{len(expected_features)} embedded FJSP features."
+        )
+    num_layers = int(metadata["num_graphsage_layers"])
+    if num_layers not in VALID_LAYER_COUNTS:
+        choices = ", ".join(map(str, sorted(VALID_LAYER_COUNTS)))
+        raise ValueError(f"GNN metadata must specify one of {choices} layers.")
+    if int(metadata["hidden_channels"]) <= 0:
+        raise ValueError("GNN hidden_channels must be positive.")
 
-    return metadata
+    expected_graph_config = reliability_graph_config_dict()
+    metadata_graph_config = metadata["reliability_graph_config"]
+    if metadata_graph_config != expected_graph_config:
+        raise ValueError(
+            "GNN reliability-graph parameters differ from the solver model: "
+            f"metadata={metadata_graph_config}, "
+            f"solver={expected_graph_config}."
+        )
+    metadata_profiles = metadata.get("machine_profile_config")
+    if metadata_profiles is None:
+        raise ValueError(
+            "GNN metadata does not contain machine_profile_config. "
+            "Regenerate the training data and retrain the GNN before solving."
+        )
+    expected_profiles = normalize_machine_profile_config(metadata_profiles)
+    actual_profiles = normalize_machine_profile_config(
+        instance.machine_profile_config
+    )
+    if expected_profiles != actual_profiles:
+        raise ValueError(
+            "GNN machine profiles differ from the solved instance. "
+            "Regenerate the training data and retrain the GNN."
+        )
+    return metadata, architecture
 
 
-def _load_state_dict(model_path):
+def load_state_dict(model_path):
+    """Load trained PyTorch parameters as CPU-backed NumPy arrays.
+
+    Loading with ``weights_only=True`` restricts deserialization to the tensor
+    state required for the mathematical embedding. NumPy arrays are returned
+    because the coefficients become constants in Gurobi expressions.
+
+    Args:
+        model_path: Path to the serialized PyTorch state dictionary.
+
+    Returns:
+        Mapping from layer parameter names to NumPy arrays.
+
+    Raises:
+        FileNotFoundError: If the model file does not exist.
+    """
     if not model_path.exists():
         raise FileNotFoundError(f"GNN model file not found: {model_path}")
 
     return {
         key: value.detach().cpu().numpy()
-        for key, value in torch.load(model_path, map_location="cpu").items() # Jeder Pytorch Tensor wird in ein Numpy Array umgewandelt
+        for key, value in torch.load(
+            model_path, map_location="cpu", weights_only=True
+        ).items()
     }
 
 
-def _add_stochastic_machine_state(
-    model,
-    variables,
-    instance,
-    reliability_graph_config=None,
-):
-    """Attach the machine parameters used by every surrogate feature set."""
-    graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
-    ensure_stochastic_parameters(instance)
+def add_stochastic_machine_state(variables, instance):
+    """Attach stochastic machine parameters to the shared variable mapping.
+
+    Args:
+        variables: Mutable dictionary returned by the base FJSP builder.
+        instance: FJSP instance providing Weibull and repair parameters.
+
+    Side Effects:
+        Adds ``weibull_alpha``, ``weibull_beta`` and ``repair_rate`` mappings
+        to ``variables`` for later node-feature construction.
+    """
     parameters = stochastic_parameters(instance)
-    alpha = parameters["alpha"]
-    beta = parameters["beta"]
-    repair_durations = {
-        (operation, machine): parameters["repair_duration"][machine]
-        for operation, machine in variables["Y_index"]
-    }
-    variables.update(
-        {
-            "machine_modernity": parameters["theta"],
-            "machine_speed": parameters["speed"],
-            "weibull_alpha": alpha,
-            "weibull_beta": beta,
-            "repair_rate": parameters["repair_rate"],
-            "repair_durations": repair_durations,
-            "reliability_graph_config": reliability_graph_config_dict(
-                graph_cfg
-            ),
-        }
-    )
-    return variables
+    variables.update({
+        "weibull_alpha": parameters["alpha"],
+        "weibull_beta": parameters["beta"],
+        "repair_rate": parameters["repair_rate"],
+    })
 
 
-def _add_reliability_graph_state(
-    model,
-    variables,
-    instance,
-    reliability_graph_config=None,
-):
-    """Create direct U_ijk edges for SAGE and shared machine parameters."""
-    graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
-    _add_stochastic_machine_state(
-        model, variables, instance, graph_cfg
-    )
-    add_reliability_graph_variables(
-        model,
-        variables,
-        instance,
-        graph_cfg,
-    )
-    return variables
+def linear_expr(coefficients, values, bias=0.0):
+    """Build an affine Gurobi expression with fixed trained coefficients.
 
+    Args:
+        coefficients: Numeric weights of one neural-network output channel.
+        values: Gurobi expressions or numeric inputs in matching order.
+        bias: Constant intercept added to the weighted sum.
 
-def _linear_expr(coefficients, values, bias=0.0):
+    Returns:
+        A :class:`gurobipy.LinExpr` representing the affine transformation.
+    """
     expr = gp.LinExpr(float(bias))
     for coefficient, value in zip(coefficients, values):
         coefficient = float(coefficient)
@@ -216,7 +268,21 @@ def _linear_expr(coefficients, values, bias=0.0):
     return expr
 
 
-def _linear_bounds(coefficients, bounds, bias=0.0):
+def linear_bounds(coefficients, bounds, bias=0.0):
+    """Propagate independent input intervals through an affine transformation.
+
+    For every coefficient, the appropriate interval endpoint is selected from
+    its sign. The resulting bounds are used as valid big-M constants for the
+    exact ReLU formulation.
+
+    Args:
+        coefficients: Numeric weights of one affine output.
+        bounds: ``(lower, upper)`` interval for every corresponding input.
+        bias: Constant intercept of the affine transformation.
+
+    Returns:
+        The lower and upper bound of the affine output.
+    """
     lower = upper = float(bias)
     for coefficient, (value_lower, value_upper) in zip(coefficients, bounds):
         coefficient = float(coefficient)
@@ -229,7 +295,26 @@ def _linear_bounds(coefficients, bounds, bias=0.0):
     return lower, upper
 
 
-def _add_relu(model, expression, name, lower=None, upper=None):
+def add_relu(model, expression, name, lower=None, upper=None):
+    """Represent one bounded ReLU activation exactly in a Gurobi model.
+
+    If the pre-activation interval lies entirely on one side of zero, the ReLU
+    is fixed or kept linear. If the interval crosses zero, one binary phase
+    variable and the ideal single-neuron mixed-integer formulation are added.
+
+    Args:
+        model: Gurobi model receiving the auxiliary variables and constraints.
+        expression: Affine expression defining the neuron pre-activation.
+        name: Base name for all generated variables and constraints.
+        lower: Finite lower bound of the pre-activation.
+        upper: Finite upper bound of the pre-activation.
+
+    Returns:
+        The continuous Gurobi variable representing the ReLU output.
+
+    Raises:
+        ValueError: If bounds are absent, nonfinite or inconsistent.
+    """
     if lower is None or upper is None:
         raise ValueError(
             f"Exact ReLU formulation requires finite bounds for {name}."
@@ -262,12 +347,6 @@ def _add_relu(model, expression, name, lower=None, upper=None):
         vtype=GRB.CONTINUOUS,
         name=name,
     )
-    if not hasattr(model, "_gnn_proven_variable_bounds"):
-        model._gnn_proven_variable_bounds = {}
-    model._gnn_proven_variable_bounds[id(activation)] = (
-        max(0.0, lower),
-        max(0.0, upper),
-    )
     model.addConstr(pre_activation == expression, name=f"{name}_pre_def")
     if upper <= 0.0:
         activation.lb = 0.0
@@ -298,25 +377,41 @@ def _add_relu(model, expression, name, lower=None, upper=None):
     return activation
 
 
-def _add_linear_layer(
+def add_linear_layer(
     model,
     state_dict,
     layer_name,
     input_vectors,
     input_bounds,
 ):
+    """Embed one node-wise linear layer followed by exact ReLU activations.
+
+    This path implements the linear baseline architecture. Every operation
+    node is transformed independently; no graph edges contribute messages.
+
+    Args:
+        model: Gurobi model receiving the embedded neural-network layer.
+        state_dict: Trained weights and biases represented as NumPy arrays.
+        layer_name: State-dictionary prefix of the layer to embed.
+        input_vectors: Feature expressions grouped by operation node.
+        input_bounds: Matching intervals for every input expression.
+
+    Returns:
+        A pair containing the ReLU output variables for all nodes and their
+        propagated nonnegative bounds.
+    """
     weight = state_dict[f"{layer_name}.weight"]
     bias = state_dict[f"{layer_name}.bias"]
     outputs, output_bounds = [], []
     for node_idx, values in enumerate(input_vectors):
         node_outputs, node_bounds = [], []
         for channel_idx in range(weight.shape[0]):
-            lower, upper = _linear_bounds(
+            lower, upper = linear_bounds(
                 weight[channel_idx], input_bounds[node_idx], bias=bias[channel_idx]
             )
-            activation = _add_relu(
+            activation = add_relu(
                 model,
-                _linear_expr(weight[channel_idx], values, bias=bias[channel_idx]),
+                linear_expr(weight[channel_idx], values, bias=bias[channel_idx]),
                 name=f"{layer_name}_linear_node{node_idx}_h{channel_idx}",
                 lower=lower,
                 upper=upper,
@@ -328,10 +423,24 @@ def _add_linear_layer(
     return outputs, output_bounds
 
 
-def _build_node_feature_expressions(instance, variables, constraint_type):
-    """Affine features using the existing exact products T_i * Y_im."""
-    if constraint_type != CONSTRAINT_WEIBULL:
-        raise ValueError("Physical buffer features require Weibull parameters.")
+def build_node_feature_expressions(instance, variables):
+    """Build the normalized operation features consumed by the trained GNN.
+
+    The feature expressions combine the operation midpoint with the selected
+    machine's Weibull scale, shape and repair rate. Existing exact products of
+    midpoint and assignment variables ensure that each expression uses only
+    the parameters of the selected machine. Valid feature intervals are built
+    simultaneously for subsequent ReLU formulations.
+
+    Args:
+        instance: FJSP instance containing eligibility and processing times.
+        variables: Solver-variable dictionary containing assignments,
+            midpoint-assignment products, horizon and stochastic parameters.
+
+    Returns:
+        A pair containing one feature-expression vector per operation and the
+        matching ``(lower, upper)`` interval vectors.
+    """
     Y = variables["Y"]
     horizon = float(variables["H"])
     products = variables["midpoint_times_assignment"]
@@ -362,94 +471,71 @@ def _build_node_feature_expressions(instance, variables, constraint_type):
     return features, bounds
 
 
-def _add_schedule_upper_bounds(variables):
-    H = float(variables["H"])
-    for operation in variables["real_operations"]:
-        variables["C"][operation].ub = H
+def add_job_time_bounds(variables, instance):
+    """Tighten completion-time bounds using technological job precedence.
 
+    Earliest completions and latest feasible completions are derived from the
+    minimum eligible-machine duration of each operation. Tighter bounds improve
+    the feature intervals and therefore the embedded ReLU formulation.
 
-def _add_job_time_bounds(variables, instance):
-    """Tighten completion times using only mandatory job precedence."""
-    operations = list(variables["real_operations"])
-    operation_set = set(operations)
+    Args:
+        variables: Solver-variable dictionary containing completion variables
+            and the common scheduling horizon.
+        instance: FJSP instance containing ordered job operations, processing
+            times and eligible machines.
+
+    Side Effects:
+        Updates the lower and upper bounds of ``variables["C"]`` in place.
+    """
     minimum_duration = {
         operation: min(
             float(instance.processing_times[operation, machine])
             for machine in instance.eligible_machines[operation]
         )
-        for operation in operations
+        for operation in variables["real_operations"]
     }
-    predecessors = {
-        operation: [
-            predecessor
-            for predecessor in instance.predecessors.get(operation, [])
-            if predecessor in operation_set
-        ]
-        for operation in operations
-    }
-    successors = {operation: [] for operation in operations}
-    for operation in operations:
-        for predecessor in predecessors[operation]:
-            successors[predecessor].append(operation)
-
-    earliest_cache, suffix_cache = {}, {}
-
-    def earliest_completion(operation, visiting=None):
-        if operation in earliest_cache:
-            return earliest_cache[operation]
-        visiting = set(visiting or ())
-        if operation in visiting:
-            raise ValueError("Job precedence graph must be acyclic.")
-        visiting.add(operation)
-        value = minimum_duration[operation] + max(
-            (
-                earliest_completion(predecessor, visiting)
-                for predecessor in predecessors[operation]
-            ),
-            default=0.0,
-        )
-        earliest_cache[operation] = value
-        return value
-
-    def mandatory_suffix_after(operation, visiting=None):
-        if operation in suffix_cache:
-            return suffix_cache[operation]
-        visiting = set(visiting or ())
-        if operation in visiting:
-            raise ValueError("Job precedence graph must be acyclic.")
-        visiting.add(operation)
-        value = max(
-            (
-                minimum_duration[successor]
-                + mandatory_suffix_after(successor, visiting)
-                for successor in successors[operation]
-            ),
-            default=0.0,
-        )
-        suffix_cache[operation] = value
-        return value
-
     horizon = float(variables["H"])
-    for operation in operations:
-        variables["C"][operation].lb = max(
-            float(variables["C"][operation].lb),
-            earliest_completion(operation),
+    for job_operations in instance.jobs.values():
+        earliest_completion = 0.0
+        remaining_duration = sum(
+            minimum_duration[operation] for operation in job_operations
         )
-        variables["C"][operation].ub = min(
-            float(variables["C"][operation].ub),
-            horizon - mandatory_suffix_after(operation),
-        )
-    variables["job_earliest_completion_bounds"] = dict(earliest_cache)
-    variables["job_mandatory_suffix_bounds"] = dict(suffix_cache)
+        for operation in job_operations:
+            duration = minimum_duration[operation]
+            earliest_completion += duration
+            remaining_duration -= duration
+            completion = variables["C"][operation]
+            completion.lb = max(
+                float(completion.lb), earliest_completion
+            )
+            completion.ub = min(
+                float(completion.ub), horizon - remaining_duration
+            )
 
 
-
-
-def _relational_incoming_edges(
+def relational_incoming_edges(
     instance,
     variables,
     convolution,
 ):
+    """Collect the incoming edges used by the selected GNN architecture.
+
+    Direct machine-predecessor edges are controlled by binary ``U`` variables
+    and are included only for the SAGE architecture. Fixed technological job
+    edges use a constant gate of one and are included for both SAGE and the
+    job-precedence variant. The linear baseline receives no incoming edges.
+
+    Args:
+        instance: FJSP instance providing fixed job predecessors.
+        variables: Solver-variable dictionary containing operation order and,
+            for SAGE, direct machine-predecessor variables.
+        convolution: Normalized architecture identifier.
+
+    Returns:
+        Dictionary indexed by target-node position. Each value contains tuples
+        of source index, edge gate, operation IDs and machine ID. Fixed job
+        edges use ``-1`` as their machine identifier.
+    """
     operations = list(variables["real_operations"])
     operation_to_idx = {
         operation: index for index, operation in enumerate(operations)
@@ -466,8 +552,6 @@ def _relational_incoming_edges(
     if convolution in {CONV_SAGE, CONV_JOB}:
         for target in operations:
             for source in instance.predecessors.get(target, []):
-                if source not in operation_to_idx:
-                    continue
                 incoming[operation_to_idx[target]].append(
                     (
                         operation_to_idx[source],
@@ -480,7 +564,7 @@ def _relational_incoming_edges(
     return incoming
 
 
-def _gate_hidden_value(
+def gate_hidden_value(
     model,
     value,
     gate,
@@ -488,11 +572,25 @@ def _gate_hidden_value(
     upper,
     name,
 ):
-    if isinstance(gate, (int, float)):
-        if float(gate) == 1.0:
-            return value
-        if float(gate) == 0.0:
-            return 0.0
+    """Model the exact product of a bounded hidden value and an edge gate.
+
+    Fixed job-precedence edges return the original value directly. Variable
+    machine edges use four linear constraints to represent ``gate * value``
+    exactly for a binary gate and a bounded continuous value.
+
+    Args:
+        model: Gurobi model receiving the auxiliary product variable.
+        value: Hidden-state expression transmitted by the source node.
+        gate: Binary edge variable or the constant ``1.0``.
+        lower: Lower bound of ``value``.
+        upper: Upper bound of ``value``.
+        name: Name assigned to the auxiliary variable.
+
+    Returns:
+        The original value for a fixed active edge or a gated Gurobi variable.
+    """
+    if isinstance(gate, (int, float)) and float(gate) == 1.0:
+        return value
     gated = model.addVar(
         lb=min(0.0, float(lower)),
         ub=max(0.0, float(upper)),
@@ -506,21 +604,7 @@ def _gate_hidden_value(
     return gated
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _add_relational_node_layer(
+def add_relational_node_layer(
     model,
     state_dict,
     layer_name,
@@ -529,12 +613,32 @@ def _add_relational_node_layer(
     input_bounds,
     incoming,
 ):
+    """Embed one trained linear or relational GNN layer in the MILP.
+
+    For relational architectures, bounded predecessor states are first gated
+    by their active edges and summed feature-wise. Each output channel then
+    combines a root-node transformation with a predecessor-message
+    transformation and applies an exact ReLU. Interval arithmetic propagates
+    valid bounds through both transformations. The linear architecture is
+    delegated to :func:`add_linear_layer`.
+
+    Args:
+        model: Gurobi model receiving neural-network variables and constraints.
+        state_dict: Trained weights and biases represented as NumPy arrays.
+        layer_name: State-dictionary prefix of the hidden layer.
+        convolution: Linear, direct-machine-edge or job-edge architecture.
+        inputs: Input expressions grouped by node and feature.
+        input_bounds: Matching input intervals grouped by node and feature.
+        incoming: Incoming-edge tuples for every target node.
+
+    Returns:
+        A pair containing all activated node states and their propagated
+        nonnegative intervals.
+    """
     if convolution == CONV_LINEAR:
-        return _add_linear_layer(
+        return add_linear_layer(
             model, state_dict, layer_name, inputs, input_bounds
         )
-    if convolution not in {CONV_SAGE, CONV_JOB}:
-        raise ValueError(f"Unsupported convolution: {convolution}")
     root_weight = state_dict[f"{layer_name}.lin_root.weight"]
     message_weight = state_dict[f"{layer_name}.lin_message.weight"]
     bias = state_dict[f"{layer_name}.lin_root.bias"]
@@ -557,7 +661,7 @@ def _add_relational_node_layer(
             ) in incoming[target_idx]:
                 lower, upper = input_bounds[source_idx][feature_idx]
                 gated_values.append(
-                    _gate_hidden_value(
+                    gate_hidden_value(
                         model,
                         inputs[source_idx][feature_idx],
                         gate,
@@ -586,25 +690,25 @@ def _add_relational_node_layer(
             )
         node_outputs, node_output_bounds = [], []
         for channel_idx in range(root_weight.shape[0]):
-            expression = _linear_expr(
+            expression = linear_expr(
                 root_weight[channel_idx],
                 root_values,
                 bias=bias[channel_idx],
             )
-            expression += _linear_expr(
+            expression += linear_expr(
                 message_weight[channel_idx], aggregated
             )
-            lower, upper = _linear_bounds(
+            lower, upper = linear_bounds(
                 root_weight[channel_idx],
                 input_bounds[target_idx],
                 bias=bias[channel_idx],
             )
-            message_lower, message_upper = _linear_bounds(
+            message_lower, message_upper = linear_bounds(
                 message_weight[channel_idx], aggregated_bounds
             )
             lower += message_lower
             upper += message_upper
-            activation = _add_relu(
+            activation = add_relu(
                 model,
                 expression,
                 name=(
@@ -623,32 +727,46 @@ def _add_relational_node_layer(
     return output_vectors, output_bounds
 
 
-def _add_relational_gnn_output(
+def add_relational_gnn_output(
     model,
     variables,
     instance,
     state_dict,
     metadata,
-    constraint_type,
+    architecture,
 ):
+    """Embed the complete trained GNN and create one buffer per job.
+
+    Node features are constructed from scheduling variables and propagated
+    through the configured hidden layers. Hidden states and original inputs are
+    summed over the operations belonging to each job, matching the training
+    model's global-add pooling and skip connection. A final ReLU enforces the
+    nonnegative job-specific expected repair-buffer output.
+
+    Args:
+        model: Gurobi model receiving the complete neural-network embedding.
+        variables: Shared FJSP variable and metadata dictionary.
+        instance: FJSP instance defining operations and job memberships.
+        state_dict: Trained neural-network parameters as NumPy arrays.
+        metadata: Validated model metadata including the number of layers.
+        architecture: Validated normalized architecture dictionary.
+
+    Returns:
+        Dictionary mapping each job ID to its nonnegative Gurobi buffer
+        variable.
+    """
     operations = list(variables["real_operations"])
-    node_features, node_bounds = _build_node_feature_expressions(
-        instance, variables, constraint_type
+    node_features, node_bounds = build_node_feature_expressions(
+        instance, variables
     )
     local_features, local_bounds = node_features, node_bounds
-    architecture = validate_architecture(
-        GRAPH_MODE_FIXED_CANDIDATE,
-        metadata.get("convolution", CONV_SAGE),
-        metadata.get("aggregation", "sum"),
-        metadata.get("pooling", POOL_ADD),
-    )
     convolution = architecture["convolution"]
-    incoming = _relational_incoming_edges(
+    incoming = relational_incoming_edges(
         instance, variables, convolution
     )
 
     hidden, hidden_bounds = (
-        _add_relational_node_layer(
+        add_relational_node_layer(
             model,
             state_dict,
             "conv1",
@@ -658,15 +776,10 @@ def _add_relational_gnn_output(
             incoming,
         )
     )
-    num_layers = int(metadata.get("num_graphsage_layers", 2))
-    if num_layers not in VALID_LAYER_COUNTS:
-        choices = ", ".join(map(str, sorted(VALID_LAYER_COUNTS)))
-        raise ValueError(
-            f"GNN metadata must specify one of {choices} layers."
-        )
+    num_layers = int(metadata["num_graphsage_layers"])
     for layer_number in range(2, num_layers + 1):
         hidden, hidden_bounds = (
-            _add_relational_node_layer(
+            add_relational_node_layer(
                 model,
                 state_dict,
                 f"conv{layer_number}",
@@ -679,12 +792,12 @@ def _add_relational_gnn_output(
 
     output_weight = state_dict["out.weight"][0]
     output_bias = state_dict["out.bias"][0]
-    skip_weight = state_dict.get("out_input.weight")
-    skip_bias = state_dict.get("out_input.bias")
+    skip_weight = state_dict["out_input.weight"][0]
+    skip_bias = state_dict["out_input.bias"][0]
     operation_to_index = {
         operation: index for index, operation in enumerate(operations)
     }
-    output_expressions, raw_outputs = {}, {}
+    output_expressions = {}
     for job in sorted(instance.jobs):
         node_indices = [
             operation_to_index[operation]
@@ -698,46 +811,52 @@ def _add_relational_gnn_output(
             gp.quicksum(local_features[index][channel] for index in node_indices)
             for channel in range(len(local_features[0]))
         ]
-        expression = _linear_expr(
+        expression = linear_expr(
             output_weight, pooled_hidden, bias=output_bias
         )
-        if skip_weight is not None:
-            expression += _linear_expr(
-                skip_weight[0], pooled_local, bias=skip_bias[0]
-            )
+        expression += linear_expr(
+            skip_weight, pooled_local, bias=skip_bias
+        )
         raw = model.addVar(
-            lb=-GRB.INFINITY, name=f"gnn_raw_job_completion_delay[{job}]"
+            lb=-GRB.INFINITY, name=f"gnn_raw_job_repair_buffer[{job}]"
         )
         buffer = model.addVar(
-            lb=0.0, name=f"gnn_job_expected_completion_delay[{job}]"
+            lb=0.0, name=f"gnn_job_repair_buffer[{job}]"
         )
         model.addConstr(raw == expression, name=f"gnn_raw_output_def[{job}]")
         model.addGenConstrMax(
             buffer, [raw], constant=0.0,
-            name=f"gnn_completion_delay_relu[{job}]",
+            name=f"gnn_repair_buffer_relu[{job}]",
         )
-        raw_outputs[job] = raw
         output_expressions[job] = buffer
-    variables.update({
-        "gnn_job_output_expressions": output_expressions,
-        "gnn_raw_job_outputs": raw_outputs,
-        "job_expected_delays": output_expressions,
-        "job_completion_delay_postprocess": "relu_inside_model",
-    })
     return output_expressions
 
 
-def _add_midpoint_state(model, variables, instance):
-    """Create nominal starts, operation midpoints and T*Y products."""
+def add_midpoint_state(model, variables, instance):
+    """Create operation starts, midpoints and exact assignment products.
+
+    For each operation, nominal start and midpoint variables are linked to its
+    completion time and assignment-dependent processing duration. Standard
+    binary-continuous product constraints create ``midpoint * assignment`` for
+    every eligible machine, which permits linear selected-machine features.
+
+    Args:
+        model: Gurobi model receiving variables and linking constraints.
+        variables: Shared FJSP dictionary containing completion, assignment and
+            horizon information.
+        instance: FJSP instance containing machine eligibility and durations.
+
+    Side Effects:
+        Adds ``S``, ``T`` and ``midpoint_times_assignment`` to ``variables``.
+    """
     horizon = float(variables["H"])
-    starts, midpoints, durations, midpoint_times_assignment = {}, {}, {}, {}
+    starts, midpoints, midpoint_times_assignment = {}, {}, {}
     for operation in variables["real_operations"]:
         duration = gp.quicksum(
             float(instance.processing_times[operation, machine])
             * variables["Y"][operation, machine]
             for machine in instance.eligible_machines[operation]
         )
-        durations[operation] = duration
         starts[operation] = model.addVar(
             lb=0.0, ub=horizon, name=f"S_nominal[{operation}]"
         )
@@ -768,238 +887,79 @@ def _add_midpoint_state(model, variables, instance):
     variables.update({
         "S": starts,
         "T": midpoints,
-        "D": durations,
         "midpoint_times_assignment": midpoint_times_assignment,
     })
 
 
-def _service_operations(instance, job, scope):
-    return (
-        list(instance.jobs[job])
-        if scope == "job"
-        else list(instance.real_operations)
-    )
-
-
-def _add_gnn_service_metadata(
-    model, variables, instance, graph_cfg, metadata
-):
-    variables.update({
-        "service_constraints": {},
-        "service_scope": graph_cfg.service_scope,
-        "due_dates": dict(instance.due_dates),
-        "job_repair_buffer_label_method": metadata.get(
-            "job_repair_buffer_label_method"
-        ),
-    })
-
-
 def build_fjsp(
-    fjsp,
+    model,
     instance,
     model_path,
     metadata_path,
-    convolution=CONV_SAGE,
-    aggregation="sum",
-    pooling="global_add",
-    layers=None,
-    hidden_channels=None,
-    add_schedule_upper_bounds=True,
-    constraint_type=CONSTRAINT_WEIBULL,
-    reliability_graph_config=None,
-    analytic_bounds=True,
     facility_cost_per_time=1.0,
-    service_violation_cost_per_time=1.0,
-    tardiness_cost_per_time=None,
+    tardiness_cost_per_time=1.0,
 ):
-    """Build the ReLU-GNN MILP with one expected completion delay per job."""
-    model = fjsp
-    analytic_bounds = bool(analytic_bounds)
-    constraint_type = validate_constraint_type(constraint_type)
-    ensure_stochastic_parameters(instance)
-    graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
-    if graph_cfg.service_scope != "job":
-        raise ValueError("Local job-buffer GNN requires service_scope='job'.")
+    """Build the complete FJSP MILP with embedded GNN repair buffers.
 
-    requested_architecture = validate_architecture(
-        GRAPH_MODE_FIXED_CANDIDATE,
-        convolution,
-        aggregation,
-        pooling,
-    )
-    if layers is None or hidden_channels is None:
-        raise ValueError("layers and hidden_channels are required.")
-    model_path = _resolve_path(model_path)
-    metadata_path = _resolve_path(metadata_path)
-    metadata = _load_metadata(metadata_path)
-    metadata_architecture = validate_architecture(
-        metadata.get("graph_mode", GRAPH_MODE_FIXED_CANDIDATE),
-        metadata.get("convolution", CONV_SAGE),
-        metadata.get("aggregation", "sum"),
-        metadata.get("pooling", "global_add"),
-    )
-    if metadata_architecture != requested_architecture:
-        raise ValueError(
-            "Configured GNN architecture does not match metadata: "
-            f"config={requested_architecture}, metadata={metadata_architecture}."
-        )
-    metadata_layers = int(metadata.get("num_graphsage_layers", 2))
-    metadata_hidden = int(metadata.get("hidden_channels", 16))
-    if layers is not None and metadata_layers != int(layers):
-        raise ValueError(
-            f"Configured layers={int(layers)} do not match model metadata "
-            f"layers={metadata_layers}."
-        )
-    if (
-        hidden_channels is not None
-        and metadata_hidden != int(hidden_channels)
-    ):
-        raise ValueError(
-            "Configured hidden_channels="
-            f"{int(hidden_channels)} do not match model metadata "
-            f"hidden_channels={metadata_hidden}."
-        )
-    expected_target = target_column(constraint_type)
-    if metadata.get("target_column") != expected_target:
-        raise ValueError(
-            f"GNN target mismatch: constraint_type={constraint_type!r} needs "
-            f"target_column={expected_target!r}, metadata contains "
-            f"{metadata.get('target_column')!r}."
-        )
-    state_dict = _load_state_dict(model_path)
+    The function validates and loads the trained model, constructs the shared
+    FJSP formulation, adds midpoint-dependent features and embeds the selected
+    neural architecture. For SAGE models, direct machine-predecessor graph
+    variables are also created. Predicted job buffers enter the soft due-date
+    constraints before the common economic objective is installed.
 
-    expected_features = reliability_node_feature_names(graph_cfg)
-    if metadata.get("feature_names") != expected_features:
-        raise ValueError(
-            "GNN feature order does not match the selected constraint. "
-            f"Expected {expected_features}, got {metadata.get('feature_names')}. "
-            "Regenerate the dataset features and retrain the GNN."
-        )
-    expected_input_size = int(metadata.get("input_size", len(expected_features)))
-    if expected_input_size != len(expected_features):
-        raise ValueError(
-            f"GNN input_size={expected_input_size} does not match "
-            f"{len(expected_features)} embedded FJSP features."
-        )
-    metadata_graph_config_values = dict(
-        metadata.get("reliability_graph_config") or {}
-    )
-    # Models trained before removal of C_max may contain this obsolete
-    # objective-only field. It never affected graph features or predictions.
-    metadata_graph_config_values.pop("makespan_weight", None)
-    metadata_graph_config = normalize_reliability_graph_config(
-        metadata_graph_config_values
-    )
-    metadata_prediction_config = reliability_graph_config_dict(
-        metadata_graph_config
-    )
-    solver_prediction_config = reliability_graph_config_dict(graph_cfg)
-    if metadata_prediction_config != solver_prediction_config:
-        raise ValueError(
-            "GNN reliability-graph parameters differ from the solver model: "
-            f"metadata={metadata_prediction_config}, "
-            f"solver={solver_prediction_config}."
-        )
-    metadata_profiles = metadata.get("machine_profile_config")
-    if metadata_profiles is None:
-        raise ValueError(
-            "GNN metadata does not contain machine_profile_config. "
-            "Regenerate the training data and retrain the GNN before solving."
-        )
-    expected_profiles = normalize_machine_profile_config(metadata_profiles)
-    actual_profiles = normalize_machine_profile_config(
-        getattr(instance, "machine_profile_config", None)
-    )
-    if expected_profiles != actual_profiles:
-        raise ValueError(
-            "GNN machine profiles differ from the solved instance. "
-            "Regenerate the training data and retrain the GNN."
-        )
-    if normalize_time_unit(metadata, require_metadata=True) != normalize_time_unit(
-        instance
-    ):
-        raise ValueError(
-            "GNN time-unit metadata differs from the solved instance. "
-            "Regenerate the training data and retrain the GNN."
-        )
-    model, variables = build_base_fjsp(
+    Args:
+        model: Empty or partially configured Gurobi model to extend.
+        instance: FJSP instance to optimize.
+        model_path: Absolute or project-relative PyTorch weight path.
+        metadata_path: Absolute or project-relative model metadata path.
+        facility_cost_per_time: Nonnegative cost of one makespan time unit.
+        tardiness_cost_per_time: Nonnegative cost of one tardiness time unit.
+
+    Returns:
+        The updated Gurobi model and its variable/metadata dictionary.
+
+    Raises:
+        FileNotFoundError: If a required model artifact does not exist.
+        ValueError: If the model metadata is incompatible with the instance or
+            the active embedding implementation.
+    """
+    model_path = resolve_path(model_path)
+    metadata_path = resolve_path(metadata_path)
+    metadata, architecture = load_metadata(metadata_path, instance)
+    state_dict = load_state_dict(model_path)
+    model, variables = base_fjsp.build_core_fjsp(model, instance)
+    add_midpoint_state(model, variables, instance)
+    add_stochastic_machine_state(variables, instance)
+    if architecture["convolution"] == CONV_SAGE:
+        add_reliability_graph_variables(model, variables, instance)
+    add_job_time_bounds(variables, instance)
+    job_repair_buffers = add_relational_gnn_output(
         model,
+        variables,
         instance,
-        include_makespan=False,
-        horizon_upper_bound=None,
-        enforce_due_dates=False,
-        economic_objective=False,
-    )
-    for operation in variables["real_operations"]:
-        variables["C"][operation].ub = float(variables["H"])
-    _add_midpoint_state(model, variables, instance)
-    variables["service_horizon"] = max(
-        float(value) for value in instance.due_dates.values()
-    )
-    if requested_architecture["convolution"] == CONV_SAGE:
-        _add_reliability_graph_state(
-            model,
-            variables,
-            instance,
-            graph_cfg,
-        )
-    else:
-        _add_stochastic_machine_state(
-            model,
-            variables,
-            instance,
-            graph_cfg,
-        )
-    if add_schedule_upper_bounds:
-        _add_schedule_upper_bounds(variables)
-        if analytic_bounds:
-            _add_job_time_bounds(variables, instance)
-    job_expected_delays = _add_relational_gnn_output(
-        model, variables, instance, state_dict, metadata,
-        constraint_type,
-    )
-    _add_gnn_service_metadata(
-        model, variables, instance, graph_cfg, metadata
-    )
-    variables.update(
-        {
-            "gnn_model_path": str(model_path),
-            "gnn_metadata_path": str(metadata_path),
-            "gnn_metadata": metadata,
-            "constraint_type": constraint_type,
-        }
+        state_dict,
+        metadata,
+        architecture,
     )
     add_due_date_tardiness_constraints(
         model,
         variables,
         instance,
-        job_expected_delays,
+        job_repair_buffers,
     )
     add_economic_cost_objective(
         model,
         variables,
         instance,
         facility_cost_per_time=facility_cost_per_time,
-        service_violation_cost_per_time=service_violation_cost_per_time,
         tardiness_cost_per_time=tardiness_cost_per_time,
     )
-    formulation = "gnn_unscaled_local_repair_buffer_v16"
     variables.update({
-        "formulation": formulation,
+        "service_scope": RELIABILITY_SERVICE_SCOPE,
+        "job_repair_buffer_label_method": LABEL_METHOD,
+        "gnn_metadata": metadata,
+        "formulation": "gnn_unscaled_local_repair_buffer_v16",
     })
 
     model.update()
     return model, variables
-
-def write_solution_file(model, variables, instance, filename="solution.txt"):
-    """Write the common exact/GNN comparison format."""
-    return write_comparable_solution(
-        model,
-        variables,
-        filename,
-        instance=instance,
-    )
-
-
-if __name__ == "__main__":
-    pass

@@ -1,6 +1,5 @@
 {
   "target_column": "expected_local_midpoint_repair_buffer",
-  "constraint_type": "weibull",
   "input_size": 4,
   "feature_names": [
     "nominal_midpoint_over_weibull_alpha",

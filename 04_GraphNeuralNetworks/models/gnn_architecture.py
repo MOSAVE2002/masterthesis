@@ -1,6 +1,10 @@
-"""Architecture naming for the active reliability-surrogate models."""
+"""Validate and name the supported repair-buffer GNN architectures.
 
-from itertools import product
+The module centralizes architecture identifiers, valid layer counts, artifact
+filenames and model-directory layouts so training and solver discovery apply
+the same naming contract.
+"""
+
 from pathlib import Path
 
 
@@ -14,6 +18,14 @@ VALID_LAYER_COUNTS = {1, 2, 3}
 
 
 def normalize_convolution(value):
+    """Normalize and validate a configured convolution identifier.
+
+    Returns:
+        One of ``linear``, ``sage`` or ``job`` in lowercase.
+
+    Raises:
+        ValueError: If the identifier is unsupported.
+    """
     convolution = str(value).strip().lower()
     if convolution not in {CONV_LINEAR, CONV_SAGE, CONV_JOB}:
         raise ValueError(
@@ -22,159 +34,127 @@ def normalize_convolution(value):
     return convolution
 
 
-def normalize_pooling(value):
-    pooling = str(value).strip().lower()
-    if pooling != POOL_ADD:
-        raise ValueError("pooling must be 'global_add'.")
-    return pooling
+def validate_architecture(convolution):
+    """Return the fixed architecture fields for one convolution type.
 
-
-def normalize_aggregation(value, convolution):
-    convolution = normalize_convolution(convolution)
-    if convolution == CONV_LINEAR:
-        if value not in (None, "", "none"):
-            raise ValueError("linear requires aggregation='none'.")
-        return "none"
-    aggregation = str(value or "sum").strip().lower()
-    if aggregation != "sum":
-        raise ValueError(
-            f"{convolution} requires aggregation='sum'."
-        )
-    return aggregation
-
-
-def validate_architecture(graph_mode, convolution, aggregation, pooling):
-    graph_mode = str(graph_mode).strip().lower()
-    if graph_mode != GRAPH_FIXED:
-        raise ValueError("graph_mode must be 'fixed_candidate'.")
+    The graph mode and pooling are shared by all variants, while aggregation is
+    disabled for the linear baseline and set to summation for message passing.
+    """
     convolution = normalize_convolution(convolution)
     return {
-        "graph_mode": graph_mode,
+        "graph_mode": GRAPH_FIXED,
         "convolution": convolution,
-        "aggregation": normalize_aggregation(aggregation, convolution),
-        "pooling": normalize_pooling(pooling),
+        "aggregation": "none" if convolution == CONV_LINEAR else "sum",
+        "pooling": POOL_ADD,
     }
 
 
-def _positive_integer_options(value, name, allowed=None):
-    values = value if isinstance(value, (list, tuple)) else [value]
-    result = []
-    for item in values:
-        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
-            raise ValueError(f"{name} must contain positive integers.")
-        if allowed is not None and item not in allowed:
-            choices = ", ".join(map(str, sorted(allowed)))
-            raise ValueError(f"{name} must be one of {choices}.")
-        if item not in result:
-            result.append(item)
-    if not result:
-        raise ValueError(f"{name} must not be empty.")
-    return result
+def _positive_integer(value, name, allowed=None):
+    """Validate a strictly positive integer and an optional allowed set.
+
+    Returns:
+        The unchanged validated integer.
+
+    Raises:
+        ValueError: If booleans, nonintegers or unsupported values are passed.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    if allowed is not None and value not in allowed:
+        choices = ", ".join(map(str, sorted(allowed)))
+        raise ValueError(f"{name} must be one of {choices}.")
+    return value
 
 
-def expand_architecture_variants(raw, defaults=None):
+def architecture_from_config(raw):
+    """Normalize one architecture combination from the project configuration.
+
+    Returns:
+        Complete architecture dictionary containing fixed graph choices, layer
+        count and hidden width.
+    """
     raw = dict(raw or {})
-    defaults = dict(defaults or {})
-    architecture = validate_architecture(
-        raw.get("graph_mode", defaults.get("graph_mode", GRAPH_FIXED)),
-        raw.get("convolution", defaults.get("convolution", CONV_SAGE)),
-        raw.get("aggregation", defaults.get("aggregation")),
-        raw.get("pooling", defaults.get("pooling", POOL_ADD)),
-    )
-    layers = raw.get("layers", defaults.get("layers"))
-    hidden = raw.get("hidden_channels", defaults.get("hidden_channels"))
-    if layers is None or hidden is None:
-        raise ValueError("layers and hidden_channels are required.")
-    return [
-        {**architecture, "layers": layer, "hidden_channels": width}
-        for layer, width in product(
-            _positive_integer_options(
-                layers, "layers", allowed=VALID_LAYER_COUNTS
-            ),
-            _positive_integer_options(hidden, "hidden_channels"),
-        )
-    ]
-
-
-def _explicit_size(layers, hidden_channels):
-    if (layers is None) != (hidden_channels is None):
-        raise ValueError(
-            "layers and hidden_channels must either both be set or omitted."
-        )
-    if layers is None:
-        return None
-    layer = _positive_integer_options(
-        layers, "layers", allowed=VALID_LAYER_COUNTS
-    )
-    hidden = _positive_integer_options(hidden_channels, "hidden_channels")
-    if len(layer) != 1 or len(hidden) != 1:
-        raise ValueError("A path requires one explicit model size.")
-    return layer[0], hidden[0]
+    return {
+        **validate_architecture(raw["convolution"]),
+        "layers": _positive_integer(
+            raw["layers"], "layers", allowed=VALID_LAYER_COUNTS
+        ),
+        "hidden_channels": _positive_integer(
+            raw["hidden_channels"], "hidden_channels"
+        ),
+    }
 
 
 def architecture_stem(
-    graph_mode,
     convolution,
-    aggregation,
-    pooling,
     target,
     seed,
-    layers=None,
-    hidden_channels=None,
+    layers,
+    hidden_channels,
 ):
-    architecture = validate_architecture(
-        graph_mode, convolution, aggregation, pooling
+    """Build the deterministic filename stem of one trained model.
+
+    The stem encodes graph mode, convolution, aggregation, pooling, depth,
+    width, prediction target and training seed.
+    """
+    architecture = validate_architecture(convolution)
+    layer = _positive_integer(
+        layers, "layers", allowed=VALID_LAYER_COUNTS
     )
-    stem = (
+    width = _positive_integer(hidden_channels, "hidden_channels")
+    return (
         f"fjsp_gnn_{architecture['graph_mode']}_"
         f"{architecture['convolution']}_{architecture['aggregation']}_"
-        f"{architecture['pooling']}"
+        f"{architecture['pooling']}_layers{layer}_hidden{width}_"
+        f"{target}_seed{int(seed)}"
     )
-    size = _explicit_size(layers, hidden_channels)
-    if size:
-        stem += f"_layers{size[0]}_hidden{size[1]}"
-    return f"{stem}_{target}_seed{int(seed)}"
 
 
 def architecture_slug(
-    graph_mode,
     convolution,
-    aggregation,
-    pooling,
-    layers=None,
-    hidden_channels=None,
+    layers,
+    hidden_channels,
 ):
-    architecture = validate_architecture(
-        graph_mode, convolution, aggregation, pooling
+    """Build a compact architecture identifier without target or seed.
+
+    Returns:
+        Slug containing convolution, aggregation, pooling, depth and width.
+    """
+    architecture = validate_architecture(convolution)
+    layer = _positive_integer(
+        layers, "layers", allowed=VALID_LAYER_COUNTS
     )
-    slug = (
+    width = _positive_integer(hidden_channels, "hidden_channels")
+    return (
         f"{architecture['convolution']}_{architecture['aggregation']}_"
-        f"{architecture['pooling']}"
+        f"{architecture['pooling']}_layers{layer}_hidden{width}"
     )
-    size = _explicit_size(layers, hidden_channels)
-    if size:
-        slug += f"_layers{size[0]}_hidden{size[1]}"
-    return slug
 
 
 def architecture_model_dir(
     root,
-    graph_mode,
     convolution,
-    aggregation,
-    pooling,
-    layers=None,
-    hidden_channels=None,
+    layers,
+    hidden_channels,
 ):
-    architecture = validate_architecture(
-        graph_mode, convolution, aggregation, pooling
+    """Return the canonical artifact directory for one architecture.
+
+    Args:
+        root: Root directory containing all trained models.
+        convolution: Active convolution identifier.
+        layers: Number of hidden layers.
+        hidden_channels: Width of every hidden layer.
+
+    Returns:
+        Architecture-specific :class:`pathlib.Path` below ``root``.
+    """
+    architecture = validate_architecture(convolution)
+    layer = _positive_integer(
+        layers, "layers", allowed=VALID_LAYER_COUNTS
     )
-    size = _explicit_size(layers, hidden_channels)
-    root = Path(root)
-    if size is None:
-        return root / architecture_slug(**architecture)
+    width = _positive_integer(hidden_channels, "hidden_channels")
     family = (
         f"{architecture['convolution']}_{architecture['aggregation']}_"
         f"{architecture['pooling']}"
     )
-    return root / family / f"hidden{size[1]}_layers{size[0]}"
+    return Path(root) / family / f"hidden{width}_layers{layer}"

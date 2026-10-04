@@ -1,9 +1,13 @@
-"""Visualizations for solved flexible job-shop schedules."""
+"""Create reproducible visualizations of solved FJSP schedules and graphs.
 
-from __future__ import annotations
+The plotting helpers reconstruct incumbent timings, assignments and machine
+sequences and render headless Gantt charts, disjunctive graphs, candidate graphs
+or machine-operation layouts for diagnostics and thesis figures.
+"""
 
 import os
 import tempfile
+from itertools import pairwise
 from pathlib import Path
 
 
@@ -16,6 +20,10 @@ SUPPORTED_GRAPH_STYLES = {
 
 
 def _value(item):
+    """Convert a numeric object, Gurobi variable or expression to ``float``.
+
+    Plot construction assumes an incumbent and therefore reads active values.
+    """
     if hasattr(item, "X"):
         return float(item.X)
     if hasattr(item, "getValue"):
@@ -24,6 +32,14 @@ def _value(item):
 
 
 def _prepare_plotting(filename):
+    """Initialize headless Matplotlib output and the destination path.
+
+    Cache directories are placed below the system temporary directory to avoid
+    polluting the repository and the noninteractive ``Agg`` backend is forced.
+
+    Returns:
+        Destination path, ``matplotlib.pyplot`` and the ``Line2D`` class.
+    """
     cache_root = Path(tempfile.gettempdir()) / "fjsp_plot_cache"
     matplotlib_cache = cache_root / "matplotlib"
     xdg_cache = cache_root / "xdg"
@@ -44,6 +60,11 @@ def _prepare_plotting(filename):
 
 
 def _operation_metadata(instance):
+    """Build text labels, mathematical labels and job membership by operation.
+
+    Returns:
+        Three dictionaries keyed by operation identifier.
+    """
     labels, math_labels, operation_jobs = {}, {}, {}
     for job, operations in sorted(instance.jobs.items()):
         for local_index, operation in enumerate(operations, start=1):
@@ -54,6 +75,10 @@ def _operation_metadata(instance):
 
 
 def _selected_machines(variables, instance):
+    """Extract the incumbent machine assignment for every real operation.
+
+    The eligible machine with the largest assignment value is selected.
+    """
     return {
         operation: max(
             instance.eligible_machines[operation],
@@ -64,6 +89,11 @@ def _selected_machines(variables, instance):
 
 
 def _schedule(variables, instance):
+    """Reconstruct plot-ready operation rows from an incumbent solution.
+
+    Returns:
+        Schedule-row dictionaries and the selected-machine mapping.
+    """
     _labels, math_labels, operation_jobs = _operation_metadata(instance)
     selected = _selected_machines(variables, instance)
     starts = variables.get("S")
@@ -90,6 +120,10 @@ def _schedule(variables, instance):
 
 
 def _machine_sequences(schedule_rows, machines):
+    """Sort assigned operations into chronological sequences per machine.
+
+    Completion time and operation ID provide deterministic tie breaking.
+    """
     sequences = {machine: [] for machine in machines}
     for row in schedule_rows:
         sequences.setdefault(row["machine"], []).append(row["operation"])
@@ -104,12 +138,20 @@ def _machine_sequences(schedule_rows, machines):
 
 
 def _makespan(variables, schedule_rows):
+    """Return the explicit makespan or derive it from operation completions.
+
+    The fallback supports formulations that do not expose ``C_max`` directly.
+    """
     if variables.get("C_max") is not None:
         return _value(variables["C_max"])
     return max((row["completion"] for row in schedule_rows), default=0.0)
 
 
 def _palette(machines):
+    """Assign deterministic reusable colors to machine identifiers.
+
+    Colors repeat only when the machine count exceeds the fixed palette.
+    """
     colors = [
         "#d7191c", "#2c7bb6", "#f2c500", "#1a9641", "#984ea3",
         "#ff7f00", "#66c2a5", "#a6761d", "#e7298a", "#7570b3",
@@ -121,7 +163,14 @@ def _palette(machines):
 
 
 def plot_solution_schedule(variables, instance, filename, title=None):
-    """Write a machine-based Gantt chart for the incumbent solution."""
+    """Write a machine-based Gantt chart for the incumbent solution.
+
+    Jobs determine bar colors, machine IDs define rows and the makespan is
+    highlighted by a vertical reference line.
+
+    Returns:
+        Path of the written PNG image.
+    """
     filename, plt, Line2D = _prepare_plotting(filename)
     from matplotlib.patches import Patch
 
@@ -222,6 +271,12 @@ def plot_solution_schedule(variables, instance, filename, title=None):
 
 
 def _job_layout(instance):
+    """Position operations by job row and technological sequence column.
+
+    Returns:
+        Jobs, maximum chain length, node positions and artificial start/end
+        positions for disjunctive graph rendering.
+    """
     jobs = sorted(instance.jobs)
     max_job_length = max((len(instance.jobs[job]) for job in jobs), default=1)
     positions = {}
@@ -247,6 +302,10 @@ def _draw_arrow(
     linestyle="-",
     zorder=2,
 ):
+    """Draw one styled directed edge between two graph positions.
+
+    Curvature, opacity, line style and draw order are forwarded to Matplotlib.
+    """
     axis.annotate(
         "",
         xy=target_position,
@@ -267,6 +326,10 @@ def _draw_arrow(
 
 
 def _draw_node(axis, position, label, *, edgecolor="black", size=1700):
+    """Draw one circular graph node and its centered mathematical label.
+
+    The edge color can encode the selected machine while the fill stays white.
+    """
     axis.scatter(
         [position[0]], [position[1]], s=size, marker="o",
         facecolor="white", edgecolor=edgecolor, linewidth=1.8, zorder=4,
@@ -278,6 +341,10 @@ def _draw_node(axis, position, label, *, edgecolor="black", size=1700):
 
 
 def _draw_job_precedence(axis, instance, positions, start_position, end_position):
+    """Draw fixed technological chains including artificial start and end.
+
+    Every job is rendered as a solid directed path through its operations.
+    """
     for operations in instance.jobs.values():
         if not operations:
             continue
@@ -285,7 +352,7 @@ def _draw_job_precedence(axis, instance, positions, start_position, end_position
             axis, start_position, positions[operations[0]],
             color="black", width=1.7, zorder=3,
         )
-        for source, target in zip(operations, operations[1:]):
+        for source, target in pairwise(operations):
             _draw_arrow(
                 axis, positions[source], positions[target],
                 color="black", width=1.7, zorder=3,
@@ -297,6 +364,10 @@ def _draw_job_precedence(axis, instance, positions, start_position, end_position
 
 
 def _edge_radius(source_position, target_position):
+    """Choose a deterministic arc radius that separates crossing edges.
+
+    Same-row arcs bend upward; cross-row direction determines the curvature sign.
+    """
     if abs(source_position[1] - target_position[1]) < 1e-9:
         return 0.22
     return 0.28 if source_position[1] <= target_position[1] else -0.28
@@ -305,6 +376,11 @@ def _edge_radius(source_position, target_position):
 def _plot_disjunctive_solution_graph(
     model, variables, instance, filename, title, plt, Line2D
 ):
+    """Render selected job and machine precedence in a job-oriented layout.
+
+    Returns:
+        Path of the written solution-graph image.
+    """
     schedule_rows, selected = _schedule(variables, instance)
     machines = sorted(variables.get("machines", range(instance.num_machines)))
     sequences = _machine_sequences(schedule_rows, machines)
@@ -322,7 +398,7 @@ def _plot_disjunctive_solution_graph(
         axis, instance, positions, start_position, end_position
     )
     for machine, operations in sequences.items():
-        for source, target in zip(operations, operations[1:]):
+        for source, target in pairwise(operations):
             _draw_arrow(
                 axis,
                 positions[source],
@@ -376,7 +452,14 @@ def _plot_disjunctive_solution_graph(
 
 
 def plot_candidate_graph(variables, instance, filename, title=None):
-    """Plot all machine-order candidates remaining after the Y assignment."""
+    """Plot all pairwise machine-order candidates after machine assignment.
+
+    Dashed colored arcs show every still-relevant machine conflict, while solid
+    black arcs retain the fixed technological job order.
+
+    Returns:
+        Path of the written candidate-graph image.
+    """
     filename, plt, Line2D = _prepare_plotting(filename)
     schedule_rows, selected = _schedule(variables, instance)
     machines = sorted(variables.get("machines", range(instance.num_machines)))
@@ -460,6 +543,11 @@ def plot_candidate_graph(variables, instance, filename, title=None):
 def _plot_machine_operation_graph(
     model, variables, instance, filename, title, plt, Line2D
 ):
+    """Render operations along their selected machine sequences.
+
+    Machine rows emphasize resource order; dashed cross-row edges retain job
+    precedence. The figure title reports objective and makespan.
+    """
     schedule_rows, _selected = _schedule(variables, instance)
     machines = sorted(variables.get("machines", range(instance.num_machines)))
     sequences = _machine_sequences(schedule_rows, machines)
@@ -483,13 +571,13 @@ def _plot_machine_operation_graph(
     ))
 
     for machine, operations in sequences.items():
-        for source, target in zip(operations, operations[1:]):
+        for source, target in pairwise(operations):
             _draw_arrow(
                 axis, positions[source], positions[target],
                 color=machine_colors[machine], width=2.0,
             )
     for operations in instance.jobs.values():
-        for source, target in zip(operations, operations[1:]):
+        for source, target in pairwise(operations):
             _draw_arrow(
                 axis, positions[source], positions[target],
                 color="0.45", width=1.1, alpha=0.65,
@@ -562,7 +650,15 @@ def plot_solution_graph(
     title=None,
     style="disjunctive",
 ):
-    """Write the selected solution graph in one of the supported layouts."""
+    """Write the incumbent graph using one supported layout.
+
+    Args:
+        style: ``disjunctive``, ``disjunctive_solution`` or
+            ``machine_operation``.
+
+    Returns:
+        Path of the written PNG image.
+    """
     if int(model.SolCount) <= 0:
         raise ValueError("Cannot plot a solution graph without a solution.")
     normalized_style = str(style).strip().lower()
@@ -594,7 +690,14 @@ def write_solution_plots(
     plot_candidate_graph_enabled=False,
     graph_style="disjunctive",
 ):
-    """Create all configured plots and return their paths by plot type."""
+    """Create all enabled solution plots for one solved model.
+
+    GNN filenames include architecture metadata to keep variants separate. No
+    files are created when the model has no incumbent.
+
+    Returns:
+        Mapping from plot type to generated image path.
+    """
     if int(model.SolCount) <= 0:
         return {}
     output_directory = Path(output_directory)

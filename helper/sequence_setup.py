@@ -1,21 +1,29 @@
-"""Direct-predecessor graph shared by training and Gurobi embedding."""
+"""Define the reliability graph shared by data generation and GNN embedding.
 
-from __future__ import annotations
+The graph combines fixed job-precedence arcs with immediate predecessor arcs on
+selected machines. This module also owns the normalized physical node features
+and the Gurobi variables that reconstruct direct machine sequences.
+"""
 
-from dataclasses import asdict, dataclass
 import math
 
 import gurobipy as gp
 from gurobipy import GRB
 
 
-RELIABILITY_GRAPH_SCHEMA = "job_local_midpoint_buffer_v7"
 RELIABILITY_GNN_GRAPH_SCHEMA = (
     "direct_machine_and_job_predecessor_physical_features_v10"
 )
 RELIABILITY_GNN_OUTPUT_HEAD = (
     "per_job_local_midpoint_buffer_relu_v6"
 )
+RELIABILITY_QUADRATURE_POINTS = 12
+RELIABILITY_SERVICE_SCOPE = "job"
+RELIABILITY_GRAPH_CONFIG = {
+    "quadrature_points": RELIABILITY_QUADRATURE_POINTS,
+    "service_scope": RELIABILITY_SERVICE_SCOPE,
+    "gnn_safety_margin": 0.0,
+}
 RELIABILITY_NODE_FEATURE_NAMES = [
     "nominal_midpoint_over_weibull_alpha",
     "repair_rate_times_weibull_alpha_over_10",
@@ -37,59 +45,43 @@ def local_buffer_node_features(midpoint, alpha, beta, repair_rate):
     return [t / a, rate * a / 10.0, b / 5.0, 1.0 / (60.0 * rate)]
 
 
-@dataclass(frozen=True)
-class ReliabilityGraphConfig:
-    quadrature_points: int = 12
-    service_scope: str = "job"
-    gnn_safety_margin: float = 0.0
+def reliability_graph_config_dict() -> dict:
+    """Return an independent copy of the fixed graph metadata contract.
+
+    The copy is serialized with datasets and model artifacts for compatibility
+    checks without exposing the module-level dictionary to mutation.
+    """
+    return dict(RELIABILITY_GRAPH_CONFIG)
 
 
-def normalize_reliability_graph_config(
-    config: ReliabilityGraphConfig | dict | None = None,
-    **overrides,
-) -> ReliabilityGraphConfig:
-    if isinstance(config, ReliabilityGraphConfig):
-        values = asdict(config)
-    else:
-        values = dict(config or {})
-    values.update(overrides)
-    allowed = set(ReliabilityGraphConfig.__dataclass_fields__)
-    unknown = set(values) - allowed
-    if unknown:
-        raise ValueError(
-            f"Unknown reliability-graph parameters: {sorted(unknown)}"
-        )
-    result = ReliabilityGraphConfig(**values)
-    if int(result.quadrature_points) < 4:
-        raise ValueError("quadrature_points must be at least 4.")
-    service_scope = str(result.service_scope).strip().lower()
-    if service_scope not in {"all", "job"}:
-        raise ValueError("service_scope must be 'all' or 'job'.")
-    if float(result.gnn_safety_margin) < 0.0:
-        raise ValueError("gnn_safety_margin must be nonnegative.")
-    return ReliabilityGraphConfig(
-        quadrature_points=int(result.quadrature_points),
-        service_scope=service_scope,
-        gnn_safety_margin=float(result.gnn_safety_margin),
-    )
+def reliability_node_feature_names() -> list[str]:
+    """Return the ordered feature names expected by training and embedding.
 
-
-def reliability_graph_config_dict(config=None) -> dict:
-    return asdict(normalize_reliability_graph_config(config))
-
-
-def reliability_node_feature_names(_config=None) -> list[str]:
+    Returns:
+        A new list whose order matches :func:`local_buffer_node_features`.
+    """
     return list(RELIABILITY_NODE_FEATURE_NAMES)
 
 
 def directed_machine_order(A_plus, A_minus, source, target, machine):
-    """Return the active precedence gate for one directed machine pair."""
+    """Return the orientation-specific precedence activation for a pair.
+
+    Pairwise order variables are stored only for increasing operation IDs;
+    this helper selects the correct forward or reverse activation.
+    """
     if source < target:
         return A_plus[source, target, machine]
     return A_minus[target, source, machine]
 
 
 def add_order_activations(model, variables):
+    """Linearize assignment-aware orientations of pairwise machine orders.
+
+    Returns:
+        Forward and reverse activation variable dictionaries. An activation is
+        one only when both operations select the machine and the corresponding
+        pairwise order orientation is active.
+    """
     Y, X = variables["Y"], variables["X"]
     A_plus = model.addVars(
         variables["X_index"], lb=0.0, ub=1.0,
@@ -120,10 +112,18 @@ def add_reliability_graph_variables(
     model,
     variables,
     instance,
-    config=None,
 ):
-    """Create U_ijk for immediate machine predecessors."""
-    cfg = normalize_reliability_graph_config(config)
+    """Create direct selected-machine predecessor variables ``U``.
+
+    Assignment-aware order activations restrict candidate arcs. Degree
+    constraints give every assigned operation either one predecessor or first
+    status and either one successor or last status, forming one path on every
+    used machine.
+
+    Side Effects:
+        Adds order activations, direct-edge variables and their index set to the
+        shared ``variables`` dictionary.
+    """
     operations = list(variables["real_operations"])
     machines = list(variables["machines"])
     Y = variables["Y"]
@@ -215,7 +215,4 @@ def add_reliability_graph_variables(
         "A_minus": A_minus,
         "U": U,
         "U_index": U_index,
-        "reliability_graph_config": reliability_graph_config_dict(cfg),
-        "reliability_graph_schema": RELIABILITY_GRAPH_SCHEMA,
     })
-    return variables

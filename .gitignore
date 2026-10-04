@@ -3,11 +3,15 @@ __pycache__/
 *.py[cod]
 .venv/
 .uv-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+Masterarbeit-*.pdf
 
 # Generated project artifacts
 02_data/
-06_Evaluation/results/
 plots/
+cluster_files
 
 # Local editor configuration
 *.code-workspace

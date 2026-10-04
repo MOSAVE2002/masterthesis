@@ -1,37 +1,42 @@
-"""Scenario-free nonlinear FJSP with midpoint Weibull probabilities."""
+"""Build the nonlinear Weibull reference formulation for the stochastic FJSP.
 
-from __future__ import annotations
+The model evaluates disruption probabilities at operation midpoints with
+Gauss-Legendre quadrature inside Gurobi. Selected-machine probabilities are
+converted into expected repair buffers per job and added to the shared soft
+due-date and economic-cost formulation.
+"""
 
 import importlib
 import math
 
 import gurobipy as gp
 
-from helper.gurobi_solution_writer import write_comparable_solution
 from helper.economic_objective import (
     add_economic_cost_objective,
     add_due_date_tardiness_constraints,
 )
 from helper.sequence_setup import (
-    normalize_reliability_graph_config,
-    reliability_graph_config_dict,
+    RELIABILITY_QUADRATURE_POINTS,
 )
 from helper.stochastic_fjsp import (
-    ensure_stochastic_parameters,
     gauss_legendre_rule,
     stochastic_parameters,
 )
-from helper.surrogate_constraint import (
-    CONSTRAINT_WEIBULL,
-    validate_constraint_type,
-)
+base_fjsp = importlib.import_module("03_Gurobi.build_fjsp")
 
 
-_base_fjsp = importlib.import_module("03_Gurobi.build_fjsp")
-STATUS_NAMES = _base_fjsp.STATUS_NAMES
+def add_midpoint_state(model, variables, instance):
+    """Add assignment-dependent durations, starts and operation midpoints.
 
+    Args:
+        model: Gurobi model receiving variables and linking constraints.
+        variables: Shared FJSP dictionary with completion and assignment data.
+        instance: FJSP instance providing eligible-machine durations.
 
-def _add_midpoint_state(model, variables, instance):
+    Side Effects:
+        Adds nominal durations ``D``, starts ``S`` and midpoints ``T`` to the
+        shared variable dictionary.
+    """
     horizon = float(variables["H"])
     starts, midpoints, nominal_durations = {}, {}, {}
     for operation in variables["real_operations"]:
@@ -58,8 +63,13 @@ def _add_midpoint_state(model, variables, instance):
     variables.update({"S": starts, "T": midpoints, "D": nominal_durations})
 
 
-def _add_pd_quadrature(model, variables, instance, graph_cfg):
-    nodes, weights = gauss_legendre_rule(graph_cfg.quadrature_points)
+def add_pd_quadrature(model, variables):
+    """Approximate midpoint disruption probabilities by Gauss quadrature.
+
+    The nonlinear Weibull-repair integral supports shape parameters two and
+    three and is linked exactly to the selected machine.
+    """
+    nodes, weights = gauss_legendre_rule(RELIABILITY_QUADRATURE_POINTS)
     probability, selected_probability = {}, {}
     for operation, machine in variables["Y_index"]:
         t = variables["T"][operation]
@@ -126,41 +136,46 @@ def _add_pd_quadrature(model, variables, instance, graph_cfg):
     variables.update({
         "Pd": probability,
         "pi_fail": selected_probability,
-        "failure_probability_times_assignment": selected_probability,
-        "quadrature_nodes": nodes,
-        "quadrature_weights": weights,
     })
 
 
-def _service_operations(instance, job, scope):
-    return list(instance.jobs[job]) if scope == "job" else list(instance.real_operations)
-
-
-def _add_expected_repair_buffers(
+def add_expected_repair_buffers(
     model,
     variables,
     instance,
-    graph_cfg,
 ):
-    expected_delays = {}
+    """Aggregate selected failure probabilities into job repair buffers.
+
+    Each selected operation-machine probability is divided by the machine's
+    repair rate and summed along the job chain. The resulting expressions enter
+    the shared soft due-date constraints without a service-level multiplier.
+
+    Args:
+        model: Gurobi model receiving the due-date constraints.
+        variables: Shared dictionary containing selected probabilities and
+            machine repair rates.
+        instance: FJSP instance defining the operations of each job.
+
+    Side Effects:
+        Adds due-date variables and buffer metadata through the shared helper.
+    """
+    job_repair_buffers = {}
     for job in instance.jobs:
         expected_disruption = gp.quicksum(
             variables["pi_fail"][operation, machine]
             / variables["repair_rate"][machine]
-            for operation in _service_operations(instance, job, graph_cfg.service_scope)
+            for operation in instance.jobs[job]
             for machine in instance.eligible_machines[operation]
         )
-        expected_delays[job] = expected_disruption
+        job_repair_buffers[job] = expected_disruption
     add_due_date_tardiness_constraints(
         model,
         variables,
         instance,
-        expected_delays,
+        job_repair_buffers,
     )
     variables.update({
-        "service_scope": graph_cfg.service_scope,
-        "due_dates": dict(instance.due_dates),
-        "job_expected_delays": expected_delays,
+        "service_scope": "job",
         "job_repair_buffer_label_method": "weibull_expected_repair_buffer_v1",
     })
 
@@ -168,87 +183,36 @@ def _add_expected_repair_buffers(
 def build_fjsp(
     fjsp,
     instance,
-    constraint_type=CONSTRAINT_WEIBULL,
-    reliability_graph_config=None,
-    service_probability_band=None,
     facility_cost_per_time=1.0,
-    service_violation_cost_per_time=1.0,
-    tardiness_cost_per_time=None,
+    tardiness_cost_per_time=1.0,
 ):
-    """Build the nonlinear stochastic reference formulation."""
-    validate_constraint_type(constraint_type)
-    graph_cfg = normalize_reliability_graph_config(reliability_graph_config)
-    if graph_cfg.service_scope != "job":
-        raise ValueError("The thesis formulation sums repair buffers per job.")
-    if service_probability_band is not None:
-        raise ValueError(
-            "service_probability_band was removed; alpha is evaluated only "
-            "by post-optimization Monte Carlo simulation."
-        )
-    ensure_stochastic_parameters(instance)
+    """Build the nonlinear Weibull reference formulation.
+
+    Extend the nominal FJSP with midpoint disruption probabilities, expected
+    repair buffers, soft due dates and the economic objective.
+    """
     parameters = stochastic_parameters(instance)
-    model, variables = _base_fjsp.build_fjsp(
-        fjsp,
-        instance,
-        include_makespan=False,
-        horizon_upper_bound=None,
-        enforce_due_dates=False,
-        economic_objective=False,
-    )
+    model, variables = base_fjsp.build_core_fjsp(fjsp, instance)
     model.Params.NonConvex = 2
-    for operation in variables["real_operations"]:
-        variables["C"][operation].ub = float(variables["H"])
     variables.update({
-        "machine_modernity": parameters["theta"],
-        "machine_speed": parameters["speed"],
         "weibull_alpha": parameters["alpha"],
         "weibull_beta": parameters["beta"],
         "repair_rate": parameters["repair_rate"],
-        "repair_durations": {
-            (operation, machine): parameters["repair_duration"][machine]
-            for operation, machine in variables["Y_index"]
-        },
-        "reliability_graph_config": reliability_graph_config_dict(graph_cfg),
     })
-    _add_midpoint_state(model, variables, instance)
-    _add_pd_quadrature(model, variables, instance, graph_cfg)
-    operation_probability, delta = {}, {}
-    for operation in variables["real_operations"]:
-        operation_probability[operation] = gp.quicksum(
-            variables["pi_fail"][operation, machine]
-            for machine in instance.eligible_machines[operation]
-        )
-        delta[operation] = gp.quicksum(
-            variables["pi_fail"][operation, machine]
-            / parameters["repair_rate"][machine]
-            for machine in instance.eligible_machines[operation]
-        )
-    variables.update({
-        "operation_pi_fail": operation_probability,
-        "Delta": delta,
-        "total_failure_delay": gp.quicksum(delta.values()),
-    })
-    _add_expected_repair_buffers(
+    add_midpoint_state(model, variables, instance)
+    add_pd_quadrature(model, variables)
+    add_expected_repair_buffers(
         model,
         variables,
         instance,
-        graph_cfg,
     )
     add_economic_cost_objective(
         model,
         variables,
         instance,
         facility_cost_per_time=facility_cost_per_time,
-        service_violation_cost_per_time=service_violation_cost_per_time,
         tardiness_cost_per_time=tardiness_cost_per_time,
     )
-    variables.update({
-        "constraint_type": constraint_type,
-        "formulation": "nonlinear_unscaled_local_repair_buffer_v12",
-    })
+    variables["formulation"] = "nonlinear_unscaled_local_repair_buffer_v12"
     model.update()
     return model, variables
-
-
-def write_solution_file(model, variables, instance, filename="solution.txt"):
-    return write_comparable_solution(model, variables, filename, instance=instance)

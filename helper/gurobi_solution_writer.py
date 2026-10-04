@@ -1,9 +1,12 @@
-"""Comparable text output for the nonlinear and embedded-GNN models."""
+"""Write solver-independent text summaries of solved FJSP formulations.
 
-from __future__ import annotations
+The common format records model size, timing, costs, job buffers, operation
+timings and active direct machine edges. It is both human-readable and the
+canonical input consumed by the Monte Carlo post-evaluation module.
+"""
 
-import csv
 from collections import Counter
+from itertools import pairwise
 from pathlib import Path
 
 import gurobipy as gp
@@ -20,41 +23,25 @@ STATUS_NAMES = {
     GRB.SUBOPTIMAL: "SUBOPTIMAL",
 }
 
-SOLVER_PROGRESS_FIELDS = (
-    "runtime_seconds",
-    "incumbent_objective",
-    "best_bound",
-    "relative_gap",
-    "node_count",
-    "solution_count",
-    "event",
-    "objective_sense",
-)
 
+def status_name(status):
+    """Return a readable Gurobi status name or preserve an unknown code.
 
-def solver_progress_path(solution_path):
-    """Return the CSV sidecar used for one solution's solver trajectory."""
-    solution_path = Path(solution_path)
-    return solution_path.with_name(
-        f"{solution_path.stem}_solver_progress.csv"
-    )
+    Args:
+        status: Numeric Gurobi model status.
 
-
-def _write_solver_progress(solution_path, trace):
-    """Persist callback-observed primal/dual progress next to the solution."""
-    trace = list(trace or [])
-    if not trace:
-        return None
-    path = solver_progress_path(solution_path)
-    with path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=SOLVER_PROGRESS_FIELDS)
-        writer.writeheader()
-        writer.writerows({key: row.get(key) for key in SOLVER_PROGRESS_FIELDS}
-                         for row in trace)
-    return path
+    Returns:
+        Stable uppercase name or the decimal status text.
+    """
+    return STATUS_NAMES.get(status, str(status))
 
 
 def _value(item):
+    """Safely evaluate a numeric value, Gurobi variable or expression.
+
+    Returns ``None`` when solution attributes are unavailable, allowing the
+    writer to produce diagnostic files even without an incumbent.
+    """
     if item is None:
         return None
     if hasattr(item, "X"):
@@ -71,11 +58,20 @@ def _value(item):
 
 
 def _number(item, digits=6):
+    """Format an optional model value with a fixed number of decimal places.
+
+    Unavailable values become empty fields so diagnostic output stays parseable.
+    """
     value = _value(item)
     return "" if value is None else f"{value:.{digits}f}"
 
 
 def _model_attribute(model, name):
+    """Read an optional Gurobi model attribute without propagating API errors.
+
+    Attributes unavailable for the current solver state are represented by
+    ``None`` in the comparable output.
+    """
     try:
         return getattr(model, name)
     except (AttributeError, gp.GurobiError):
@@ -83,6 +79,10 @@ def _model_attribute(model, name):
 
 
 def _selected_machine(variables, operation):
+    """Return the machine with the largest incumbent assignment value.
+
+    Binary solutions therefore yield the unique selected eligible machine.
+    """
     return max(
         variables["eligible_machines"][operation],
         key=lambda machine: _value(variables["Y"][operation, machine]),
@@ -90,7 +90,11 @@ def _selected_machine(variables, operation):
 
 
 def _operation_start(variables, operation):
-    """Return an explicit start variable or derive it from completion."""
+    """Return an operation start from explicit or derived timing data.
+
+    Models without start variables derive the value from completion and the
+    selected machine's processing duration.
+    """
     if variables.get("S") is not None:
         return _value(variables["S"][operation])
     machine = _selected_machine(variables, operation)
@@ -101,7 +105,11 @@ def _operation_start(variables, operation):
 
 
 def _active_machine_edges(variables):
-    """Return immediate machine-predecessor edges of the incumbent schedule."""
+    """Return immediate machine-predecessor edges of the incumbent schedule.
+
+    Embedded graph models expose direct ``U`` variables. For nominal models,
+    the same edges are reconstructed by sorting selected operations by start.
+    """
     if variables.get("U") is not None:
         return [
             index
@@ -128,12 +136,17 @@ def _active_machine_edges(variables):
         )
         edges.extend(
             (source, target, machine)
-            for source, target in zip(ordered, ordered[1:])
+            for source, target in pairwise(ordered)
         )
     return edges
 
 
 def _model_structure(model):
+    """Summarize variables, constraints and linear-matrix nonzeros.
+
+    Returns:
+        Dictionary of counts shared by all solver result files.
+    """
     variable_types = Counter(variable.VType for variable in model.getVars())
     general_types = Counter(
         constraint.GenConstrType for constraint in model.getGenConstrs()
@@ -159,22 +172,29 @@ def write_comparable_solution(
     filename="solution.txt",
     instance=None,
 ):
-    """Write costs, unscaled buffers, Pd, Y and U values."""
+    """Write a complete comparable solution and diagnostic summary.
+
+    Args:
+        model: Optimized Gurobi model, with or without an incumbent.
+        variables: Shared formulation dictionary containing reportable values.
+        filename: Destination text path.
+        instance: Solved instance required for per-job and operation output.
+
+    Returns:
+        Path of the written text file.
+    """
     path = Path(filename)
     path.parent.mkdir(parents=True, exist_ok=True)
     has_solution = model.SolCount > 0
     metadata = variables.get("gnn_metadata") or {}
     structure = _model_structure(model)
-    telemetry = variables.get("solver_telemetry", {})
-    progress_path = _write_solver_progress(
-        path, telemetry.get("progress_trace")
-    )
+    solver_metrics = variables.get("solver_metrics", {})
 
     with path.open("w", encoding="utf-8") as file:
         file.write("Solution summary:\n")
         file.write("Model time unit: ZE (times and buffers); rates: 1/ZE; cost rates: GE/ZE\n")
         file.write(f"Formulation: {variables.get('formulation', '')}\n")
-        file.write(f"Status: {STATUS_NAMES.get(model.Status, model.Status)}\n")
+        file.write(f"Status: {status_name(model.Status)}\n")
         file.write(
             "Objective definition: "
             f"{variables.get('objective_definition', '')}\n"
@@ -185,11 +205,11 @@ def write_comparable_solution(
         file.write(f"Operating cost: {_number(variables.get('operating_cost'))}\n")
         file.write(
             "Tardiness cost: "
-            f"{_number(variables.get('service_violation_cost'))}\n"
+            f"{_number(variables.get('tardiness_cost'))}\n"
         )
         file.write(
             "Total tardiness: "
-            f"{_number(variables.get('total_service_level_violation'))}\n"
+            f"{_number(variables.get('total_tardiness'))}\n"
         )
         file.write(f"Total cost: {_number(variables.get('total_cost'))}\n")
         file.write(
@@ -198,7 +218,7 @@ def write_comparable_solution(
         )
         file.write(
             "Tardiness cost per time: "
-            f"{_number(variables.get('service_violation_cost_per_time'))}\n"
+            f"{_number(variables.get('tardiness_cost_per_time'))}\n"
         )
         file.write(f"Objective mode: {variables.get('objective_mode', '')}\n")
         file.write(
@@ -210,39 +230,7 @@ def write_comparable_solution(
         file.write(f"Runtime [s]: {_number(model.Runtime)}\n")
         file.write(
             "Branch-and-bound nodes: "
-            f"{_number(telemetry.get('branch_and_bound_nodes'))}\n"
-        )
-        file.write(
-            "Root-node bound: "
-            f"{_number(telemetry.get('root_node_bound'))}\n"
-        )
-        file.write(
-            "Time to first incumbent [s]: "
-            f"{_number(telemetry.get('time_to_first_incumbent_seconds'))}\n"
-        )
-        file.write(
-            "First incumbent objective: "
-            f"{_number(telemetry.get('first_incumbent_objective'))}\n"
-        )
-        file.write(
-            "Time to best incumbent [s]: "
-            f"{_number(telemetry.get('time_to_best_incumbent_seconds'))}\n"
-        )
-        file.write(
-            "Best incumbent objective: "
-            f"{_number(telemetry.get('best_incumbent_objective'))}\n"
-        )
-        file.write(
-            "Solver progress file: "
-            f"{progress_path.name if progress_path is not None else ''}\n"
-        )
-        file.write(
-            "Solver progress points: "
-            f"{len(telemetry.get('progress_trace') or [])}\n"
-        )
-        file.write(
-            "Solver progress sampling interval [s]: "
-            f"{_number(telemetry.get('progress_sample_interval_seconds'))}\n"
+            f"{_number(solver_metrics.get('branch_and_bound_nodes'))}\n"
         )
         timing = variables.get("timing", {})
         file.write(
@@ -262,7 +250,6 @@ def write_comparable_solution(
             file.write(f"{name}: {count}\n")
 
         file.write("\nStochastic formulation:\n")
-        file.write(f"Constraint type: {variables.get('constraint_type', '')}\n")
         file.write(f"Service scope: {variables.get('service_scope', '')}\n")
         file.write(f"Due dates: {variables.get('due_dates', {})}\n")
         file.write(f"GNN convolution: {metadata.get('convolution', '')}\n")
@@ -273,14 +260,14 @@ def write_comparable_solution(
             return path
 
         file.write("\nExpected local repair-buffer summary:\n")
-        delays = variables.get("job_expected_delays", {})
-        delay_values = {
-            job: _value(delays[job]) for job in sorted(delays)
+        buffers = variables.get("job_repair_buffers", {})
+        buffer_values = {
+            job: _value(buffers[job]) for job in sorted(buffers)
         }
-        if delay_values:
+        if buffer_values:
             file.write(
                 "Maximum expected local job repair buffer: "
-                f"{max(delay_values.values()):.6f}\n"
+                f"{max(buffer_values.values()):.6f}\n"
             )
         file.write(
             "Repair buffer label method: "
@@ -288,25 +275,21 @@ def write_comparable_solution(
         )
 
         file.write("\nPer-job buffered due dates:\n")
-        service_buffers = variables.get("job_service_level_buffers", delays)
-        for job in sorted(delays):
+        for job in sorted(buffers):
             completion = variables["C"][instance.job_end_operations[job]]
             due_date = float(variables["due_dates"][job])
-            delay = delay_values[job]
-            service_buffer = _value(service_buffers[job])
-            violation = variables.get(
-                "job_service_level_violation", {}
-            ).get(job)
+            repair_buffer = buffer_values[job]
+            tardiness = variables.get("job_tardiness", {}).get(job)
             file.write(
                 f"job {job}: completion={_number(completion)}, "
                 f"due_date={due_date:.6f}, "
-                f"expected_local_repair_buffer={delay:.6f}, "
-                f"repair_buffer={service_buffer:.6f}, "
+                f"expected_local_repair_buffer={repair_buffer:.6f}, "
+                f"repair_buffer={repair_buffer:.6f}, "
                 "buffered_completion="
-                f"{_value(completion) + service_buffer:.6f}, "
+                f"{_value(completion) + repair_buffer:.6f}, "
                 "buffered_slack="
-                f"{due_date - _value(completion) - service_buffer:.6f}, "
-                f"due_date_violation={_number(violation)}\n"
+                f"{due_date - _value(completion) - repair_buffer:.6f}, "
+                f"tardiness={_number(tardiness)}\n"
             )
 
         file.write("\nOperation values:\n")
